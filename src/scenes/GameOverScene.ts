@@ -16,6 +16,9 @@ export class GameOverScene extends Phaser.Scene {
   }
 
   create(data: GameOverData): void {
+    SoundSystem.setMusicTrack('normal');
+    net.onLobbyUpdate = undefined;
+    net.onGameStart = undefined;
     net.onRemotePlayerState = undefined;
     net.onWorldSync = undefined;
     net.onRoomSync = undefined;

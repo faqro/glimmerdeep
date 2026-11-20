@@ -1,10 +1,107 @@
+import bgmUrl from './lakeshrine.ogg';
+import bossBgmUrl from './suspicious.ogg';
+
+type MusicTrack = 'normal' | 'boss';
+
 /**
- * Lightweight 16-bit Web Audio synthesizer for sound effects and gentle ambient chimes.
- * Requires no external audio files and respects mute state.
+ * Lightweight 16-bit Web Audio synthesizer for sound effects and background music.
+ * Requires no external audio files for SFX and respects mute state.
  */
 class SoundSystemImpl {
   private ctx: AudioContext | null = null;
-  public muted = false;
+  private _muted = false;
+  private bgm: HTMLAudioElement | null = null;
+  private bossBgm: HTMLAudioElement | null = null;
+  private activeTrack: MusicTrack = 'normal';
+  private bgmStarted = false;
+  private unlockListenerBound = false;
+
+  get muted(): boolean {
+    return this._muted;
+  }
+
+  set muted(val: boolean) {
+    this._muted = val;
+    if (this.bgm) {
+      this.bgm.muted = val;
+    }
+    if (this.bossBgm) {
+      this.bossBgm.muted = val;
+    }
+  }
+
+  private createLoopingAudio(url: string, track: MusicTrack): HTMLAudioElement {
+    const audio = new Audio(url);
+    audio.loop = true;
+    audio.volume = 0.175;
+    audio.muted = this._muted;
+    audio.addEventListener('ended', () => {
+      if (this.activeTrack !== track) return;
+      audio.currentTime = 0;
+      audio.play().catch(() => {});
+    });
+    return audio;
+  }
+
+  private playActiveTrack(): void {
+    const target = this.activeTrack === 'boss' ? this.bossBgm : this.bgm;
+    if (!target) return;
+
+    const tryPlay = () => {
+      const current = this.activeTrack === 'boss' ? this.bossBgm : this.bgm;
+      if (!current) return;
+      current.play().then(() => {
+        if (this.unlockListenerBound) {
+          window.removeEventListener('pointerdown', tryPlay);
+          window.removeEventListener('keydown', tryPlay);
+          this.unlockListenerBound = false;
+        }
+      }).catch(() => {
+        if (!this.unlockListenerBound) {
+          this.unlockListenerBound = true;
+          window.addEventListener('pointerdown', tryPlay);
+          window.addEventListener('keydown', tryPlay);
+        }
+      });
+    };
+
+    tryPlay();
+  }
+
+  startMusic(): void {
+    if (typeof window === 'undefined') return;
+    if (!this.bgm) {
+      this.bgm = this.createLoopingAudio(bgmUrl, 'normal');
+    }
+    if (!this.bossBgm) {
+      this.bossBgm = this.createLoopingAudio(bossBgmUrl, 'boss');
+    }
+    if (this.bgmStarted) return;
+    this.bgmStarted = true;
+    this.playActiveTrack();
+  }
+
+  setMusicTrack(track: MusicTrack): void {
+    if (typeof window === 'undefined') return;
+    if (this.activeTrack === track) return;
+    this.activeTrack = track;
+
+    if (!this.bgmStarted) {
+      this.startMusic();
+      return;
+    }
+
+    if (track === 'boss') {
+      this.bgm?.pause();
+      if (this.bossBgm) {
+        this.bossBgm.currentTime = 0;
+      }
+    } else {
+      this.bossBgm?.pause();
+    }
+
+    this.playActiveTrack();
+  }
 
   private ensureContext(): AudioContext | null {
     if (this.muted) return null;
@@ -31,7 +128,7 @@ class SoundSystemImpl {
     osc.frequency.setValueAtTime(freq, now);
     osc.frequency.exponentialRampToValueAtTime(Math.max(20, endFreq), now + duration);
 
-    gain.gain.setValueAtTime(gainVal, now);
+    gain.gain.setValueAtTime(gainVal * 2, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
     osc.connect(gain);

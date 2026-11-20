@@ -169,6 +169,8 @@ export class GameScene extends Phaser.Scene {
   private blockPushCooldownMs = 0;
   private projSeq = 0;
   private spectateTargetId: string | null = null;
+  private respawnAnimMs = 0;
+  private remoteReviveAnimUntil = new Map<string, number>();
 
   private specialObjs: {
     merchant?: Phaser.GameObjects.Image;
@@ -291,6 +293,7 @@ export class GameScene extends Phaser.Scene {
     this.ui = this.scene.get('UIScene') as UIScene;
     this.ui.setQuitHandler(() => {
       net.disconnect();
+      SoundSystem.setMusicTrack('normal');
       this.scene.stop('UIScene');
       this.scene.start('MenuScene');
     });
@@ -386,6 +389,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupNetworking(): void {
+    net.onLobbyUpdate = undefined;
+    net.onGameStart = undefined;
+    net.onPlayAgain = undefined;
     net.onRemotePlayerState = (state, peerId) => {
       if (net.players.has(peerId)) {
         this.remotePlayers.set(peerId, state);
@@ -445,8 +451,27 @@ export class GameScene extends Phaser.Scene {
     };
 
     net.onRemoteInteract = (ev) => {
-      if (ev.kind === 'revive' && (ev.targetId === this.playerState.id || ev.targetId === 'all') && this.playerState.downed) {
-        this.reviveSelf();
+      if (ev.kind === 'revive') {
+        const isRipOut =
+          ev.itemId === 'boss_revive' || ev.itemId === 'revive_totem' || ev.itemId === 'necromancy_altar';
+        const accentColor =
+          ev.itemId === 'necromancy_altar' ? 0xc084fc : ev.itemId === 'boss_revive' ? 0x66ffd9 : 0xffe066;
+
+        if ((ev.targetId === this.playerState.id || ev.targetId === 'all') && this.playerState.downed) {
+          this.reviveSelf(ev.amount, isRipOut, accentColor);
+        }
+        if (isRipOut) {
+          for (const [peerId, st] of this.remotePlayers.entries()) {
+            if (
+              st.downed &&
+              (ev.targetId === 'all' || ev.targetId === peerId) &&
+              st.gx === this.currentRoom.gx &&
+              st.gy === this.currentRoom.gy
+            ) {
+              this.playRipOutAnimationForRemote(peerId, accentColor);
+            }
+          }
+        }
       } else if (ev.kind === 'drop' && ev.targetId) {
         const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
         const lKind = ev.lootKind ?? 'item';
@@ -719,6 +744,9 @@ export class GameScene extends Phaser.Scene {
 
           if (r.type === 'boss' && r.bossDefeated) {
             this.spawnExitPortal();
+            if (r.gx === this.currentRoom.gx && r.gy === this.currentRoom.gy) {
+              SoundSystem.setMusicTrack('normal');
+            }
           }
           if (prevLocked !== r.doorsLocked || prevSecret !== r.secretRevealed) {
             this.updateDoorVisuals();
@@ -767,6 +795,7 @@ export class GameScene extends Phaser.Scene {
 
         if (r.type === 'boss' && r.bossDefeated) {
           this.spawnExitPortal();
+          SoundSystem.setMusicTrack('normal');
         }
         if (prevLocked !== r.doorsLocked) {
           this.updateDoorVisuals();
@@ -920,6 +949,8 @@ export class GameScene extends Phaser.Scene {
     this.lootObjs = [];
     this.fireflies = [];
     this.blockPushCooldownMs = 0;
+    this.respawnAnimMs = 0;
+    this.remoteReviveAnimUntil.clear();
     this.specialObjs = { plates: [], mirrors: [], blocks: [], blockGoals: [] };
 
     const room = this.floor.rooms[gy][gx];
@@ -1107,9 +1138,13 @@ export class GameScene extends Phaser.Scene {
         const bHp = Math.round(bossDef.hp * playerScale);
         this.spawnEnemyEntity('boss', bossDef.id, 128, 88, bHp, bHp, false, true);
         this.ui.showToast(`${bossDef.name}: ${bossDef.subtitle}`, '#ff75c3');
+        SoundSystem.setMusicTrack('boss');
       } else {
         this.spawnExitPortal();
+        SoundSystem.setMusicTrack('normal');
       }
+    } else {
+      SoundSystem.setMusicTrack('normal');
     }
 
     // Special Room Objects
@@ -1479,7 +1514,11 @@ export class GameScene extends Phaser.Scene {
           gy: longestDowned.gy,
           kind: 'revive',
           targetId: longestDowned.id,
+          itemId: 'revive_totem',
         });
+        if (longestDowned.gx === this.currentRoom.gx && longestDowned.gy === this.currentRoom.gy) {
+          this.playRipOutAnimationForRemote(longestDowned.id, 0xffe066);
+        }
         SoundSystem.playHeal();
         this.ui.showToast(`Revived ${longestDowned.name}!`, '#ffe066');
       } else {
@@ -1495,7 +1534,13 @@ export class GameScene extends Phaser.Scene {
           gy: this.currentRoom.gy,
           kind: 'revive',
           targetId: 'all',
+          itemId: 'necromancy_altar',
         });
+        for (const ally of downedAllies) {
+          if (ally.gx === this.currentRoom.gx && ally.gy === this.currentRoom.gy) {
+            this.playRipOutAnimationForRemote(ally.id, 0xc084fc);
+          }
+        }
         SoundSystem.playHeal();
         this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0xc084fc, 14);
         this.ui.showToast('Necromancy Altar revived all allies!', '#c084fc');
@@ -1831,10 +1876,12 @@ export class GameScene extends Phaser.Scene {
       this.currentRoom.doorsLocked = false;
       this.updateDoorVisuals();
       SoundSystem.playUnlock();
+      SoundSystem.setMusicTrack('normal');
       this.spawnExitPortal();
       this.spawnRoomLoot(`boss_sh_${Date.now()}`, 'shard', ex - 16, ey, undefined, 12);
       this.spawnRoomLoot(`boss_itm_${Date.now()}`, 'item', ex + 16, ey, rollRandomItemId(new SeededRandom(Date.now())));
       this.triggerStarseed();
+      this.reviveLongestDownedOnBossDefeat();
       return;
     }
 
@@ -2265,17 +2312,214 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private reviveSelf(): void {
+  private reviveLongestDownedOnBossDefeat(): void {
+    if (net.mode === 'solo') return;
+
+    const downedCandidates: PlayerStateSnapshot[] = [];
+    if (this.playerState.downed) {
+      downedCandidates.push(this.playerState);
+    }
+    for (const ally of this.remotePlayers.values()) {
+      if (ally.downed) downedCandidates.push(ally);
+    }
+    if (downedCandidates.length === 0) return;
+
+    downedCandidates.sort((a, b) => a.downedTimerMs - b.downedTimerMs);
+    const longestDowned = downedCandidates[0];
+    const halfHp = Math.max(1, Math.floor(longestDowned.maxHp / 2));
+
+    if (longestDowned.id === this.playerState.id) {
+      this.reviveSelf(halfHp, true, 0x66ffd9);
+    } else {
+      net.broadcastInteract({
+        peerId: this.playerState.id,
+        gx: longestDowned.gx,
+        gy: longestDowned.gy,
+        kind: 'revive',
+        targetId: longestDowned.id,
+        amount: halfHp,
+        itemId: 'boss_revive',
+      });
+      if (longestDowned.gx === this.currentRoom.gx && longestDowned.gy === this.currentRoom.gy) {
+        this.playRipOutAnimationForRemote(longestDowned.id, 0x66ffd9);
+      }
+      this.ui.showToast(`${longestDowned.name} was ripped from the earth!`, '#66ffd9');
+    }
+  }
+
+  private reviveSelf(hpOverride?: number, ripOutAnim = false, accentColor = 0x66ffd9): void {
     this.playerState.downed = false;
-    this.playerState.hp = 4;
-    this.invulnMs = 1200;
+    this.playerState.hp = Math.min(this.playerState.maxHp, hpOverride ?? 4);
+    this.invulnMs = 1500;
     this.spectateTargetId = null;
-    this.playerSprite.setFrame(0).setDepth(10).setVisible(true);
     if (this.currentRoom.gx !== this.playerState.gx || this.currentRoom.gy !== this.playerState.gy) {
       this.loadRoom(this.playerState.gx, this.playerState.gy, this.playerState.x, this.playerState.y);
     }
-    SoundSystem.playHeal();
-    this.ui.showToast('Revived!', '#66ffd9');
+    if (ripOutAnim) {
+      this.respawnAnimMs = 560;
+      this.playRipOutAnimation(this.playerSprite, this.playerState.x, this.playerState.y, accentColor, () => {
+        this.respawnAnimMs = 0;
+      });
+    } else {
+      this.playerSprite.setFrame(0).setDepth(10).setVisible(true);
+      SoundSystem.playHeal();
+    }
+    net.broadcastPlayerState(this.playerState);
+    this.ui.showToast(hpOverride !== undefined ? 'Ripped from the earth! (Half HP)' : 'Revived!', '#66ffd9');
+  }
+
+  private playRipOutAnimationForRemote(peerId: string, accentColor: number): void {
+    const vis = this.remoteSprites.get(peerId);
+    const st = this.remotePlayers.get(peerId);
+    if (!vis || !vis.sprite.active || !st) return;
+
+    this.remoteReviveAnimUntil.set(peerId, this.time.now + 580);
+    this.playRipOutAnimation(vis.sprite, st.x, st.y, accentColor, () => {
+      this.remoteReviveAnimUntil.delete(peerId);
+    });
+  }
+
+  private playRipOutAnimation(
+    sprite: Phaser.GameObjects.Sprite,
+    anchorX: number,
+    anchorY: number,
+    accentColor: number,
+    onComplete?: () => void
+  ): void {
+    SoundSystem.playBreak();
+    this.time.delayedCall(160, () => SoundSystem.playHeal());
+    this.cameras.main.shake(130, 0.008);
+
+    // Ground crack & mound at the body's resting spot
+    const rim = this.add.ellipse(anchorX, anchorY + 7, 18, 8, 0x5c4033, 0.7).setDepth(5);
+    const pit = this.add.ellipse(anchorX, anchorY + 7, 12, 5, 0x100d24, 0.92).setDepth(6);
+    const ring = this.add.circle(anchorX, anchorY + 5, 4, accentColor, 0.45).setDepth(8);
+
+    this.tweens.add({
+      targets: [rim, pit],
+      scaleX: 1.35,
+      scaleY: 1.35,
+      duration: 180,
+      ease: 'Cubic.Out',
+      onComplete: () => {
+        this.tweens.add({
+          targets: [rim, pit],
+          alpha: 0,
+          scaleX: 0.7,
+          scaleY: 0.7,
+          duration: 360,
+          onComplete: () => {
+            rim.destroy();
+            pit.destroy();
+          },
+        });
+      },
+    });
+
+    this.tweens.add({
+      targets: ring,
+      scale: 3.2,
+      alpha: 0,
+      duration: 320,
+      ease: 'Cubic.Out',
+      onComplete: () => ring.destroy(),
+    });
+
+    // Dirt clods & spectral sparks erupting from the ground
+    const dirtColors = [0x5c4033, 0x8b5a2b, 0x3b2618];
+    for (let i = 0; i < 10; i++) {
+      const isDirt = i < 6;
+      const color = isDirt ? dirtColors[i % dirtColors.length] : accentColor;
+      const texKey = isDirt ? 'particle_spark' : 'particle_star';
+      const p = this.add.image(anchorX + Phaser.Math.Between(-4, 4), anchorY + 6, texKey).setTint(color).setDepth(14);
+      const vx = Phaser.Math.Between(-18, 18);
+      const peakY = anchorY - Phaser.Math.Between(12, 24);
+      this.tweens.add({
+        targets: p,
+        x: anchorX + vx,
+        y: peakY,
+        duration: 210,
+        ease: 'Cubic.Out',
+        onComplete: () => {
+          if (!p.active) return;
+          this.tweens.add({
+            targets: p,
+            y: anchorY + Phaser.Math.Between(3, 9),
+            alpha: 0,
+            duration: 200,
+            ease: 'Quad.In',
+            onComplete: () => p.destroy(),
+          });
+        },
+      });
+    }
+
+    // Yank the body out of the ground: tug -> rip upward -> slam down -> settle
+    sprite
+      .setVisible(true)
+      .setPosition(anchorX, anchorY + 7)
+      .setFrame(5)
+      .setScale(1.2, 0.35)
+      .setTint(0x8b7355)
+      .setDepth(12);
+
+    this.tweens.add({
+      targets: sprite,
+      x: anchorX - 2,
+      y: anchorY + 5,
+      duration: 60,
+      yoyo: true,
+      onComplete: () => {
+        if (!sprite.active || !sprite.scene) {
+          onComplete?.();
+          return;
+        }
+        sprite.setFrame(0).clearTint();
+        this.tweens.add({
+          targets: sprite,
+          x: anchorX,
+          y: anchorY - 15,
+          scaleX: 0.72,
+          scaleY: 1.38,
+          duration: 160,
+          ease: 'Cubic.Out',
+          onComplete: () => {
+            if (!sprite.active || !sprite.scene) {
+              onComplete?.();
+              return;
+            }
+            this.tweens.add({
+              targets: sprite,
+              y: anchorY,
+              scaleX: 1.25,
+              scaleY: 0.78,
+              duration: 150,
+              ease: 'Quad.In',
+              onComplete: () => {
+                if (!sprite.active || !sprite.scene) {
+                  onComplete?.();
+                  return;
+                }
+                this.spawnParticles(anchorX, anchorY + 6, 0x8b5a2b, 5);
+                this.tweens.add({
+                  targets: sprite,
+                  scaleX: 1,
+                  scaleY: 1,
+                  duration: 130,
+                  ease: 'Back.Out',
+                  onComplete: () => {
+                    if (sprite.active) {
+                      sprite.setPosition(anchorX, anchorY).setScale(1, 1).setDepth(10).clearTint();
+                    }
+                    onComplete?.();
+                  },
+                });
+              },
+            });
+          },
+        });
+      },
+    });
   }
 
   private spawnParticles(x: number, y: number, color: number, count: number): void {
@@ -2299,6 +2543,7 @@ export class GameScene extends Phaser.Scene {
 
     this.attackCooldownMs = Math.max(0, this.attackCooldownMs - delta);
     this.invulnMs = Math.max(0, this.invulnMs - delta);
+    this.respawnAnimMs = Math.max(0, this.respawnAnimMs - delta);
     this.doorCooldownMs = Math.max(0, this.doorCooldownMs - delta);
     this.plateCooldownMs = Math.max(0, this.plateCooldownMs - delta);
     this.blockPushCooldownMs = Math.max(0, this.blockPushCooldownMs - delta);
@@ -2351,13 +2596,19 @@ export class GameScene extends Phaser.Scene {
     if (this.playerState.downed) {
       this.playerSprite.setVelocity(0, 0);
       this.playerSprite.setFrame(5).setDepth(7);
-      this.playerState.downedTimerMs = Math.max(0, this.playerState.downedTimerMs - delta);
+      this.playerState.downedTimerMs -= delta;
       const anyAlive = Array.from(this.remotePlayers.values()).some((p) => !p.downed);
       if (!anyAlive) {
         this.triggerGameOver(false);
         return;
       }
       this.updateSpectatorView();
+      return;
+    }
+
+    if (this.respawnAnimMs > 0) {
+      this.playerSprite.setVelocity(0, 0);
+      this.playerState.dodging = false;
       return;
     }
 
@@ -3213,30 +3464,33 @@ export class GameScene extends Phaser.Scene {
           vis = { sprite: sp, label: lb };
           this.remoteSprites.set(peerId, vis);
         }
-        const playerLerp = 1 - Math.exp(-delta * 0.018);
-        const pDist = Phaser.Math.Distance.Between(vis.sprite.x, vis.sprite.y, st.x, st.y);
-        if (pDist > 48) {
-          vis.sprite.setPosition(st.x, st.y);
-        } else if (pDist > 0.2) {
-          vis.sprite.setPosition(
-            Phaser.Math.Linear(vis.sprite.x, st.x, playerLerp),
-            Phaser.Math.Linear(vis.sprite.y, st.y, playerLerp)
-          );
-        }
-        vis.sprite.setFlipX(st.flipX);
-        vis.sprite.setDepth(st.downed ? 7 : 10);
-        vis.label.setDepth(st.downed ? 8 : 11);
         const now = this.time.now;
-        const pFrame = st.downed
-          ? 5
-          : st.dodging
-          ? 4
-          : st.animState === 'walk'
-          ? Math.floor(now / 160) % 2 === 0
-            ? 2
-            : 3
-          : Math.floor(now / 380) % 2;
-        vis.sprite.setFrame(pFrame);
+        const isRipAnimating = (this.remoteReviveAnimUntil.get(peerId) ?? 0) > now;
+        if (!isRipAnimating) {
+          const playerLerp = 1 - Math.exp(-delta * 0.018);
+          const pDist = Phaser.Math.Distance.Between(vis.sprite.x, vis.sprite.y, st.x, st.y);
+          if (pDist > 48) {
+            vis.sprite.setPosition(st.x, st.y);
+          } else if (pDist > 0.2) {
+            vis.sprite.setPosition(
+              Phaser.Math.Linear(vis.sprite.x, st.x, playerLerp),
+              Phaser.Math.Linear(vis.sprite.y, st.y, playerLerp)
+            );
+          }
+          vis.sprite.setFlipX(st.flipX);
+          vis.sprite.setDepth(st.downed ? 7 : 10);
+          const pFrame = st.downed
+            ? 5
+            : st.dodging
+            ? 4
+            : st.animState === 'walk'
+            ? Math.floor(now / 160) % 2 === 0
+              ? 2
+              : 3
+            : Math.floor(now / 380) % 2;
+          vis.sprite.setFrame(pFrame);
+        }
+        vis.label.setDepth(st.downed ? 8 : 11);
         vis.label.setPosition(vis.sprite.x, vis.sprite.y - 16);
 
         // Spread burning on direct contact with another player (preserving remaining duration)
