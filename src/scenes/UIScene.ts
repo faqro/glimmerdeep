@@ -236,7 +236,8 @@ export class UIScene extends Phaser.Scene {
       const icon = this.add.image(cx, cy - 44, this.textures.exists(itemIconKey) ? itemIconKey : 'item_shard').setScale(1.5);
       const def = WEAPONS[entry.itemId] ?? CONSUMABLES[entry.itemId] ?? ARTIFACTS[entry.itemId];
       const shortName = def ? def.name : entry.itemId.replace(/_/g, ' ').toUpperCase();
-      const nameTxt = addPixelText(this, cx, cy - 26, shortName, 8, 0xffffff, 0.5, 0, 92);
+      const nameColor = def?.rarity === 'super_rare' ? 0xffe066 : 0xffffff;
+      const nameTxt = addPixelText(this, cx, cy - 26, shortName, 8, nameColor, 0.5, 0, 92);
       const descTxt = addPixelText(this, cx, cy + 4, def?.description ?? '', 8, 0xb8a1ff, 0.5, 0, 92);
       const priceColor = entry.sold ? 0x7e71b8 : shards >= entry.price ? 0x66ffd9 : 0xff5d8f;
       const priceTxt = addPixelText(this, cx, cy + 48, entry.sold ? 'SOLD' : `${entry.price} SHARDS`, 8, priceColor, 0.5, 0.5);

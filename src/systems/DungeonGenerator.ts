@@ -1,7 +1,8 @@
 import { BIOMES, LEVEL_MODIFIERS } from '../data/biomes';
 import { ARTIFACT_IDS, CONSUMABLES, CONSUMABLE_IDS, ARTIFACTS } from '../data/items';
 import { ENEMIES } from '../data/enemies';
-import { WEAPON_IDS } from '../data/weapons';
+import { WEAPONS, WEAPON_IDS } from '../data/weapons';
+import { SUPER_RARE_MERCHANT_IDS } from './InventorySystem';
 import { LevelModifierId, RoomData, RoomType, ShopStockItem } from '../types/game';
 import { deriveSeed, SeededRandom } from '../utils/SeededGenerator';
 
@@ -354,12 +355,29 @@ export class DungeonGenerator {
     if (room.type === 'merchant') {
       room.cleared = true;
       const stock: ShopStockItem[] = [];
-      const wId = rng.pick(WEAPON_IDS.filter((id) => id !== 'moonblade'));
-      const cId = rng.pick(CONSUMABLE_IDS);
-      const aId = rng.pick(ARTIFACT_IDS);
+      const normalWeapons = WEAPON_IDS.filter((id) => id !== 'moonblade' && !WEAPONS[id].merchantOnly);
+      const normalConsumables = CONSUMABLE_IDS.filter((id) => !CONSUMABLES[id].merchantOnly);
+      const normalArtifacts = ARTIFACT_IDS.filter((id) => !ARTIFACTS[id].merchantOnly);
+
+      const wId = rng.pick(normalWeapons);
+      const cId = rng.pick(normalConsumables);
+      const aId = rng.pick(normalArtifacts);
       stock.push({ itemId: wId, price: rng.int(22, 34), sold: false });
       stock.push({ itemId: cId, price: CONSUMABLES[cId].price, sold: false });
       stock.push({ itemId: aId, price: ARTIFACTS[aId].price, sold: false });
+
+      // ~1 in 10 merchants sells a single super rare merchant-only item (~46-55 shards)
+      if (SUPER_RARE_MERCHANT_IDS.length > 0 && rng.chance(0.1)) {
+        const srId = rng.pick(SUPER_RARE_MERCHANT_IDS);
+        const srDef = WEAPONS[srId] ?? CONSUMABLES[srId] ?? ARTIFACTS[srId];
+        const slotIdx = rng.int(0, 2);
+        stock[slotIdx] = {
+          itemId: srId,
+          price: srDef?.price ?? 50,
+          sold: false,
+        };
+      }
+
       room.shopStock = stock;
       return;
     }

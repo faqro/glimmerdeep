@@ -52,10 +52,19 @@ export function createItemInstance(itemId: string): InventoryItem | null {
   return null;
 }
 
+export const SUPER_RARE_MERCHANT_IDS: string[] = [
+  ...Object.values(WEAPONS).filter((w) => w.merchantOnly).map((w) => w.id),
+  ...Object.values(CONSUMABLES).filter((c) => c.merchantOnly).map((c) => c.id),
+  ...Object.values(ARTIFACTS).filter((a) => a.merchantOnly).map((a) => a.id),
+];
+
 export function rollRandomItemId(rng: SeededRandom, includeWeapons = true): string {
-  const pool: string[] = [...CONSUMABLE_IDS, ...ARTIFACT_IDS];
+  const pool: string[] = [
+    ...CONSUMABLE_IDS.filter((id) => !CONSUMABLES[id].merchantOnly),
+    ...ARTIFACT_IDS.filter((id) => !ARTIFACTS[id].merchantOnly),
+  ];
   if (includeWeapons) {
-    pool.push(...WEAPON_IDS.filter((id) => id !== 'moonblade'));
+    pool.push(...WEAPON_IDS.filter((id) => id !== 'moonblade' && !WEAPONS[id].merchantOnly));
   }
   return rng.pick(pool);
 }

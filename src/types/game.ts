@@ -32,7 +32,7 @@ export type LevelModifierId =
   | 'wild_magic';
 
 export type ItemCategory = 'weapon' | 'consumable' | 'artifact';
-export type ItemRarity = 'common' | 'uncommon' | 'rare';
+export type ItemRarity = 'common' | 'uncommon' | 'rare' | 'super_rare';
 
 export interface InventoryItem {
   instanceId: string;
@@ -82,6 +82,8 @@ export interface WeaponDef {
   projectileSpeed?: number;
   iconKey: string;
   color: number;
+  price?: number;
+  merchantOnly?: boolean;
 }
 
 export interface ConsumableDef {
@@ -92,6 +94,7 @@ export interface ConsumableDef {
   maxUses: number;
   iconKey: string;
   price: number;
+  merchantOnly?: boolean;
 }
 
 export interface ArtifactDef {
@@ -103,6 +106,7 @@ export interface ArtifactDef {
   triggerType: 'dodge' | 'hit' | 'level' | 'room_clear' | 'elite_kill';
   iconKey: string;
   price: number;
+  merchantOnly?: boolean;
 }
 
 export type StatusEffectId =

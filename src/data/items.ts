@@ -73,6 +73,16 @@ export const CONSUMABLES: Record<string, ConsumableDef> = {
     iconKey: 'item_everheart_elixir',
     price: 24,
   },
+  starlight_flask: {
+    id: 'starlight_flask',
+    name: 'Starlight Flask',
+    rarity: 'super_rare',
+    description: 'Full heal + 15s ward',
+    maxUses: 2,
+    iconKey: 'item_starlight_flask',
+    price: 46,
+    merchantOnly: true,
+  },
 };
 
 export const ARTIFACTS: Record<string, ArtifactDef> = {
@@ -135,6 +145,17 @@ export const ARTIFACTS: Record<string, ArtifactDef> = {
     triggerType: 'elite_kill',
     iconKey: 'item_starseed',
     price: 28,
+  },
+  everheart_core: {
+    id: 'everheart_core',
+    name: 'Everheart Core',
+    rarity: 'super_rare',
+    description: 'Blocks hit + heals 2',
+    maxUses: 3,
+    triggerType: 'hit',
+    iconKey: 'item_everheart_core',
+    price: 55,
+    merchantOnly: true,
   },
 };
 

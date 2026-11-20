@@ -855,6 +855,12 @@ export class GameScene extends Phaser.Scene {
       SoundSystem.playHeal();
       this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x6ef3ff, 10);
       this.ui.showToast('Starward: Deflecting bolts (15s)!', '#6ef3ff');
+    } else if (item.id === 'starlight_flask') {
+      this.playerState.hp = this.playerState.maxHp;
+      StatusEffectManager.addEffect(this.playerState.statusEffects, 'starward', 15000);
+      SoundSystem.playHeal();
+      this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0xffe066, 14);
+      this.ui.showToast('Full Heal + 15s Starward!', '#ffe066');
     } else if (item.id === 'everheart_elixir') {
       if (!StatusEffectManager.has(this.playerState.statusEffects, 'vitality')) {
         this.playerState.maxHp += 4;
@@ -1465,6 +1471,17 @@ export class GameScene extends Phaser.Scene {
 
   private damagePlayer(rawDmg: number): void {
     if (this.invulnMs > 0 || this.dodgeMs > 0 || this.playerState.downed) return;
+
+    const coreIdx = hasArtifact(this.playerState.inventory, 'everheart_core');
+    if (coreIdx !== -1) {
+      consumeUse(this.playerState.inventory, coreIdx, 1);
+      this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 2);
+      this.invulnMs = 800;
+      SoundSystem.playHeal();
+      this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0xff47b6, 10);
+      this.ui.showToast('Everheart Core blocked & healed!', '#ff47b6');
+      return;
+    }
 
     const glassIdx = hasArtifact(this.playerState.inventory, 'glass_heart');
     if (glassIdx !== -1) {
