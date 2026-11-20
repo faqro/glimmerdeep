@@ -31,7 +31,8 @@ export interface NetInteractEvent {
     | 'block'
     | 'block_reset'
     | 'crate'
-    | 'enemy_hit';
+    | 'enemy_hit'
+    | 'game_over';
   targetId?: string;
   lootKind?: 'shard' | 'item' | 'heart' | 'chest';
   amount?: number;
@@ -54,6 +55,16 @@ export interface SyncedProjectile {
   ownerId: string;
   damage: number;
   burns?: boolean;
+}
+
+export interface NetRoomSync {
+  gx: number;
+  gy: number;
+  cleared: boolean;
+  doorsLocked: boolean;
+  bossDefeated?: boolean;
+  enemies: Array<{ uid: string; x: number; y: number; hp: number; alive: boolean }>;
+  projectiles: SyncedProjectile[];
 }
 
 export interface NetWorldSync {
@@ -105,18 +116,22 @@ export class MultiplayerSystem {
   private sendStartFn: ((data: { seed: number; levelIndex: number; restorePlayer?: PlayerStateSnapshot }, target?: string) => void) | null = null;
   private sendPlayerStateFn: ((data: PlayerStateSnapshot, target?: string) => void) | null = null;
   private sendWorldSyncFn: ((data: NetWorldSync, target?: string) => void) | null = null;
+  private sendRoomSyncFn: ((data: NetRoomSync, target?: string) => void) | null = null;
   private sendAttackFn: ((data: NetAttackEvent, target?: string) => void) | null = null;
   private sendInteractFn: ((data: NetInteractEvent, target?: string) => void) | null = null;
+  private sendPlayAgainFn: ((data: { ts: number }, target?: string) => void) | null = null;
 
   public onLobbyUpdate?: () => void;
   public onGameStart?: (seed: number, levelIndex: number, restorePlayer?: PlayerStateSnapshot) => void;
   public onRemotePlayerState?: (state: PlayerStateSnapshot, fromPeer: string) => void;
   public onWorldSync?: (sync: NetWorldSync) => void;
+  public onRoomSync?: (sync: NetRoomSync, fromPeer: string) => void;
   public onRemoteAttack?: (ev: NetAttackEvent, fromPeer: string) => void;
   public onRemoteInteract?: (ev: NetInteractEvent, fromPeer: string) => void;
   public onPeerJoined?: (peerId: string, info: LobbyPlayerInfo) => void;
   public onPeerLeft?: (peerId: string, leavingPlayer?: LobbyPlayerInfo) => void;
   public onHostMigrated?: (newHostPeerId: string, isLocalNewHost: boolean) => void;
+  public onPlayAgain?: () => void;
 
   static generateInviteCode(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -175,15 +190,19 @@ export class MultiplayerSystem {
     const startAct = room.makeAction<{ seed: number; levelIndex: number; restorePlayer?: PlayerStateSnapshot }>('start');
     const playerAct = room.makeAction<PlayerStateSnapshot>('pstate');
     const worldAct = room.makeAction<NetWorldSync>('wsync');
+    const roomSyncAct = room.makeAction<NetRoomSync>('rsync');
     const attackAct = room.makeAction<NetAttackEvent>('attack');
     const interactAct = room.makeAction<NetInteractEvent>('interact');
+    const playAgainAct = room.makeAction<{ ts: number }>('playagain');
 
     this.sendLobbyFn = (data, target) => lobbyAct.send(data, target ? { target } : undefined);
     this.sendStartFn = (data, target) => startAct.send(data, target ? { target } : undefined);
     this.sendPlayerStateFn = (data, target) => playerAct.send(data, target ? { target } : undefined);
     this.sendWorldSyncFn = (data, target) => worldAct.send(data, target ? { target } : undefined);
+    this.sendRoomSyncFn = (data, target) => roomSyncAct.send(data, target ? { target } : undefined);
     this.sendAttackFn = (data, target) => attackAct.send(data, target ? { target } : undefined);
     this.sendInteractFn = (data, target) => interactAct.send(data, target ? { target } : undefined);
+    this.sendPlayAgainFn = (data, target) => playAgainAct.send(data, target ? { target } : undefined);
 
     lobbyAct.onMessage((info, ctx) => {
       if (this.players.size >= 4 && !this.players.has(ctx.peerId)) return;
@@ -220,12 +239,23 @@ export class MultiplayerSystem {
       }
     });
 
+    roomSyncAct.onMessage((sync, ctx) => {
+      this.onRoomSync?.(sync, ctx.peerId);
+    });
+
     attackAct.onMessage((ev, ctx) => {
       this.onRemoteAttack?.(ev, ctx.peerId);
     });
 
     interactAct.onMessage((ev, ctx) => {
       this.onRemoteInteract?.(ev, ctx.peerId);
+    });
+
+    playAgainAct.onMessage(() => {
+      for (const p of this.players.values()) {
+        p.ready = p.isHost;
+      }
+      this.onPlayAgain?.();
     });
 
     room.onPeerJoin((ctx) => {
@@ -311,6 +341,11 @@ export class MultiplayerSystem {
     this.sendWorldSyncFn?.(sync);
   }
 
+  broadcastRoomSync(sync: NetRoomSync): void {
+    if (this.mode === 'solo') return;
+    this.sendRoomSyncFn?.(sync);
+  }
+
   broadcastAttack(ev: NetAttackEvent): void {
     if (this.mode === 'solo') return;
     this.sendAttackFn?.(ev);
@@ -319,6 +354,14 @@ export class MultiplayerSystem {
   broadcastInteract(ev: NetInteractEvent): void {
     if (this.mode === 'solo') return;
     this.sendInteractFn?.(ev);
+  }
+
+  broadcastPlayAgain(): void {
+    if (this.mode !== 'host') return;
+    for (const p of this.players.values()) {
+      p.ready = p.isHost;
+    }
+    this.sendPlayAgainFn?.({ ts: Date.now() });
   }
 
   disconnect(): void {
@@ -335,17 +378,21 @@ export class MultiplayerSystem {
     this.sendStartFn = null;
     this.sendPlayerStateFn = null;
     this.sendWorldSyncFn = null;
+    this.sendRoomSyncFn = null;
     this.sendAttackFn = null;
     this.sendInteractFn = null;
+    this.sendPlayAgainFn = null;
     this.onLobbyUpdate = undefined;
     this.onGameStart = undefined;
     this.onRemotePlayerState = undefined;
     this.onWorldSync = undefined;
+    this.onRoomSync = undefined;
     this.onRemoteAttack = undefined;
     this.onRemoteInteract = undefined;
     this.onPeerJoined = undefined;
     this.onPeerLeft = undefined;
     this.onHostMigrated = undefined;
+    this.onPlayAgain = undefined;
   }
 }
 

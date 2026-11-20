@@ -8,7 +8,7 @@ import { WEAPONS } from '../data/weapons';
 import { SoundSystem } from '../audio/SoundSystem';
 import { DungeonGenerator, GeneratedFloor } from '../systems/DungeonGenerator';
 import { addItemToSlots, consumeUse, createItemInstance, hasArtifact, rollRandomItemId } from '../systems/InventorySystem';
-import { net, NetWorldSync } from '../systems/MultiplayerSystem';
+import { net, NetRoomSync, NetWorldSync, SyncedProjectile } from '../systems/MultiplayerSystem';
 import { StatusEffectManager } from '../systems/StatusEffectSystem';
 import {
   Direction,
@@ -168,6 +168,7 @@ export class GameScene extends Phaser.Scene {
   private plateCooldownMs = 0;
   private blockPushCooldownMs = 0;
   private projSeq = 0;
+  private spectateTargetId: string | null = null;
 
   private specialObjs: {
     merchant?: Phaser.GameObjects.Image;
@@ -201,6 +202,7 @@ export class GameScene extends Phaser.Scene {
     this.remotePlayers.clear();
     this.remoteSprites.clear();
     this.disconnectedPlayers.clear();
+    this.spectateTargetId = null;
 
     if (data.resetRun || !data.carryPlayer) {
       this.totalShardsCollected = 0;
@@ -292,6 +294,10 @@ export class GameScene extends Phaser.Scene {
       this.scene.stop('UIScene');
       this.scene.start('MenuScene');
     });
+    this.ui.setSpectateHandlers(
+      () => this.cycleSpectateTarget(-1),
+      () => this.cycleSpectateTarget(1)
+    );
 
     this.loadRoom(spawnGx, spawnGy, spawnX, spawnY);
 
@@ -357,6 +363,16 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-E', () => {
       if (!this.paused) this.handleInteract();
     });
+
+    const switchSpectator = (dir: -1 | 1) => {
+      if (net.mode !== 'solo' && this.playerState.downed && !this.paused && !this.ui.isOverlayOpen()) {
+        this.cycleSpectateTarget(dir);
+      }
+    };
+    kb.on('keydown-LEFT', () => switchSpectator(-1));
+    kb.on('keydown-A', () => switchSpectator(-1));
+    kb.on('keydown-RIGHT', () => switchSpectator(1));
+    kb.on('keydown-D', () => switchSpectator(1));
 
     this.input.mouse?.disableContextMenu();
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
@@ -453,8 +469,20 @@ export class GameScene extends Phaser.Scene {
         }
       } else if (ev.kind === 'pickup' && ev.targetId) {
         const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
-        const roomLoot = targetRoom?.loot.find((rl) => rl.uid === ev.targetId);
-        if (roomLoot) roomLoot.collected = true;
+        if (targetRoom) {
+          const roomLoot = targetRoom.loot.find((rl) => rl.uid === ev.targetId);
+          if (roomLoot) {
+            roomLoot.collected = true;
+          } else {
+            targetRoom.loot.push({
+              uid: ev.targetId,
+              kind: 'shard',
+              x: 0,
+              y: 0,
+              collected: true,
+            });
+          }
+        }
         const vis = this.lootObjs.find((l) => l.uid === ev.targetId);
         if (vis && !vis.collected) {
           vis.collected = true;
@@ -479,14 +507,14 @@ export class GameScene extends Phaser.Scene {
             this.destroyCrateByKey(ev.targetId);
           }
         }
-      } else if (ev.kind === 'enemy_hit' && ev.targetId && net.mode === 'host') {
+      } else if (ev.kind === 'enemy_hit' && ev.targetId) {
         const dmg = ev.uses ?? 1;
-        if (ev.gx === this.currentRoom.gx && ev.gy === this.currentRoom.gy) {
+        if (ev.gx === this.currentRoom.gx && ev.gy === this.currentRoom.gy && this.isRoomAuthority()) {
           const ae = this.activeEnemies.find((e) => e.uid === ev.targetId);
           if (ae && ae.sprite.active) {
             this.damageEnemy(ae, dmg, ev.x);
           }
-        } else {
+        } else if (net.mode === 'host' && (ev.gx !== this.currentRoom.gx || ev.gy !== this.currentRoom.gy)) {
           const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
           const re = targetRoom?.enemies.find((e) => e.uid === ev.targetId && e.alive);
           if (targetRoom && re) {
@@ -511,6 +539,8 @@ export class GameScene extends Phaser.Scene {
             }
           }
         }
+      } else if (ev.kind === 'game_over') {
+        this.triggerGameOver(false);
       } else if (ev.kind === 'mirror' && ev.targetId) {
         const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
         const mirror = targetRoom?.puzzleBeam?.mirrors.find((m) => m.id === ev.targetId);
@@ -578,14 +608,17 @@ export class GameScene extends Phaser.Scene {
       for (const rs of sync.roomStates) {
         const r = this.floor.rooms[rs.gy]?.[rs.gx];
         if (!r) continue;
+        const isSelfAuthorityInRoom = r.gx === this.currentRoom.gx && r.gy === this.currentRoom.gy && this.isRoomAuthority();
         const prevLocked = r.doorsLocked;
         const prevSecret = r.secretRevealed;
-        r.visited = rs.visited;
-        r.cleared = rs.cleared;
-        r.doorsLocked = rs.doorsLocked;
+        r.visited = r.visited || rs.visited;
         r.secretRevealed = rs.secretRevealed;
-        r.bossDefeated = rs.bossDefeated;
         r.puzzleSolved = rs.puzzleSolved;
+        if (!isSelfAuthorityInRoom) {
+          r.cleared = rs.cleared;
+          r.doorsLocked = rs.doorsLocked;
+          r.bossDefeated = rs.bossDefeated;
+        }
         if (rs.puzzleMirrors && r.puzzleBeam) {
           for (const pm of rs.puzzleMirrors) {
             const m = r.puzzleBeam.mirrors.find((x) => x.id === pm.id);
@@ -619,19 +652,30 @@ export class GameScene extends Phaser.Scene {
           }
         }
 
-        for (const es of rs.enemies) {
-          const re = r.enemies.find((e) => e.uid === es.uid);
-          if (re) {
-            re.x = es.x;
-            re.y = es.y;
-            re.hp = es.hp;
-            re.alive = es.alive;
+        if (!isSelfAuthorityInRoom) {
+          const syncedIds = new Set(rs.enemies.map((es) => es.uid));
+          for (const es of rs.enemies) {
+            const re = r.enemies.find((e) => e.uid === es.uid);
+            if (re) {
+              re.x = es.x;
+              re.y = es.y;
+              re.hp = es.hp;
+              re.alive = es.alive;
+            }
+          }
+          if (r.gx === sync.hostGx && r.gy === sync.hostGy) {
+            for (const re of r.enemies) {
+              if (re.alive && !syncedIds.has(re.uid)) {
+                re.alive = false;
+                re.hp = 0;
+              }
+            }
           }
         }
         for (const ls of rs.loot) {
           const rl = r.loot.find((l) => l.uid === ls.uid);
           if (rl) {
-            rl.collected = ls.collected;
+            rl.collected = rl.collected || ls.collected;
           } else {
             r.loot.push({
               uid: ls.uid,
@@ -647,28 +691,29 @@ export class GameScene extends Phaser.Scene {
         }
 
         if (r.gx === this.currentRoom.gx && r.gy === this.currentRoom.gy) {
-          for (const es of rs.enemies) {
-            const ae = this.activeEnemies.find((e) => e.uid === es.uid);
-            if (ae) {
-              ae.hp = es.hp;
-              if (es.alive && ae.sprite.active) {
-                ae.targetX = es.x;
-                ae.targetY = es.y;
-              } else if (!es.alive && ae.sprite.active) {
-                ae.sprite.destroy();
-              }
-            }
+          if (!isSelfAuthorityInRoom) {
+            this.syncActiveEnemiesFromRemote(r, rs.enemies, r.gx === sync.hostGx && r.gy === sync.hostGy);
           }
-          this.activeEnemies = this.activeEnemies.filter((e) => e.hp > 0 && e.sprite.active);
 
           for (const ls of rs.loot) {
             const existing = this.lootObjs.find((l) => l.uid === ls.uid);
             if (!existing && !ls.collected) {
-              this.createLootObject(ls.uid, ls.kind, ls.x, ls.y, ls.itemId, ls.amount, ls.uses);
+              const rl = r.loot.find((x) => x.uid === ls.uid);
+              if (!rl?.collected) {
+                this.createLootObject(ls.uid, ls.kind, ls.x, ls.y, ls.itemId, ls.amount, ls.uses);
+              }
             } else if (existing && ls.collected && !existing.collected) {
               existing.collected = true;
               if (existing.kind === 'chest') existing.sprite.setTexture('obj_chest_open');
               else existing.sprite.destroy();
+            }
+          }
+          for (const l of this.lootObjs) {
+            const rl = r.loot.find((x) => x.uid === l.uid);
+            if (rl?.collected && !l.collected) {
+              l.collected = true;
+              if (l.kind === 'chest') l.sprite.setTexture('obj_chest_open');
+              else l.sprite.destroy();
             }
           }
 
@@ -684,58 +729,183 @@ export class GameScene extends Phaser.Scene {
 
       // Sync ranged projectiles from host when host is in the same room
       if (sync.hostGx === this.currentRoom.gx && sync.hostGy === this.currentRoom.gy && sync.projectiles) {
-        const roomProjs = sync.projectiles.filter(
-          (sp) => sp.gx === this.currentRoom.gx && sp.gy === this.currentRoom.gy && sp.ownerId !== this.playerState.id
-        );
-        const activeUids = new Set(roomProjs.map((sp) => sp.uid));
+        this.applySyncedProjectiles(this.currentRoom.gx, this.currentRoom.gy, sync.projectiles);
+      }
+    };
 
-        for (let i = this.projectiles.length - 1; i >= 0; i--) {
-          const p = this.projectiles[i];
-          if (p.fromRemoteEvent || (p.netSynced && !activeUids.has(p.uid))) {
-            p.sprite.destroy();
-            this.projectiles.splice(i, 1);
-          }
+    net.onRoomSync = (sync: NetRoomSync) => {
+      const r = this.floor.rooms[sync.gy]?.[sync.gx];
+      if (!r) return;
+      const inThisRoom = r.gx === this.currentRoom.gx && r.gy === this.currentRoom.gy;
+      if (inThisRoom && this.isRoomAuthority()) return;
+
+      const prevLocked = r.doorsLocked;
+      r.cleared = sync.cleared;
+      r.doorsLocked = sync.doorsLocked;
+      if (sync.bossDefeated !== undefined) r.bossDefeated = sync.bossDefeated;
+
+      const syncedIds = new Set(sync.enemies.map((es) => es.uid));
+      for (const es of sync.enemies) {
+        const re = r.enemies.find((e) => e.uid === es.uid);
+        if (re) {
+          re.x = es.x;
+          re.y = es.y;
+          re.hp = es.hp;
+          re.alive = es.alive;
         }
+      }
+      for (const re of r.enemies) {
+        if (re.alive && !syncedIds.has(re.uid)) {
+          re.alive = false;
+          re.hp = 0;
+        }
+      }
 
-        for (const sp of roomProjs) {
-          const existing = this.projectiles.find((p) => p.netSynced && p.uid === sp.uid);
-          if (existing) {
-            existing.targetX = sp.x;
-            existing.targetY = sp.y;
-            existing.vx = sp.vx;
-            existing.vy = sp.vy;
-            existing.lifeMs = Math.max(existing.lifeMs, 250);
-          } else {
-            const sprite = this.physics.add.sprite(sp.x, sp.y, 'proj_orb').setDepth(11).setTint(sp.color);
-            this.projectiles.push({
-              uid: sp.uid,
-              sprite,
-              fromPlayer: sp.fromPlayer,
-              ownerId: sp.ownerId,
-              damage: sp.damage,
-              color: sp.color,
-              vx: sp.vx,
-              vy: sp.vy,
-              lifeMs: 2600,
-              homing: false,
-              boomerang: false,
-              returning: false,
-              bouncesLeft: 0,
-              slows: false,
-              bubbles: false,
-              burns: !!sp.burns,
-              hitUids: new Set(),
-              netSynced: true,
-              targetX: sp.x,
-              targetY: sp.y,
-            });
-          }
+      if (inThisRoom) {
+        this.syncActiveEnemiesFromRemote(r, sync.enemies, true);
+        this.applySyncedProjectiles(sync.gx, sync.gy, sync.projectiles);
+
+        if (r.type === 'boss' && r.bossDefeated) {
+          this.spawnExitPortal();
+        }
+        if (prevLocked !== r.doorsLocked) {
+          this.updateDoorVisuals();
+          if (prevLocked && !r.doorsLocked) SoundSystem.playUnlock();
         }
       }
     };
   }
 
-  private loadRoom(gx: number, gy: number, spawnX: number, spawnY: number): void {
+  private syncActiveEnemiesFromRemote(
+    room: RoomData,
+    syncedEnemies: Array<{ uid: string; x: number; y: number; hp: number; alive: boolean }>,
+    authoritativeList: boolean
+  ): void {
+    const syncedById = new Map(syncedEnemies.map((es) => [es.uid, es]));
+    for (const ae of this.activeEnemies) {
+      const es = syncedById.get(ae.uid);
+      const shouldDie =
+        room.cleared ||
+        (ae.isBoss && !!room.bossDefeated) ||
+        (es ? !es.alive || es.hp <= 0 : authoritativeList);
+      if (shouldDie) {
+        if (ae.sprite.active) {
+          this.spawnParticles(ae.sprite.x, ae.sprite.y, 0xffe066, 6);
+          ae.sprite.destroy();
+        }
+        ae.hp = 0;
+        const re = room.enemies.find((e) => e.uid === ae.uid);
+        if (re) {
+          re.alive = false;
+          re.hp = 0;
+        }
+      } else if (es && ae.sprite.active) {
+        ae.hp = es.hp;
+        ae.targetX = es.x;
+        ae.targetY = es.y;
+      }
+    }
+    this.activeEnemies = this.activeEnemies.filter((e) => e.hp > 0 && e.sprite.active);
+  }
+
+  private isRoomAuthority(): boolean {
+    if (net.mode === 'solo') return true;
+    if (this.playerState.downed) return false;
+    if (net.mode === 'host') return true;
+    const gx = this.currentRoom.gx;
+    const gy = this.currentRoom.gy;
+
+    for (const [peerId, info] of net.players.entries()) {
+      if (info.isHost) {
+        const hostSnap = this.remotePlayers.get(peerId);
+        if (hostSnap && !hostSnap.downed && hostSnap.gx === gx && hostSnap.gy === gy) {
+          return false;
+        }
+      }
+    }
+
+    const peersInRoom: Array<{ peerId: string; joinedAt: number }> = [
+      {
+        peerId: this.playerState.id,
+        joinedAt: net.players.get(this.playerState.id)?.joinedAt ?? Number.MAX_SAFE_INTEGER,
+      },
+    ];
+    for (const [peerId, snap] of this.remotePlayers.entries()) {
+      if (!snap.downed && snap.gx === gx && snap.gy === gy && net.players.has(peerId)) {
+        peersInRoom.push({
+          peerId,
+          joinedAt: net.players.get(peerId)?.joinedAt ?? Number.MAX_SAFE_INTEGER,
+        });
+      }
+    }
+    peersInRoom.sort((a, b) => (a.joinedAt !== b.joinedAt ? a.joinedAt - b.joinedAt : a.peerId.localeCompare(b.peerId)));
+    return peersInRoom[0]?.peerId === this.playerState.id;
+  }
+
+  private applySyncedProjectiles(gx: number, gy: number, projectiles: SyncedProjectile[]): void {
+    const roomProjs = projectiles.filter(
+      (sp) => sp.gx === gx && sp.gy === gy && sp.ownerId !== this.playerState.id
+    );
+    const activeUids = new Set(roomProjs.map((sp) => sp.uid));
+
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      const p = this.projectiles[i];
+      if (p.fromRemoteEvent || (p.netSynced && !activeUids.has(p.uid))) {
+        p.sprite.destroy();
+        this.projectiles.splice(i, 1);
+      }
+    }
+
+    for (const sp of roomProjs) {
+      const existing = this.projectiles.find((p) => p.netSynced && p.uid === sp.uid);
+      if (existing) {
+        existing.targetX = sp.x;
+        existing.targetY = sp.y;
+        existing.vx = sp.vx;
+        existing.vy = sp.vy;
+        existing.lifeMs = Math.max(existing.lifeMs, 250);
+      } else {
+        const sprite = this.physics.add.sprite(sp.x, sp.y, 'proj_orb').setDepth(11).setTint(sp.color);
+        this.projectiles.push({
+          uid: sp.uid,
+          sprite,
+          fromPlayer: sp.fromPlayer,
+          ownerId: sp.ownerId,
+          damage: sp.damage,
+          color: sp.color,
+          vx: sp.vx,
+          vy: sp.vy,
+          lifeMs: 2600,
+          homing: false,
+          boomerang: false,
+          returning: false,
+          bouncesLeft: 0,
+          slows: false,
+          bubbles: false,
+          burns: !!sp.burns,
+          hitUids: new Set(),
+          netSynced: true,
+          targetX: sp.x,
+          targetY: sp.y,
+        });
+      }
+    }
+  }
+
+  private loadRoom(gx: number, gy: number, spawnX: number, spawnY: number, isSpectating = false): void {
+    // Save active enemy positions/HP back into currentRoom before leaving
+    if (this.currentRoom && this.activeEnemies.length > 0 && this.isRoomAuthority()) {
+      for (const ae of this.activeEnemies) {
+        const re = this.currentRoom.enemies.find((e) => e.uid === ae.uid);
+        if (re) {
+          re.x = ae.sprite.active ? ae.sprite.x : re.x;
+          re.y = ae.sprite.active ? ae.sprite.y : re.y;
+          re.hp = ae.hp;
+          re.alive = ae.hp > 0;
+        }
+      }
+    }
+
     // Clear previous room objects
     this.roomGroup.clear(true, true);
     this.wallGroup.clear(true, true);
@@ -766,9 +936,13 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    this.playerState.gx = gx;
-    this.playerState.gy = gy;
-    this.playerSprite.setPosition(spawnX, spawnY);
+    if (!isSpectating) {
+      this.playerState.gx = gx;
+      this.playerState.gy = gy;
+      this.playerSprite.setPosition(spawnX, spawnY).setVisible(true);
+    } else {
+      this.playerSprite.setVisible(gx === this.playerState.gx && gy === this.playerState.gy);
+    }
     this.doorCooldownMs = 350;
 
     const biome = BIOMES[Math.min(this.levelIndex, BIOMES.length - 1)];
@@ -1044,6 +1218,7 @@ export class GameScene extends Phaser.Scene {
     amount?: number,
     uses?: number
   ): void {
+    if (this.lootObjs.some((l) => l.uid === uid)) return;
     let key = 'item_shard';
     if (kind === 'heart') key = 'item_heart';
     else if (kind === 'chest') key = 'obj_chest_closed';
@@ -1611,7 +1786,7 @@ export class GameScene extends Phaser.Scene {
     SoundSystem.playHit();
     this.spawnParticles(enemy.sprite.x, enemy.sprite.y, 0xf49ac1, 4);
 
-    if (net.mode === 'client') {
+    if (!this.isRoomAuthority()) {
       enemy.hp = Math.max(0, enemy.hp - dmg);
       net.broadcastInteract({
         peerId: this.playerState.id,
@@ -1645,7 +1820,10 @@ export class GameScene extends Phaser.Scene {
     this.spawnParticles(ex, ey, 0xffe066, 10);
 
     const roomEnemy = this.currentRoom.enemies.find((e) => e.uid === enemy.uid);
-    if (roomEnemy) roomEnemy.alive = false;
+    if (roomEnemy) {
+      roomEnemy.hp = 0;
+      roomEnemy.alive = false;
+    }
 
     if (enemy.isBoss) {
       this.currentRoom.bossDefeated = true;
@@ -1950,7 +2128,9 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (net.mode === 'host') {
-      const allInBoss = Array.from(this.remotePlayers.values()).every((p) => p.gx === 5 && p.gy === 2);
+      const allInBoss = Array.from(this.remotePlayers.values())
+        .filter((p) => !p.downed)
+        .every((p) => p.gx === 5 && p.gy === 2);
       if (!allInBoss) {
         this.ui.showToast('Waiting for teammates in Boss Room!', '#ffe066');
         return;
@@ -2056,16 +2236,44 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.playerState.downed = true;
       this.playerState.downedTimerMs = 20000;
-      this.playerSprite.setFrame(5);
+      this.playerSprite.setFrame(5).setDepth(7);
+      net.broadcastPlayerState(this.playerState);
+      const anyAlive = Array.from(this.remotePlayers.values()).some((p) => !p.downed);
+      if (!anyAlive) {
+        net.broadcastInteract({
+          peerId: this.playerState.id,
+          gx: this.currentRoom.gx,
+          gy: this.currentRoom.gy,
+          kind: 'game_over',
+        });
+        this.triggerGameOver(false);
+        return;
+      }
       this.ui.showToast('You are downed! Ally can revive [E]', '#ff5d8f');
     }
+  }
+
+  private triggerGameOver(victory: boolean): void {
+    if (this.transitioningLevel) return;
+    this.transitioningLevel = true;
+    this.scene.stop('UIScene');
+    this.scene.start('GameOverScene', {
+      victory,
+      levelReached: victory ? 6 : this.levelIndex + 1,
+      shardsCollected: this.totalShardsCollected,
+      enemiesDefeated: this.totalEnemiesDefeated,
+    });
   }
 
   private reviveSelf(): void {
     this.playerState.downed = false;
     this.playerState.hp = 4;
     this.invulnMs = 1200;
-    this.playerSprite.setFrame(0);
+    this.spectateTargetId = null;
+    this.playerSprite.setFrame(0).setDepth(10).setVisible(true);
+    if (this.currentRoom.gx !== this.playerState.gx || this.currentRoom.gy !== this.playerState.gy) {
+      this.loadRoom(this.playerState.gx, this.playerState.gy, this.playerState.x, this.playerState.y);
+    }
     SoundSystem.playHeal();
     this.ui.showToast('Revived!', '#66ffd9');
   }
@@ -2142,20 +2350,14 @@ export class GameScene extends Phaser.Scene {
   private updatePlayerMovement(time: number, delta: number): void {
     if (this.playerState.downed) {
       this.playerSprite.setVelocity(0, 0);
-      this.playerSprite.setFrame(5);
-      this.playerState.downedTimerMs -= delta;
-      if (this.playerState.downedTimerMs <= 0) {
-        const anyAlive = Array.from(this.remotePlayers.values()).some((p) => !p.downed);
-        if (!anyAlive) {
-          this.scene.stop('UIScene');
-          this.scene.start('GameOverScene', {
-            victory: false,
-            levelReached: this.levelIndex + 1,
-            shardsCollected: this.totalShardsCollected,
-            enemiesDefeated: this.totalEnemiesDefeated,
-          });
-        }
+      this.playerSprite.setFrame(5).setDepth(7);
+      this.playerState.downedTimerMs = Math.max(0, this.playerState.downedTimerMs - delta);
+      const anyAlive = Array.from(this.remotePlayers.values()).some((p) => !p.downed);
+      if (!anyAlive) {
+        this.triggerGameOver(false);
+        return;
       }
+      this.updateSpectatorView();
       return;
     }
 
@@ -2242,7 +2444,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateEnemies(time: number, delta: number): void {
-    if (net.mode === 'client') {
+    if (!this.isRoomAuthority()) {
       const lerpFactor = 1 - Math.exp(-delta * 0.018);
       for (const e of this.activeEnemies) {
         if (!e.sprite.active) continue;
@@ -3022,6 +3224,8 @@ export class GameScene extends Phaser.Scene {
           );
         }
         vis.sprite.setFlipX(st.flipX);
+        vis.sprite.setDepth(st.downed ? 7 : 10);
+        vis.label.setDepth(st.downed ? 8 : 11);
         const now = this.time.now;
         const pFrame = st.downed
           ? 5
@@ -3124,7 +3328,77 @@ export class GameScene extends Phaser.Scene {
             })),
           roomStates,
         });
+      } else if (net.mode === 'client' && this.isRoomAuthority()) {
+        net.broadcastRoomSync({
+          gx: this.currentRoom.gx,
+          gy: this.currentRoom.gy,
+          cleared: this.currentRoom.cleared,
+          doorsLocked: this.currentRoom.doorsLocked,
+          bossDefeated: this.currentRoom.bossDefeated,
+          enemies: this.activeEnemies.map((e) => ({
+            uid: e.uid,
+            x: e.sprite.x,
+            y: e.sprite.y,
+            hp: e.hp,
+            alive: e.hp > 0,
+          })),
+          projectiles: this.projectiles
+            .filter((p) => p.sprite.active)
+            .map((p) => ({
+              uid: p.uid,
+              gx: this.currentRoom.gx,
+              gy: this.currentRoom.gy,
+              x: p.sprite.x,
+              y: p.sprite.y,
+              vx: p.vx,
+              vy: p.vy,
+              color: p.color,
+              fromPlayer: p.fromPlayer,
+              ownerId: p.ownerId,
+              damage: p.damage,
+              burns: p.burns,
+            })),
+        });
       }
+    }
+  }
+
+  private getSpectateTargets(): PlayerStateSnapshot[] {
+    return Array.from(this.remotePlayers.values()).sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  private getActiveSpectateTarget(): PlayerStateSnapshot | null {
+    if (net.mode === 'solo' || !this.playerState.downed) return null;
+    const targets = this.getSpectateTargets();
+    if (targets.length === 0) return null;
+    if (this.spectateTargetId) {
+      const found = targets.find((t) => t.id === this.spectateTargetId);
+      if (found) return found;
+    }
+    const chosen = targets.find((t) => !t.downed) ?? targets[0];
+    this.spectateTargetId = chosen.id;
+    return chosen;
+  }
+
+  private cycleSpectateTarget(dir: -1 | 1): void {
+    const targets = this.getSpectateTargets();
+    if (targets.length === 0) return;
+    const curIdx = this.spectateTargetId ? targets.findIndex((t) => t.id === this.spectateTargetId) : 0;
+    const baseIdx = curIdx === -1 ? 0 : curIdx;
+    const nextIdx = (baseIdx + dir + targets.length) % targets.length;
+    this.spectateTargetId = targets[nextIdx].id;
+    SoundSystem.playPickup();
+    this.updateSpectatorView();
+  }
+
+  private updateSpectatorView(): void {
+    const target = this.getActiveSpectateTarget();
+    if (!target) {
+      this.playerSprite.setVisible(true);
+      return;
+    }
+    if (target.gx !== this.currentRoom.gx || target.gy !== this.currentRoom.gy) {
+      this.loadRoom(target.gx, target.gy, this.playerSprite.x, this.playerSprite.y, true);
     }
   }
 
@@ -3170,15 +3444,24 @@ export class GameScene extends Phaser.Scene {
       bossInfo = { name: bDef.name, hp: bossEntity.hp, maxHp: bossEntity.maxHp, accent: bDef.accentColor };
     }
 
+    const spectateTarget = this.getActiveSpectateTarget();
+    const uiPlayer = spectateTarget ?? this.playerState;
+    const uiAllies = spectateTarget
+      ? [this.playerState, ...Array.from(this.remotePlayers.values()).filter((p) => p.id !== spectateTarget.id)]
+      : Array.from(this.remotePlayers.values());
+
     this.ui.updateState({
-      player: this.playerState,
-      allies: Array.from(this.remotePlayers.values()),
+      player: uiPlayer,
+      allies: uiAllies,
       levelIndex: this.levelIndex,
       modifierId: this.floor.modifier as LevelModifierId,
       rooms: this.floor.rooms,
       currentRoom: this.currentRoom,
       bossInfo,
       promptText,
+      spectating: spectateTarget
+        ? { targetName: spectateTarget.name, count: this.getSpectateTargets().length }
+        : null,
     });
   }
 }

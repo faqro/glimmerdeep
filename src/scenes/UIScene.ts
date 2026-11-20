@@ -15,6 +15,7 @@ export interface UIStatePayload {
   currentRoom: RoomData;
   bossInfo: { name: string; hp: number; maxHp: number; accent: number } | null;
   promptText: string;
+  spectating?: { targetName: string; count: number } | null;
 }
 
 export class UIScene extends Phaser.Scene {
@@ -49,10 +50,16 @@ export class UIScene extends Phaser.Scene {
 
   private shopOverlay!: Phaser.GameObjects.Container;
   private pauseOverlay!: Phaser.GameObjects.Container;
+  private spectateBar!: Phaser.GameObjects.Container;
+  private spectateTxt!: Phaser.GameObjects.BitmapText;
+  private spectatePrevBtn!: Phaser.GameObjects.Image;
+  private spectateNextBtn!: Phaser.GameObjects.Image;
 
   private lastPayload: UIStatePayload | null = null;
   private onBuyCallback?: (idx: number) => void;
   private onQuitCallback?: () => void;
+  private onSpectatePrev?: () => void;
+  private onSpectateNext?: () => void;
 
   constructor() {
     super({ key: 'UIScene' });
@@ -122,6 +129,27 @@ export class UIScene extends Phaser.Scene {
     this.buildMapOverlay();
     this.buildShopOverlay();
     this.buildPauseOverlay();
+    this.buildSpectateBar();
+  }
+
+  private buildSpectateBar(): void {
+    this.spectateBar = this.add.container(0, 0).setVisible(false).setDepth(25);
+    const bg = this.add.rectangle(180, 250, 184, 22, 0x100d24, 0.9).setStrokeStyle(1, 0x66ffd9, 0.7);
+    this.spectatePrevBtn = this.add.image(102, 250, 'ui_btn').setDisplaySize(22, 16).setInteractive({ useHandCursor: true });
+    const prevTxt = addPixelText(this, 102, 250, '<', 8, 0xffffff, 0.5, 0.5);
+    this.spectateNextBtn = this.add.image(258, 250, 'ui_btn').setDisplaySize(22, 16).setInteractive({ useHandCursor: true });
+    const nextTxt = addPixelText(this, 258, 250, '>', 8, 0xffffff, 0.5, 0.5);
+    this.spectateTxt = addPixelText(this, 180, 250, '', 8, 0xffe066, 0.5, 0.5, 130);
+
+    this.spectatePrevBtn.on('pointerdown', () => this.onSpectatePrev?.());
+    this.spectateNextBtn.on('pointerdown', () => this.onSpectateNext?.());
+
+    this.spectateBar.add([bg, this.spectatePrevBtn, prevTxt, this.spectateNextBtn, nextTxt, this.spectateTxt]);
+  }
+
+  setSpectateHandlers(onPrev: () => void, onNext: () => void): void {
+    this.onSpectatePrev = onPrev;
+    this.onSpectateNext = onNext;
   }
 
   private buildMapOverlay(): void {
@@ -354,7 +382,17 @@ export class UIScene extends Phaser.Scene {
     this.selectedDescLabel.setText(activeItem ? activeItem.description : '');
     this.selectedDescLabel.setY(this.selectedLabel.y + this.selectedLabel.height + 3);
 
-    if (payload.promptText) {
+    if (payload.spectating) {
+      this.spectateBar.setVisible(true);
+      this.spectateTxt.setText(`SPEC: ${payload.spectating.targetName.slice(0, 10)}`);
+      const multi = payload.spectating.count > 1;
+      this.spectatePrevBtn.setAlpha(multi ? 1 : 0.45);
+      this.spectateNextBtn.setAlpha(multi ? 1 : 0.45);
+    } else {
+      this.spectateBar.setVisible(false);
+    }
+
+    if (payload.promptText && !payload.spectating) {
       this.promptTxt.setText(payload.promptText).setVisible(true);
       this.promptBg.setSize(this.promptTxt.width + 10, this.promptTxt.height + 6).setVisible(true);
     } else {

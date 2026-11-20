@@ -81,6 +81,7 @@ export class LobbyScene extends Phaser.Scene {
       });
     };
 
+    net.broadcastLobbySelf(this.isReady);
     this.refreshPlayers();
   }
 
