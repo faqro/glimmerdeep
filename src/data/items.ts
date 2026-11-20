@@ -1,0 +1,164 @@
+import { ArtifactDef, ConsumableDef, StatusEffectId } from '../types/game';
+
+export const CONSUMABLES: Record<string, ConsumableDef> = {
+  heartdew_potion: {
+    id: 'heartdew_potion',
+    name: 'Heartdew Potion',
+    rarity: 'common',
+    description: 'Restores 4 HP. One use.',
+    maxUses: 1,
+    iconKey: 'item_heartdew_potion',
+    price: 16,
+  },
+  star_bomb: {
+    id: 'star_bomb',
+    name: 'Star Bomb',
+    rarity: 'common',
+    description: 'Explodes for 5 AoE dmg & opens secret walls.',
+    maxUses: 1,
+    iconKey: 'item_star_bomb',
+    price: 14,
+  },
+  fairy_dust: {
+    id: 'fairy_dust',
+    name: 'Fairy Dust',
+    rarity: 'common',
+    description: 'Restores 2 stamina & grants Moonblessed.',
+    maxUses: 1,
+    iconKey: 'item_fairy_dust',
+    price: 12,
+  },
+  revive_totem: {
+    id: 'revive_totem',
+    name: 'Revive Totem',
+    rarity: 'rare',
+    description: 'Revives a downed ally (or saves you once).',
+    maxUses: 1,
+    iconKey: 'item_revive_totem',
+    price: 28,
+  },
+  pocket_fireworks: {
+    id: 'pocket_fireworks',
+    name: 'Pocket Fireworks',
+    rarity: 'uncommon',
+    description: 'Fires 8 sparkling bolts around you.',
+    maxUses: 1,
+    iconKey: 'item_pocket_fireworks',
+    price: 18,
+  },
+  moonmilk: {
+    id: 'moonmilk',
+    name: 'Moonmilk',
+    rarity: 'uncommon',
+    description: 'Grants a 3-damage shield.',
+    maxUses: 1,
+    iconKey: 'item_moonmilk',
+    price: 20,
+  },
+  starlight_brew: {
+    id: 'starlight_brew',
+    name: 'Starlight Brew',
+    rarity: 'uncommon',
+    description: 'Deflects bolts 15s',
+    maxUses: 1,
+    iconKey: 'item_starlight_brew',
+    price: 20,
+  },
+  everheart_elixir: {
+    id: 'everheart_elixir',
+    name: 'Everheart Elixir',
+    rarity: 'rare',
+    description: '+2 max hearts 2m',
+    maxUses: 1,
+    iconKey: 'item_everheart_elixir',
+    price: 24,
+  },
+};
+
+export const ARTIFACTS: Record<string, ArtifactDef> = {
+  tiny_comet: {
+    id: 'tiny_comet',
+    name: 'Tiny Comet',
+    rarity: 'uncommon',
+    description: 'Dodging leaves a damaging star trail (5 dodges).',
+    maxUses: 5,
+    triggerType: 'dodge',
+    iconKey: 'item_tiny_comet',
+    price: 24,
+  },
+  glass_heart: {
+    id: 'glass_heart',
+    name: 'Glass Heart',
+    rarity: 'rare',
+    description: 'Negates the next hit completely (1 hit).',
+    maxUses: 1,
+    triggerType: 'hit',
+    iconKey: 'item_glass_heart',
+    price: 26,
+  },
+  wandering_eye: {
+    id: 'wandering_eye',
+    name: 'Wandering Eye',
+    rarity: 'uncommon',
+    description: 'Reveals secret rooms on this floor.',
+    maxUses: 1,
+    triggerType: 'level',
+    iconKey: 'item_wandering_eye',
+    price: 22,
+  },
+  lucky_acorn: {
+    id: 'lucky_acorn',
+    name: 'Lucky Acorn',
+    rarity: 'common',
+    description: 'Bonus shards on room clears (5 rooms).',
+    maxUses: 5,
+    triggerType: 'room_clear',
+    iconKey: 'item_lucky_acorn',
+    price: 18,
+  },
+  moth_crown: {
+    id: 'moth_crown',
+    name: 'Moth Crown',
+    rarity: 'uncommon',
+    description: 'Attracts nearby shards & hearts (5 rooms).',
+    maxUses: 5,
+    triggerType: 'room_clear',
+    iconKey: 'item_moth_crown',
+    price: 20,
+  },
+  starseed: {
+    id: 'starseed',
+    name: 'Starseed',
+    rarity: 'rare',
+    description: 'Heals 1 HP after elite/boss kills (3 triggers).',
+    maxUses: 3,
+    triggerType: 'elite_kill',
+    iconKey: 'item_starseed',
+    price: 28,
+  },
+};
+
+export const CONSUMABLE_IDS = Object.keys(CONSUMABLES);
+export const ARTIFACT_IDS = Object.keys(ARTIFACTS);
+
+export interface StatusEffectMeta {
+  id: StatusEffectId;
+  label: string;
+  isPositive: boolean;
+  color: number;
+}
+
+export const STATUS_EFFECTS: Record<StatusEffectId, StatusEffectMeta> = {
+  moonblessed: { id: 'moonblessed', label: 'Moonblessed', isPositive: true, color: 0xa0c4ff },
+  starlit: { id: 'starlit', label: 'Starlit', isPositive: true, color: 0xffe066 },
+  featherlight: { id: 'featherlight', label: 'Featherlight', isPositive: true, color: 0xd0f4de },
+  warmth: { id: 'warmth', label: 'Warmth', isPositive: true, color: 0xffadad },
+  sparkling: { id: 'sparkling', label: 'Sparkling', isPositive: true, color: 0x70f8ff },
+  starward: { id: 'starward', label: 'Starward', isPositive: true, color: 0x6ef3ff },
+  vitality: { id: 'vitality', label: 'Vitality', isPositive: true, color: 0xff75c3 },
+  burning: { id: 'burning', label: 'Burning', isPositive: false, color: 0xff6b35 },
+  poisoned: { id: 'poisoned', label: 'Poisoned', isPositive: false, color: 0x9ef01a },
+  sluggish: { id: 'sluggish', label: 'Sluggish', isPositive: false, color: 0x9d4edd },
+  fragile: { id: 'fragile', label: 'Fragile', isPositive: false, color: 0xff758f },
+  blinded: { id: 'blinded', label: 'Blinded', isPositive: false, color: 0x4a4e69 },
+};

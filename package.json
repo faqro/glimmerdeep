@@ -1,0 +1,25 @@
+{
+  "name": "glimmerdeep",
+  "version": "1.0.0",
+  "description": "Glimmerdeep - 16-bit top-down action roguelike",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "phaser": "^4.2.1",
+    "trystero": "^0.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}
