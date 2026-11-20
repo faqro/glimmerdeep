@@ -44,13 +44,17 @@ interface ActiveEnemy {
   burnTickMs: number;
   hitFlashMs: number;
   phase: number;
+  targetX?: number;
+  targetY?: number;
 }
 
 interface ActiveProjectile {
+  uid: string;
   sprite: Phaser.Physics.Arcade.Sprite;
   fromPlayer: boolean;
   ownerId: string;
   damage: number;
+  color: number;
   vx: number;
   vy: number;
   lifeMs: number;
@@ -65,6 +69,10 @@ interface ActiveProjectile {
   startX?: number;
   startY?: number;
   hitUids: Set<string>;
+  netSynced?: boolean;
+  fromRemoteEvent?: boolean;
+  targetX?: number;
+  targetY?: number;
 }
 
 interface ActiveHazard {
@@ -106,6 +114,7 @@ export class GameScene extends Phaser.Scene {
   private playerState!: PlayerStateSnapshot;
   private remotePlayers = new Map<string, PlayerStateSnapshot>();
   private remoteSprites = new Map<string, { sprite: Phaser.GameObjects.Sprite; label: Phaser.GameObjects.BitmapText }>();
+  private disconnectedPlayers = new Map<string, { levelIndex: number; snapshot: PlayerStateSnapshot }>();
 
   private wallGroup!: Phaser.Physics.Arcade.StaticGroup;
   private crateGroup!: Phaser.Physics.Arcade.StaticGroup;
@@ -157,24 +166,41 @@ export class GameScene extends Phaser.Scene {
   private totalEnemiesDefeated = 0;
   private netSyncTimerMs = 0;
   private plateCooldownMs = 0;
+  private blockPushCooldownMs = 0;
+  private projSeq = 0;
 
   private specialObjs: {
     merchant?: Phaser.GameObjects.Image;
     shrine?: Phaser.GameObjects.Image;
     altar?: Phaser.GameObjects.Image;
     portal?: Phaser.GameObjects.Image;
+    beamGfx?: Phaser.GameObjects.Graphics;
+    beamTarget?: Phaser.GameObjects.Image;
+    resetRune?: { sprite: Phaser.GameObjects.Image; x: number; y: number };
     plates: Array<{ id: string; order: number; sprite: Phaser.GameObjects.Image; x: number; y: number }>;
-  } = { plates: [] };
+    mirrors: Array<{ id: string; sprite: Phaser.GameObjects.Image; x: number; y: number }>;
+    blocks: Array<{ id: string; sprite: Phaser.Physics.Arcade.Sprite }>;
+    blockGoals: Array<{ tx: number; ty: number; sprite: Phaser.GameObjects.Image }>;
+  } = { plates: [], mirrors: [], blocks: [], blockGoals: [] };
 
   constructor() {
     super({ key: 'GameScene' });
   }
 
-  create(data: { levelIndex?: number; floorSeed?: number; resetRun?: boolean; carryPlayer?: PlayerStateSnapshot }): void {
+  create(data: {
+    levelIndex?: number;
+    floorSeed?: number;
+    resetRun?: boolean;
+    carryPlayer?: PlayerStateSnapshot;
+    restoreReconnect?: boolean;
+  }): void {
     this.levelIndex = data.levelIndex ?? 0;
     this.floorSeed = data.floorSeed ?? Math.floor(Math.random() * 900000) + 100000;
     this.transitioningLevel = false;
     this.paused = false;
+    this.remotePlayers.clear();
+    this.remoteSprites.clear();
+    this.disconnectedPlayers.clear();
 
     if (data.resetRun || !data.carryPlayer) {
       this.totalShardsCollected = 0;
@@ -206,6 +232,14 @@ export class GameScene extends Phaser.Scene {
         animState: 'idle',
         flipX: false,
       };
+    } else if (data.restoreReconnect) {
+      net.localPaletteId = data.carryPlayer.paletteId;
+      this.playerState = {
+        ...data.carryPlayer,
+        id: net.localPeerId,
+        name: net.localName,
+        inExitReady: false,
+      };
     } else {
       this.playerState = {
         ...data.carryPlayer,
@@ -219,7 +253,11 @@ export class GameScene extends Phaser.Scene {
 
     const playerCount = net.mode === 'solo' ? 1 : Math.max(1, net.players.size);
     this.floor = DungeonGenerator.generateFloor(this.levelIndex, this.floorSeed, playerCount);
-    this.currentRoom = this.floor.rooms[2][0];
+    const spawnGx = data.restoreReconnect ? this.playerState.gx : 0;
+    const spawnGy = data.restoreReconnect ? this.playerState.gy : 2;
+    const spawnX = data.restoreReconnect ? this.playerState.x : 88;
+    const spawnY = data.restoreReconnect ? this.playerState.y : 88;
+    this.currentRoom = this.floor.rooms[spawnGy][spawnGx];
 
     this.roomGroup = this.add.group();
     this.wallGroup = this.physics.add.staticGroup();
@@ -255,11 +293,14 @@ export class GameScene extends Phaser.Scene {
       this.scene.start('MenuScene');
     });
 
-    this.loadRoom(0, 2, 88, 88);
+    this.loadRoom(spawnGx, spawnGy, spawnX, spawnY);
 
     const biome = BIOMES[Math.min(this.levelIndex, BIOMES.length - 1)];
     this.time.delayedCall(120, () => {
-      this.ui.showToast(`Floor ${biome.level}: ${biome.name}`, '#f49ac1');
+      this.ui.showToast(
+        data.restoreReconnect ? 'Reconnected to run!' : `Floor ${biome.level}: ${biome.name}`,
+        data.restoreReconnect ? '#66ffd9' : '#f49ac1'
+      );
     });
   }
 
@@ -330,7 +371,55 @@ export class GameScene extends Phaser.Scene {
 
   private setupNetworking(): void {
     net.onRemotePlayerState = (state, peerId) => {
-      this.remotePlayers.set(peerId, state);
+      if (net.players.has(peerId)) {
+        this.remotePlayers.set(peerId, state);
+      }
+    };
+
+    net.onPeerJoined = (peerId, info) => {
+      if (net.mode !== 'host') return;
+      const saved = this.disconnectedPlayers.get(info.name);
+      if (saved && saved.levelIndex === this.levelIndex) {
+        this.disconnectedPlayers.delete(info.name);
+        net.sendStartToPeer(peerId, this.floorSeed, this.levelIndex, saved.snapshot);
+        this.ui.showToast(`${info.name} reconnected!`, '#66ffd9');
+      } else {
+        net.sendStartToPeer(peerId, this.floorSeed, this.levelIndex);
+        this.ui.showToast(`${info.name} joined!`, '#66ffd9');
+      }
+    };
+
+    net.onPeerLeft = (peerId, leaving) => {
+      const lastState = this.remotePlayers.get(peerId);
+      if (lastState) {
+        this.disconnectedPlayers.set(lastState.name, {
+          levelIndex: this.levelIndex,
+          snapshot: {
+            ...lastState,
+            inventory: lastState.inventory.map((i) => (i ? { ...i } : null)),
+            statusEffects: lastState.statusEffects.map((s) => ({ ...s })),
+          },
+        });
+      }
+      this.remotePlayers.delete(peerId);
+      const vis = this.remoteSprites.get(peerId);
+      if (vis) {
+        vis.sprite.destroy();
+        vis.label.destroy();
+        this.remoteSprites.delete(peerId);
+      }
+      const name = leaving?.name ?? lastState?.name ?? 'A player';
+      this.ui.showToast(`${name} disconnected`, '#ff5d8f');
+    };
+
+    net.onHostMigrated = (newHostPeerId, isLocalNewHost) => {
+      if (isLocalNewHost) {
+        this.netSyncTimerMs = 65;
+        this.ui.showToast('Host disconnected! You are now Host', '#ffe066');
+      } else {
+        const hostName = net.players.get(newHostPeerId)?.name ?? 'Teammate';
+        this.ui.showToast(`Host migrated to ${hostName}`, '#ffe066');
+      }
     };
 
     net.onRemoteAttack = (ev, peerId) => {
@@ -342,20 +431,24 @@ export class GameScene extends Phaser.Scene {
     net.onRemoteInteract = (ev) => {
       if (ev.kind === 'revive' && (ev.targetId === this.playerState.id || ev.targetId === 'all') && this.playerState.downed) {
         this.reviveSelf();
-      } else if (ev.kind === 'drop' && ev.itemId && ev.targetId) {
+      } else if (ev.kind === 'drop' && ev.targetId) {
         const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
-        if (targetRoom) {
+        const lKind = ev.lootKind ?? 'item';
+        if (targetRoom && !targetRoom.loot.some((l) => l.uid === ev.targetId)) {
           targetRoom.loot.push({
             uid: ev.targetId,
-            kind: 'item',
+            kind: lKind,
             x: ev.x ?? 88,
             y: ev.y ?? 88,
             itemId: ev.itemId,
+            amount: ev.amount,
             uses: ev.uses,
             collected: false,
           });
           if (ev.gx === this.currentRoom.gx && ev.gy === this.currentRoom.gy) {
-            this.createLootObject(ev.targetId, 'item', ev.x ?? 88, ev.y ?? 88, ev.itemId, undefined, ev.uses);
+            if (!this.lootObjs.some((l) => l.uid === ev.targetId)) {
+              this.createLootObject(ev.targetId, lKind, ev.x ?? 88, ev.y ?? 88, ev.itemId, ev.amount, ev.uses);
+            }
           }
         }
       } else if (ev.kind === 'pickup' && ev.targetId) {
@@ -365,7 +458,93 @@ export class GameScene extends Phaser.Scene {
         const vis = this.lootObjs.find((l) => l.uid === ev.targetId);
         if (vis && !vis.collected) {
           vis.collected = true;
-          vis.sprite.destroy();
+          if (vis.kind === 'chest') vis.sprite.setTexture('obj_chest_open');
+          else vis.sprite.destroy();
+        }
+      } else if (ev.kind === 'buy' && ev.uses !== undefined) {
+        const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
+        const entry = targetRoom?.shopStock?.[ev.uses];
+        if (entry) entry.sold = true;
+        if (ev.gx === this.currentRoom.gx && ev.gy === this.currentRoom.gy && this.ui.isOverlayOpen()) {
+          this.openMerchantShop();
+        }
+      } else if (ev.kind === 'crate' && ev.targetId) {
+        const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
+        if (targetRoom) {
+          if (!targetRoom.brokenCrates) targetRoom.brokenCrates = [];
+          if (!targetRoom.brokenCrates.includes(ev.targetId)) {
+            targetRoom.brokenCrates.push(ev.targetId);
+          }
+          if (ev.gx === this.currentRoom.gx && ev.gy === this.currentRoom.gy) {
+            this.destroyCrateByKey(ev.targetId);
+          }
+        }
+      } else if (ev.kind === 'enemy_hit' && ev.targetId && net.mode === 'host') {
+        const dmg = ev.uses ?? 1;
+        if (ev.gx === this.currentRoom.gx && ev.gy === this.currentRoom.gy) {
+          const ae = this.activeEnemies.find((e) => e.uid === ev.targetId);
+          if (ae && ae.sprite.active) {
+            this.damageEnemy(ae, dmg, ev.x);
+          }
+        } else {
+          const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
+          const re = targetRoom?.enemies.find((e) => e.uid === ev.targetId && e.alive);
+          if (targetRoom && re) {
+            re.hp -= dmg;
+            if (re.hp <= 0) {
+              re.hp = 0;
+              re.alive = false;
+              const def = ENEMIES[re.defId];
+              const bonusShard = this.floor.modifier === 'greedy_shadows' ? 1 : 0;
+              targetRoom.loot.push({
+                uid: `sh_${Date.now()}_${Math.random()}`,
+                kind: 'shard',
+                x: re.x,
+                y: re.y,
+                amount: (def?.shardDrop ?? 2) + bonusShard,
+                collected: false,
+              });
+              if (targetRoom.enemies.every((e) => !e.alive)) {
+                targetRoom.cleared = true;
+                targetRoom.doorsLocked = false;
+              }
+            }
+          }
+        }
+      } else if (ev.kind === 'mirror' && ev.targetId) {
+        const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
+        const mirror = targetRoom?.puzzleBeam?.mirrors.find((m) => m.id === ev.targetId);
+        if (mirror) {
+          mirror.orientation = ev.uses === 0 ? 'slash' : 'backslash';
+          if (ev.gx === this.currentRoom.gx && ev.gy === this.currentRoom.gy) {
+            const vis = this.specialObjs.mirrors.find((m) => m.id === ev.targetId);
+            vis?.sprite.setTexture(`obj_mirror_${mirror.orientation}`);
+            this.updateMirrorBeam(true);
+          }
+        }
+      } else if (ev.kind === 'block' && ev.targetId && ev.x !== undefined && ev.y !== undefined) {
+        const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
+        const block = targetRoom?.puzzleBlock?.blocks.find((b) => b.id === ev.targetId);
+        if (block) {
+          block.tx = ev.x;
+          block.ty = ev.y;
+          if (ev.gx === this.currentRoom.gx && ev.gy === this.currentRoom.gy) {
+            const vis = this.specialObjs.blocks.find((b) => b.id === ev.targetId);
+            vis?.sprite.setPosition(block.tx * 16 + 8, block.ty * 16 + 8);
+            this.refreshBlockGoalVisuals();
+            this.checkBlockPuzzleSolved();
+          }
+        }
+      } else if (ev.kind === 'block_reset') {
+        const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
+        if (targetRoom?.puzzleBlock) {
+          for (const b of targetRoom.puzzleBlock.blocks) {
+            b.tx = b.initialTx;
+            b.ty = b.initialTy;
+          }
+          if (ev.gx === this.currentRoom.gx && ev.gy === this.currentRoom.gy) {
+            this.resetPuzzleBlocks(false);
+          }
         }
       }
     };
@@ -381,28 +560,175 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       for (const p of sync.players) {
-        if (p.id !== this.playerState.id) {
+        if (p.id !== this.playerState.id && net.players.has(p.id)) {
           this.remotePlayers.set(p.id, p);
+        }
+      }
+      for (const peerId of Array.from(this.remotePlayers.keys())) {
+        if (!net.players.has(peerId)) {
+          this.remotePlayers.delete(peerId);
+          const vis = this.remoteSprites.get(peerId);
+          if (vis) {
+            vis.sprite.destroy();
+            vis.label.destroy();
+            this.remoteSprites.delete(peerId);
+          }
         }
       }
       for (const rs of sync.roomStates) {
         const r = this.floor.rooms[rs.gy]?.[rs.gx];
         if (!r) continue;
+        const prevLocked = r.doorsLocked;
+        const prevSecret = r.secretRevealed;
         r.visited = rs.visited;
         r.cleared = rs.cleared;
         r.doorsLocked = rs.doorsLocked;
         r.secretRevealed = rs.secretRevealed;
         r.bossDefeated = rs.bossDefeated;
         r.puzzleSolved = rs.puzzleSolved;
+        if (rs.puzzleMirrors && r.puzzleBeam) {
+          for (const pm of rs.puzzleMirrors) {
+            const m = r.puzzleBeam.mirrors.find((x) => x.id === pm.id);
+            if (m) m.orientation = pm.orientation;
+          }
+        }
+        if (rs.puzzleBlocks && r.puzzleBlock) {
+          for (const pb of rs.puzzleBlocks) {
+            const b = r.puzzleBlock.blocks.find((x) => x.id === pb.id);
+            if (b) {
+              b.tx = pb.tx;
+              b.ty = pb.ty;
+            }
+          }
+        }
+
+        if (rs.brokenCrates) {
+          if (!r.brokenCrates) r.brokenCrates = [];
+          for (const ck of rs.brokenCrates) {
+            if (!r.brokenCrates.includes(ck)) {
+              r.brokenCrates.push(ck);
+              if (r.gx === this.currentRoom.gx && r.gy === this.currentRoom.gy) {
+                this.destroyCrateByKey(ck, false);
+              }
+            }
+          }
+        }
+        if (rs.shopSold && r.shopStock) {
+          for (let si = 0; si < rs.shopSold.length && si < r.shopStock.length; si++) {
+            r.shopStock[si].sold = rs.shopSold[si];
+          }
+        }
+
+        for (const es of rs.enemies) {
+          const re = r.enemies.find((e) => e.uid === es.uid);
+          if (re) {
+            re.x = es.x;
+            re.y = es.y;
+            re.hp = es.hp;
+            re.alive = es.alive;
+          }
+        }
+        for (const ls of rs.loot) {
+          const rl = r.loot.find((l) => l.uid === ls.uid);
+          if (rl) {
+            rl.collected = ls.collected;
+          } else {
+            r.loot.push({
+              uid: ls.uid,
+              kind: ls.kind,
+              x: ls.x,
+              y: ls.y,
+              itemId: ls.itemId,
+              uses: ls.uses,
+              amount: ls.amount,
+              collected: ls.collected,
+            });
+          }
+        }
+
         if (r.gx === this.currentRoom.gx && r.gy === this.currentRoom.gy) {
           for (const es of rs.enemies) {
             const ae = this.activeEnemies.find((e) => e.uid === es.uid);
             if (ae) {
               ae.hp = es.hp;
-              if (!es.alive && ae.sprite.active) {
+              if (es.alive && ae.sprite.active) {
+                ae.targetX = es.x;
+                ae.targetY = es.y;
+              } else if (!es.alive && ae.sprite.active) {
                 ae.sprite.destroy();
               }
             }
+          }
+          this.activeEnemies = this.activeEnemies.filter((e) => e.hp > 0 && e.sprite.active);
+
+          for (const ls of rs.loot) {
+            const existing = this.lootObjs.find((l) => l.uid === ls.uid);
+            if (!existing && !ls.collected) {
+              this.createLootObject(ls.uid, ls.kind, ls.x, ls.y, ls.itemId, ls.amount, ls.uses);
+            } else if (existing && ls.collected && !existing.collected) {
+              existing.collected = true;
+              if (existing.kind === 'chest') existing.sprite.setTexture('obj_chest_open');
+              else existing.sprite.destroy();
+            }
+          }
+
+          if (r.type === 'boss' && r.bossDefeated) {
+            this.spawnExitPortal();
+          }
+          if (prevLocked !== r.doorsLocked || prevSecret !== r.secretRevealed) {
+            this.updateDoorVisuals();
+            if (prevLocked && !r.doorsLocked) SoundSystem.playUnlock();
+          }
+        }
+      }
+
+      // Sync ranged projectiles from host when host is in the same room
+      if (sync.hostGx === this.currentRoom.gx && sync.hostGy === this.currentRoom.gy && sync.projectiles) {
+        const roomProjs = sync.projectiles.filter(
+          (sp) => sp.gx === this.currentRoom.gx && sp.gy === this.currentRoom.gy && sp.ownerId !== this.playerState.id
+        );
+        const activeUids = new Set(roomProjs.map((sp) => sp.uid));
+
+        for (let i = this.projectiles.length - 1; i >= 0; i--) {
+          const p = this.projectiles[i];
+          if (p.fromRemoteEvent || (p.netSynced && !activeUids.has(p.uid))) {
+            p.sprite.destroy();
+            this.projectiles.splice(i, 1);
+          }
+        }
+
+        for (const sp of roomProjs) {
+          const existing = this.projectiles.find((p) => p.netSynced && p.uid === sp.uid);
+          if (existing) {
+            existing.targetX = sp.x;
+            existing.targetY = sp.y;
+            existing.vx = sp.vx;
+            existing.vy = sp.vy;
+            existing.lifeMs = Math.max(existing.lifeMs, 250);
+          } else {
+            const sprite = this.physics.add.sprite(sp.x, sp.y, 'proj_orb').setDepth(11).setTint(sp.color);
+            this.projectiles.push({
+              uid: sp.uid,
+              sprite,
+              fromPlayer: sp.fromPlayer,
+              ownerId: sp.ownerId,
+              damage: sp.damage,
+              color: sp.color,
+              vx: sp.vx,
+              vy: sp.vy,
+              lifeMs: 2600,
+              homing: false,
+              boomerang: false,
+              returning: false,
+              bouncesLeft: 0,
+              slows: false,
+              bubbles: false,
+              burns: !!sp.burns,
+              hitUids: new Set(),
+              netSynced: true,
+              targetX: sp.x,
+              targetY: sp.y,
+            });
           }
         }
       }
@@ -423,7 +749,8 @@ export class GameScene extends Phaser.Scene {
     this.spikePinnedMs = 0;
     this.lootObjs = [];
     this.fireflies = [];
-    this.specialObjs = { plates: [] };
+    this.blockPushCooldownMs = 0;
+    this.specialObjs = { plates: [], mirrors: [], blocks: [], blockGoals: [] };
 
     const room = this.floor.rooms[gy][gx];
     this.currentRoom = room;
@@ -504,8 +831,8 @@ export class GameScene extends Phaser.Scene {
     if (room.connections.west || (room.connections.secretWest && room.secretRevealed)) addDoor('west', 8, 88, 16, 18);
     if (room.connections.east || (room.connections.secretEast && room.secretRevealed)) addDoor('east', 168, 88, 16, 18);
 
-    // Pillars & Props (skip pillars in boss room for clean arena)
-    if (room.type !== 'boss' && room.type !== 'merchant' && room.type !== 'healing') {
+    // Pillars & Props (skip pillars in boss/merchant/healing/puzzle rooms for clean layout)
+    if (room.type !== 'boss' && room.type !== 'merchant' && room.type !== 'healing' && room.type !== 'puzzle') {
       for (const p of template.pillars) {
         const px = p.tx * 16 + 8;
         const py = p.ty * 16 + 8;
@@ -623,15 +950,69 @@ export class GameScene extends Phaser.Scene {
       this.specialObjs.altar = this.add.image(88, 84, 'obj_altar').setDepth(6);
       if (room.eventUsed) this.specialObjs.altar.setAlpha(0.45);
       this.roomGroup.add(this.specialObjs.altar);
-    } else if (room.type === 'puzzle' && room.puzzlePlates) {
-      for (const pl of room.puzzlePlates) {
-        const px = pl.tx * 16 + 8;
-        const py = pl.ty * 16 + 8;
-        const sp = this.add.image(px, py, pl.activated ? 'obj_plate_lit' : 'obj_plate').setDepth(3);
-        const num = addPixelText(this, px, py - 12, `${pl.order}`, 8, 0xffe066, 0.5, 0.5).setDepth(4);
-        this.roomGroup.add(sp);
-        this.roomGroup.add(num);
-        this.specialObjs.plates.push({ id: pl.id, order: pl.order, sprite: sp, x: px, y: py });
+    } else if (room.type === 'puzzle') {
+      if (room.puzzlePlates) {
+        for (const pl of room.puzzlePlates) {
+          const px = pl.tx * 16 + 8;
+          const py = pl.ty * 16 + 8;
+          const sp = this.add.image(px, py, pl.activated ? 'obj_plate_lit' : 'obj_plate').setDepth(3);
+          const num = addPixelText(this, px, py - 12, `${pl.order}`, 8, 0xffe066, 0.5, 0.5).setDepth(4);
+          this.roomGroup.add(sp);
+          this.roomGroup.add(num);
+          this.specialObjs.plates.push({ id: pl.id, order: pl.order, sprite: sp, x: px, y: py });
+        }
+      } else if (room.puzzleBeam) {
+        const beam = room.puzzleBeam;
+        const ex = beam.emitterTx * 16 + 8;
+        const ey = beam.emitterTy * 16 + 8;
+        const emitter = this.add.image(ex, ey, 'obj_emitter').setDepth(5);
+        this.roomGroup.add(emitter);
+
+        const tx = beam.targetTx * 16 + 8;
+        const ty = beam.targetTy * 16 + 8;
+        const target = this.add.image(tx, ty, room.puzzleSolved ? 'obj_beam_target_lit' : 'obj_beam_target').setDepth(5);
+        this.roomGroup.add(target);
+        this.specialObjs.beamTarget = target;
+
+        for (const m of beam.mirrors) {
+          const mx = m.tx * 16 + 8;
+          const my = m.ty * 16 + 8;
+          const sp = this.add.image(mx, my, `obj_mirror_${m.orientation}`).setDepth(5);
+          this.roomGroup.add(sp);
+          this.specialObjs.mirrors.push({ id: m.id, sprite: sp, x: mx, y: my });
+        }
+
+        const beamGfx = this.add.graphics().setDepth(4);
+        this.roomGroup.add(beamGfx);
+        this.specialObjs.beamGfx = beamGfx;
+        this.updateMirrorBeam(false);
+      } else if (room.puzzleBlock) {
+        const bp = room.puzzleBlock;
+        for (const g of bp.goals) {
+          const gx = g.tx * 16 + 8;
+          const gy = g.ty * 16 + 8;
+          const gsp = this.add.image(gx, gy, 'obj_block_goal').setDepth(3);
+          this.roomGroup.add(gsp);
+          this.specialObjs.blockGoals.push({ tx: g.tx, ty: g.ty, sprite: gsp });
+        }
+        for (const b of bp.blocks) {
+          const bx = b.tx * 16 + 8;
+          const by = b.ty * 16 + 8;
+          const bsp = this.physics.add.sprite(bx, by, 'obj_push_block').setDepth(6);
+          bsp.setImmovable(true);
+          bsp.setSize(14, 14);
+          this.physics.add.collider(this.playerSprite, bsp);
+          this.roomGroup.add(bsp);
+          this.specialObjs.blocks.push({ id: b.id, sprite: bsp });
+        }
+        const rx = bp.resetTx * 16 + 8;
+        const ry = bp.resetTy * 16 + 8;
+        const rsp = this.add.image(rx, ry, 'obj_reset_rune').setDepth(3);
+        const rlbl = addPixelText(this, rx, ry - 12, 'RST', 8, 0xff75c3, 0.5, 0.5).setDepth(4);
+        this.roomGroup.add(rsp);
+        this.roomGroup.add(rlbl);
+        this.specialObjs.resetRune = { sprite: rsp, x: rx, y: ry };
+        this.refreshBlockGoalVisuals();
       }
     }
 
@@ -673,31 +1054,63 @@ export class GameScene extends Phaser.Scene {
     this.lootObjs.push({ uid, kind, sprite: sp, itemId, uses, amount, collected: false });
   }
 
-  private spawnPersistentFloorItem(itemId: string, x: number, y: number, uses?: number): void {
-    const uid = `drop_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
+  private spawnRoomLoot(
+    uid: string,
+    kind: 'shard' | 'item' | 'heart' | 'chest',
+    x: number,
+    y: number,
+    itemId?: string,
+    amount?: number,
+    uses?: number,
+    broadcast = true
+  ): void {
     const cx = Phaser.Math.Clamp(Math.round(x), 24, 152);
     const cy = Phaser.Math.Clamp(Math.round(y), 24, 152);
-    this.currentRoom.loot.push({
-      uid,
-      kind: 'item',
-      x: cx,
-      y: cy,
-      itemId,
-      uses,
-      collected: false,
+    if (!this.currentRoom.loot.some((l) => l.uid === uid)) {
+      this.currentRoom.loot.push({
+        uid,
+        kind,
+        x: cx,
+        y: cy,
+        itemId,
+        amount,
+        uses,
+        collected: false,
+      });
+    }
+    if (!this.lootObjs.some((l) => l.uid === uid)) {
+      this.createLootObject(uid, kind, cx, cy, itemId, amount, uses);
+    }
+    if (broadcast && net.mode !== 'solo') {
+      net.broadcastInteract({
+        peerId: this.playerState.id,
+        gx: this.currentRoom.gx,
+        gy: this.currentRoom.gy,
+        kind: 'drop',
+        targetId: uid,
+        lootKind: kind,
+        itemId,
+        amount,
+        uses,
+        x: cx,
+        y: cy,
+      });
+    }
+  }
+
+  private destroyCrateByKey(crateKey: string, spawnParticles = true): void {
+    this.crateGroup.getChildren().forEach((c) => {
+      const cs = c as Phaser.Physics.Arcade.Sprite;
+      if (cs.active && cs.getData('crateKey') === crateKey) {
+        if (spawnParticles) this.spawnParticles(cs.x, cs.y, 0xb08968, 5);
+        cs.destroy();
+      }
     });
-    this.createLootObject(uid, 'item', cx, cy, itemId, undefined, uses);
-    net.broadcastInteract({
-      peerId: this.playerState.id,
-      gx: this.currentRoom.gx,
-      gy: this.currentRoom.gy,
-      kind: 'drop',
-      targetId: uid,
-      itemId,
-      uses,
-      x: cx,
-      y: cy,
-    });
+  }
+
+  private spawnPersistentFloorItem(itemId: string, x: number, y: number, uses?: number): void {
+    const uid = `drop_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
+    this.spawnRoomLoot(uid, 'item', x, y, itemId, undefined, uses, true);
   }
 
   private spawnEnemyEntity(
@@ -1063,12 +1476,18 @@ export class GameScene extends Phaser.Scene {
               if (!this.currentRoom.brokenCrates.includes(ck)) {
                 this.currentRoom.brokenCrates.push(ck);
               }
+              net.broadcastInteract({
+                peerId: this.playerState.id,
+                gx: this.currentRoom.gx,
+                gy: this.currentRoom.gy,
+                kind: 'crate',
+                targetId: ck,
+              });
             }
             this.spawnParticles(cs.x, cs.y, 0xb08968, 5);
             if (Math.random() < 0.4) {
               const uid = `cr_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
-              this.currentRoom.loot.push({ uid, kind: 'shard', x: cs.x, y: cs.y, amount: 1, collected: false });
-              this.createLootObject(uid, 'shard', cs.x, cs.y, undefined, 1);
+              this.spawnRoomLoot(uid, 'shard', cs.x, cs.y, undefined, 1);
             }
             cs.destroy();
           }
@@ -1131,10 +1550,12 @@ export class GameScene extends Phaser.Scene {
   ): void {
     const sp = this.physics.add.sprite(x, y, 'proj_orb').setDepth(11).setTint(color);
     this.projectiles.push({
+      uid: `p_${this.playerState.id}_${++this.projSeq}`,
       sprite: sp,
       fromPlayer: true,
       ownerId,
       damage,
+      color,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
       lifeMs: boomerang ? 1200 : 1600,
@@ -1149,6 +1570,7 @@ export class GameScene extends Phaser.Scene {
       startX: x,
       startY: y,
       hitUids: new Set(),
+      fromRemoteEvent: ownerId !== this.playerState.id,
     });
   }
 
@@ -1163,10 +1585,12 @@ export class GameScene extends Phaser.Scene {
   ): void {
     const sp = this.physics.add.sprite(x, y, 'proj_orb').setDepth(11).setTint(color);
     this.projectiles.push({
+      uid: `ep_${++this.projSeq}`,
       sprite: sp,
       fromPlayer: false,
       ownerId: 'enemy',
       damage,
+      color,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
       lifeMs: 2600,
@@ -1182,12 +1606,26 @@ export class GameScene extends Phaser.Scene {
   }
 
   private damageEnemy(enemy: ActiveEnemy, dmg: number, knockbackAngle?: number): void {
-    enemy.hp -= dmg;
     enemy.hitFlashMs = 120;
     enemy.sprite.setTint(0xffffff);
     SoundSystem.playHit();
     this.spawnParticles(enemy.sprite.x, enemy.sprite.y, 0xf49ac1, 4);
 
+    if (net.mode === 'client') {
+      enemy.hp = Math.max(0, enemy.hp - dmg);
+      net.broadcastInteract({
+        peerId: this.playerState.id,
+        gx: this.currentRoom.gx,
+        gy: this.currentRoom.gy,
+        kind: 'enemy_hit',
+        targetId: enemy.uid,
+        uses: dmg,
+        x: knockbackAngle,
+      });
+      return;
+    }
+
+    enemy.hp -= dmg;
     if (knockbackAngle !== undefined && !enemy.isBoss) {
       enemy.sprite.x += Math.cos(knockbackAngle) * 14;
       enemy.sprite.y += Math.sin(knockbackAngle) * 14;
@@ -1216,21 +1654,21 @@ export class GameScene extends Phaser.Scene {
       this.updateDoorVisuals();
       SoundSystem.playUnlock();
       this.spawnExitPortal();
-      this.createLootObject(`boss_sh_${Date.now()}`, 'shard', ex - 16, ey, undefined, 12);
-      this.createLootObject(`boss_itm_${Date.now()}`, 'item', ex + 16, ey, rollRandomItemId(new SeededRandom(Date.now())));
+      this.spawnRoomLoot(`boss_sh_${Date.now()}`, 'shard', ex - 16, ey, undefined, 12);
+      this.spawnRoomLoot(`boss_itm_${Date.now()}`, 'item', ex + 16, ey, rollRandomItemId(new SeededRandom(Date.now())));
       this.triggerStarseed();
       return;
     }
 
     const def = ENEMIES[enemy.defId];
     const bonusShard = this.floor.modifier === 'greedy_shadows' ? 1 : 0;
-    this.createLootObject(`sh_${Date.now()}_${Math.random()}`, 'shard', ex, ey, undefined, (def?.shardDrop ?? 2) + bonusShard);
+    this.spawnRoomLoot(`sh_${Date.now()}_${Math.random()}`, 'shard', ex, ey, undefined, (def?.shardDrop ?? 2) + bonusShard);
     if (Math.random() < 0.18) {
-      this.createLootObject(`ht_${Date.now()}_${Math.random()}`, 'heart', ex + 8, ey);
+      this.spawnRoomLoot(`ht_${Date.now()}_${Math.random()}`, 'heart', ex + 8, ey);
     }
     if (enemy.isElite) {
       this.triggerStarseed();
-      this.createLootObject(`el_itm_${Date.now()}`, 'item', ex - 10, ey, rollRandomItemId(new SeededRandom(Date.now())));
+      this.spawnRoomLoot(`el_itm_${Date.now()}`, 'item', ex - 10, ey, rollRandomItemId(new SeededRandom(Date.now())));
     }
 
     if (this.activeEnemies.length === 0) {
@@ -1299,12 +1737,19 @@ export class GameScene extends Phaser.Scene {
           l.sprite.setTexture('obj_chest_open');
           const roomLoot = this.currentRoom.loot.find((rl) => rl.uid === l.uid);
           if (roomLoot) roomLoot.collected = true;
+          net.broadcastInteract({
+            peerId: this.playerState.id,
+            gx: this.currentRoom.gx,
+            gy: this.currentRoom.gy,
+            kind: 'pickup',
+            targetId: l.uid,
+          });
           SoundSystem.playUnlock();
           const rng = new SeededRandom((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0);
           const itemId = rollRandomItemId(rng);
-          this.createLootObject(`ch_itm_${Date.now()}`, 'item', l.sprite.x, l.sprite.y + 14, itemId);
+          this.spawnRoomLoot(`ch_itm_${Date.now()}`, 'item', l.sprite.x, l.sprite.y + 14, itemId);
           const extra = this.floor.modifier === 'starfall' ? 6 : 3;
-          this.createLootObject(`ch_sh_${Date.now()}`, 'shard', l.sprite.x - 14, l.sprite.y + 8, undefined, extra);
+          this.spawnRoomLoot(`ch_sh_${Date.now()}`, 'shard', l.sprite.x - 14, l.sprite.y + 8, undefined, extra);
           return;
         }
         if (l.kind === 'item' && l.itemId) {
@@ -1366,6 +1811,47 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    // 6b. Mirror Rotation (Mirror/Beam Puzzle)
+    if (this.currentRoom.type === 'puzzle' && !this.currentRoom.puzzleSolved && this.currentRoom.puzzleBeam) {
+      for (const mVis of this.specialObjs.mirrors) {
+        if (Phaser.Math.Distance.Between(px, py, mVis.x, mVis.y) < 24) {
+          const model = this.currentRoom.puzzleBeam.mirrors.find((m) => m.id === mVis.id);
+          if (model) {
+            model.orientation = model.orientation === 'slash' ? 'backslash' : 'slash';
+            mVis.sprite.setTexture(`obj_mirror_${model.orientation}`);
+            SoundSystem.playPickup();
+            net.broadcastInteract({
+              peerId: this.playerState.id,
+              gx: this.currentRoom.gx,
+              gy: this.currentRoom.gy,
+              kind: 'mirror',
+              targetId: model.id,
+              uses: model.orientation === 'slash' ? 0 : 1,
+            });
+            this.updateMirrorBeam(true);
+            return;
+          }
+        }
+      }
+    }
+
+    // 6c. Reset Blocks (Block-Push Puzzle)
+    if (
+      this.currentRoom.type === 'puzzle' &&
+      !this.currentRoom.puzzleSolved &&
+      this.specialObjs.resetRune &&
+      Phaser.Math.Distance.Between(px, py, this.specialObjs.resetRune.x, this.specialObjs.resetRune.y) < 26
+    ) {
+      this.resetPuzzleBlocks(true);
+      net.broadcastInteract({
+        peerId: this.playerState.id,
+        gx: this.currentRoom.gx,
+        gy: this.currentRoom.gy,
+        kind: 'block_reset',
+      });
+      return;
+    }
+
     // 7. Fallback: if no world object is in range and active slot is a consumable, use it with E
     const activeItem = this.playerState.inventory[this.playerState.activeSlot];
     if (activeItem && activeItem.category === 'consumable') {
@@ -1386,6 +1872,13 @@ export class GameScene extends Phaser.Scene {
       if (!newItem) return;
       this.playerState.shards -= entry.price;
       entry.sold = true;
+      net.broadcastInteract({
+        peerId: this.playerState.id,
+        gx: this.currentRoom.gx,
+        gy: this.currentRoom.gy,
+        kind: 'buy',
+        uses: idx,
+      });
       const res = addItemToSlots(this.playerState.inventory, this.playerState.activeSlot, newItem);
       if (res.replaced) {
         this.spawnPersistentFloorItem(res.replaced.id, this.playerSprite.x, this.playerSprite.y + 12, res.replaced.uses);
@@ -1410,7 +1903,7 @@ export class GameScene extends Phaser.Scene {
       if (this.playerState.shards >= 5) {
         this.playerState.shards -= 5;
         const itemId = rollRandomItemId(new SeededRandom(Date.now()));
-        this.createLootObject(`well_${Date.now()}`, 'item', 88, 102, itemId);
+        this.spawnRoomLoot(`well_${Date.now()}`, 'item', 88, 102, itemId);
         SoundSystem.playPickup();
         this.ui.showToast('Wishing Well granted a gift!', '#ffe066');
       } else {
@@ -1421,7 +1914,7 @@ export class GameScene extends Phaser.Scene {
     } else if (kind === 'cursed_altar') {
       this.playerState.hp = Math.max(1, this.playerState.hp - 2);
       const itemId = rollRandomItemId(new SeededRandom(Date.now()));
-      this.createLootObject(`altar_${Date.now()}`, 'item', 88, 102, itemId);
+      this.spawnRoomLoot(`altar_${Date.now()}`, 'item', 88, 102, itemId);
       SoundSystem.playHit();
       this.ui.showToast('Sacrificed 2 HP for an item!', '#ff75c3');
     } else {
@@ -1600,6 +2093,7 @@ export class GameScene extends Phaser.Scene {
     this.invulnMs = Math.max(0, this.invulnMs - delta);
     this.doorCooldownMs = Math.max(0, this.doorCooldownMs - delta);
     this.plateCooldownMs = Math.max(0, this.plateCooldownMs - delta);
+    this.blockPushCooldownMs = Math.max(0, this.blockPushCooldownMs - delta);
 
     // Status effects tick
     const hadVitality = StatusEffectManager.has(this.playerState.statusEffects, 'vitality');
@@ -1638,6 +2132,7 @@ export class GameScene extends Phaser.Scene {
     this.updateProjectiles(delta);
     this.updateHazardsAndLoot(delta);
     this.updatePuzzlePlates();
+    this.updatePuzzleBlocks();
     this.checkDoorTransitions();
     this.updateFireflies(delta);
     this.syncMultiplayer(delta);
@@ -1747,13 +2242,52 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateEnemies(time: number, delta: number): void {
-    if (net.mode === 'client') return;
+    if (net.mode === 'client') {
+      const lerpFactor = 1 - Math.exp(-delta * 0.018);
+      for (const e of this.activeEnemies) {
+        if (!e.sprite.active) continue;
+        e.sprite.setFrame(Math.floor(time / 280) % 2);
+        if (e.targetX !== undefined && e.targetY !== undefined) {
+          const dist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, e.targetX, e.targetY);
+          if (dist > 48) {
+            e.sprite.setPosition(e.targetX, e.targetY);
+          } else if (dist > 0.2) {
+            e.sprite.setPosition(
+              Phaser.Math.Linear(e.sprite.x, e.targetX, lerpFactor),
+              Phaser.Math.Linear(e.sprite.y, e.targetY, lerpFactor)
+            );
+          }
+        }
+        const playerDist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, this.playerSprite.x, this.playerSprite.y);
+        if (playerDist < (e.isBoss ? 20 : 12)) {
+          this.damagePlayer(e.damage);
+        }
+      }
+      return;
+    }
 
-    const px = this.playerSprite.x;
-    const py = this.playerSprite.y;
+    const hostX = this.playerSprite.x;
+    const hostY = this.playerSprite.y;
+    const roomAllies = Array.from(this.remotePlayers.values()).filter(
+      (p) => !p.downed && p.gx === this.currentRoom.gx && p.gy === this.currentRoom.gy
+    );
 
     for (const e of [...this.activeEnemies]) {
       if (!e.sprite.active) continue;
+
+      let px = hostX;
+      let py = hostY;
+      let bestDist = this.playerState.downed
+        ? Infinity
+        : Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, hostX, hostY);
+      for (const ally of roomAllies) {
+        const d = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, ally.x, ally.y);
+        if (d < bestDist) {
+          bestDist = d;
+          px = ally.x;
+          py = ally.y;
+        }
+      }
 
       if (e.hitFlashMs > 0) {
         e.hitFlashMs -= delta;
@@ -1788,8 +2322,9 @@ export class GameScene extends Phaser.Scene {
       const dist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, px, py);
       const angle = Phaser.Math.Angle.Between(e.sprite.x, e.sprite.y, px, py);
 
-      // Contact damage
-      if (dist < (e.isBoss ? 20 : 12)) {
+      // Contact damage against local host player
+      const hostDist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, hostX, hostY);
+      if (hostDist < (e.isBoss ? 20 : 12)) {
         this.damagePlayer(e.damage);
       }
 
@@ -1995,7 +2530,18 @@ export class GameScene extends Phaser.Scene {
         p.vy = Math.sin(retA) * 205;
       }
 
-      p.sprite.setVelocity(p.vx, p.vy);
+      if (p.netSynced && p.targetX !== undefined && p.targetY !== undefined) {
+        const dt = delta / 1000;
+        p.targetX += p.vx * dt;
+        p.targetY += p.vy * dt;
+        const t = 1 - Math.exp(-delta * 0.024);
+        const nx = Phaser.Math.Linear(p.sprite.x, p.targetX, t);
+        const ny = Phaser.Math.Linear(p.sprite.y, p.targetY, t);
+        p.sprite.setVelocity(0, 0);
+        p.sprite.setPosition(nx, ny);
+      } else {
+        p.sprite.setVelocity(p.vx, p.vy);
+      }
 
       // Wall bounce or destroy
       if (p.sprite.x < 16 || p.sprite.x > 160 || p.sprite.y < 16 || p.sprite.y > 160) {
@@ -2145,6 +2691,13 @@ export class GameScene extends Phaser.Scene {
         l.sprite.destroy();
         const roomLoot = this.currentRoom.loot.find((rl) => rl.uid === l.uid);
         if (roomLoot) roomLoot.collected = true;
+        net.broadcastInteract({
+          peerId: this.playerState.id,
+          gx: this.currentRoom.gx,
+          gy: this.currentRoom.gy,
+          kind: 'pickup',
+          targetId: l.uid,
+        });
         if (l.kind === 'shard') {
           const amt = l.amount ?? 1;
           this.playerState.shards += amt;
@@ -2175,12 +2728,7 @@ export class GameScene extends Phaser.Scene {
           sp.sprite.setTexture('obj_plate_lit');
           SoundSystem.playPickup();
           if (plates.every((p) => p.activated)) {
-            this.currentRoom.puzzleSolved = true;
-            this.currentRoom.cleared = true;
-            SoundSystem.playUnlock();
-            this.ui.showToast('Puzzle solved!', '#66ffd9');
-            const itemId = rollRandomItemId(new SeededRandom((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0));
-            this.createLootObject(`puz_${Date.now()}`, 'item', 88, 88, itemId);
+            this.solvePuzzle('Puzzle solved!');
           }
         } else {
           // Reset sequence
@@ -2190,6 +2738,199 @@ export class GameScene extends Phaser.Scene {
           this.ui.showToast('Wrong order! Step 1 -> 2 -> 3', '#ff5d8f');
         }
       }
+    }
+  }
+
+  private solvePuzzle(message: string): void {
+    if (this.currentRoom.puzzleSolved) return;
+    this.currentRoom.puzzleSolved = true;
+    this.currentRoom.cleared = true;
+    SoundSystem.playUnlock();
+    this.ui.showToast(message, '#66ffd9');
+    if (net.mode !== 'client') {
+      const itemId = rollRandomItemId(new SeededRandom((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0));
+      this.spawnRoomLoot(`puz_${Date.now()}`, 'item', 88, 88, itemId);
+    }
+  }
+
+  private updateMirrorBeam(checkSolve: boolean): void {
+    const beam = this.currentRoom.puzzleBeam;
+    const gfx = this.specialObjs.beamGfx;
+    if (!beam || !gfx) return;
+
+    gfx.clear();
+
+    const dirVec: Record<Direction, { dx: number; dy: number }> = {
+      north: { dx: 0, dy: -1 },
+      south: { dx: 0, dy: 1 },
+      east: { dx: 1, dy: 0 },
+      west: { dx: -1, dy: 0 },
+    };
+
+    let tx = beam.emitterTx;
+    let ty = beam.emitterTy;
+    let { dx, dy } = dirVec[beam.emitterDir];
+    const points: Array<{ x: number; y: number }> = [{ x: tx * 16 + 8, y: ty * 16 + 8 }];
+    let hitTarget = false;
+
+    for (let step = 0; step < 32; step++) {
+      tx += dx;
+      ty += dy;
+      if (tx <= 0 || tx >= 10 || ty <= 0 || ty >= 10) {
+        points.push({ x: tx * 16 + 8 - dx * 6, y: ty * 16 + 8 - dy * 6 });
+        break;
+      }
+      points.push({ x: tx * 16 + 8, y: ty * 16 + 8 });
+
+      if (tx === beam.targetTx && ty === beam.targetTy) {
+        hitTarget = true;
+        break;
+      }
+
+      const mirror = beam.mirrors.find((m) => m.tx === tx && m.ty === ty);
+      if (mirror) {
+        if (mirror.orientation === 'slash') {
+          const ndx = -dy;
+          const ndy = -dx;
+          dx = ndx;
+          dy = ndy;
+        } else {
+          const ndx = dy;
+          const ndy = dx;
+          dx = ndx;
+          dy = ndy;
+        }
+      }
+    }
+
+    // Outer glow + inner bright beam
+    gfx.lineStyle(4, hitTarget ? 0x66ffd9 : 0x6ef3ff, 0.35);
+    gfx.beginPath();
+    gfx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) gfx.lineTo(points[i].x, points[i].y);
+    gfx.strokePath();
+
+    gfx.lineStyle(1.5, 0xffffff, 0.95);
+    gfx.beginPath();
+    gfx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) gfx.lineTo(points[i].x, points[i].y);
+    gfx.strokePath();
+
+    if (hitTarget) {
+      this.specialObjs.beamTarget?.setTexture('obj_beam_target_lit');
+      if (checkSolve && !this.currentRoom.puzzleSolved) {
+        this.solvePuzzle('Beam aligned! Puzzle solved!');
+      }
+    } else {
+      this.specialObjs.beamTarget?.setTexture('obj_beam_target');
+    }
+  }
+
+  private updatePuzzleBlocks(): void {
+    if (
+      this.currentRoom.type !== 'puzzle' ||
+      this.currentRoom.puzzleKind !== 'block_push' ||
+      this.currentRoom.puzzleSolved ||
+      this.blockPushCooldownMs > 0 ||
+      this.playerState.downed
+    ) {
+      return;
+    }
+    const bp = this.currentRoom.puzzleBlock;
+    if (!bp) return;
+
+    let moveX = 0;
+    let moveY = 0;
+    if (this.keys.a.isDown || this.keys.left.isDown) moveX -= 1;
+    if (this.keys.d.isDown || this.keys.right.isDown) moveX += 1;
+    if (this.keys.w.isDown || this.keys.up.isDown) moveY -= 1;
+    if (this.keys.s.isDown || this.keys.down.isDown) moveY += 1;
+    if (moveX === 0 && moveY === 0) return;
+
+    const px = this.playerSprite.x;
+    const py = this.playerSprite.y;
+
+    for (const bVis of this.specialObjs.blocks) {
+      const model = bp.blocks.find((b) => b.id === bVis.id);
+      if (!model) continue;
+      const bx = bVis.sprite.x;
+      const by = bVis.sprite.y;
+      const dx = bx - px;
+      const dy = by - py;
+      if (Math.hypot(dx, dy) > 19) continue;
+
+      let stepX = 0;
+      let stepY = 0;
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        stepX = dx > 0 ? 1 : -1;
+        if (moveX !== stepX) continue;
+      } else {
+        stepY = dy > 0 ? 1 : -1;
+        if (moveY !== stepY) continue;
+      }
+
+      const ntx = model.tx + stepX;
+      const nty = model.ty + stepY;
+      if (ntx < 1 || ntx > 9 || nty < 1 || nty > 9) continue;
+      if (bp.blocks.some((other) => other.id !== model.id && other.tx === ntx && other.ty === nty)) continue;
+
+      model.tx = ntx;
+      model.ty = nty;
+      this.blockPushCooldownMs = 210;
+      this.tweens.add({
+        targets: bVis.sprite,
+        x: ntx * 16 + 8,
+        y: nty * 16 + 8,
+        duration: 110,
+        ease: 'Quad.easeOut',
+      });
+      SoundSystem.playSwing();
+      net.broadcastInteract({
+        peerId: this.playerState.id,
+        gx: this.currentRoom.gx,
+        gy: this.currentRoom.gy,
+        kind: 'block',
+        targetId: model.id,
+        x: ntx,
+        y: nty,
+      });
+      this.refreshBlockGoalVisuals();
+      this.checkBlockPuzzleSolved();
+      break;
+    }
+  }
+
+  private resetPuzzleBlocks(playSound: boolean): void {
+    const bp = this.currentRoom.puzzleBlock;
+    if (!bp) return;
+    for (const b of bp.blocks) {
+      b.tx = b.initialTx;
+      b.ty = b.initialTy;
+      const vis = this.specialObjs.blocks.find((v) => v.id === b.id);
+      vis?.sprite.setPosition(b.tx * 16 + 8, b.ty * 16 + 8);
+    }
+    this.refreshBlockGoalVisuals();
+    if (playSound) {
+      SoundSystem.playPickup();
+      this.ui.showToast('Blocks reset!', '#ff75c3');
+    }
+  }
+
+  private refreshBlockGoalVisuals(): void {
+    const bp = this.currentRoom.puzzleBlock;
+    if (!bp) return;
+    for (const gVis of this.specialObjs.blockGoals) {
+      const occupied = bp.blocks.some((b) => b.tx === gVis.tx && b.ty === gVis.ty);
+      gVis.sprite.setTexture(occupied ? 'obj_block_goal_lit' : 'obj_block_goal');
+    }
+  }
+
+  private checkBlockPuzzleSolved(): void {
+    const bp = this.currentRoom.puzzleBlock;
+    if (!bp || this.currentRoom.puzzleSolved) return;
+    const allCovered = bp.goals.every((g) => bp.blocks.some((b) => b.tx === g.tx && b.ty === g.ty));
+    if (allCovered) {
+      this.solvePuzzle('Blocks aligned! Puzzle solved!');
     }
   }
 
@@ -2246,6 +2987,19 @@ export class GameScene extends Phaser.Scene {
   private syncMultiplayer(delta: number): void {
     if (net.mode === 'solo') return;
 
+    // Prune any disconnected peers whose sprites/snapshots may still be around
+    for (const peerId of Array.from(this.remotePlayers.keys())) {
+      if (!net.players.has(peerId)) {
+        this.remotePlayers.delete(peerId);
+        const vis = this.remoteSprites.get(peerId);
+        if (vis) {
+          vis.sprite.destroy();
+          vis.label.destroy();
+          this.remoteSprites.delete(peerId);
+        }
+      }
+    }
+
     // Render remote players in current room
     for (const [peerId, st] of this.remotePlayers.entries()) {
       const sameRoom = st.gx === this.currentRoom.gx && st.gy === this.currentRoom.gy;
@@ -2257,9 +3011,29 @@ export class GameScene extends Phaser.Scene {
           vis = { sprite: sp, label: lb };
           this.remoteSprites.set(peerId, vis);
         }
-        vis.sprite.setPosition(st.x, st.y).setFlipX(st.flipX);
-        vis.sprite.setFrame(st.downed ? 5 : st.dodging ? 4 : 0);
-        vis.label.setPosition(st.x, st.y - 16);
+        const playerLerp = 1 - Math.exp(-delta * 0.018);
+        const pDist = Phaser.Math.Distance.Between(vis.sprite.x, vis.sprite.y, st.x, st.y);
+        if (pDist > 48) {
+          vis.sprite.setPosition(st.x, st.y);
+        } else if (pDist > 0.2) {
+          vis.sprite.setPosition(
+            Phaser.Math.Linear(vis.sprite.x, st.x, playerLerp),
+            Phaser.Math.Linear(vis.sprite.y, st.y, playerLerp)
+          );
+        }
+        vis.sprite.setFlipX(st.flipX);
+        const now = this.time.now;
+        const pFrame = st.downed
+          ? 5
+          : st.dodging
+          ? 4
+          : st.animState === 'walk'
+          ? Math.floor(now / 160) % 2 === 0
+            ? 2
+            : 3
+          : Math.floor(now / 380) % 2;
+        vis.sprite.setFrame(pFrame);
+        vis.label.setPosition(vis.sprite.x, vis.sprite.y - 16);
 
         // Spread burning on direct contact with another player (preserving remaining duration)
         if (!this.playerState.downed && !st.downed) {
@@ -2298,6 +3072,10 @@ export class GameScene extends Phaser.Scene {
               secretRevealed: r.secretRevealed,
               bossDefeated: r.bossDefeated,
               puzzleSolved: r.puzzleSolved,
+              puzzleMirrors: r.puzzleBeam?.mirrors.map((m) => ({ id: m.id, orientation: m.orientation })),
+              puzzleBlocks: r.puzzleBlock?.blocks.map((b) => ({ id: b.id, tx: b.tx, ty: b.ty })),
+              brokenCrates: r.brokenCrates,
+              shopSold: r.shopStock?.map((s) => s.sold),
               enemies:
                 r.gx === this.currentRoom.gx && r.gy === this.currentRoom.gy
                   ? this.activeEnemies.map((e) => ({
@@ -2308,7 +3086,16 @@ export class GameScene extends Phaser.Scene {
                       alive: e.hp > 0,
                     }))
                   : r.enemies.map((e) => ({ uid: e.uid, x: e.x, y: e.y, hp: e.hp, alive: e.alive })),
-              loot: r.loot.map((l) => ({ uid: l.uid, collected: l.collected })),
+              loot: r.loot.map((l) => ({
+                uid: l.uid,
+                kind: l.kind,
+                x: l.x,
+                y: l.y,
+                itemId: l.itemId,
+                uses: l.uses,
+                amount: l.amount,
+                collected: l.collected,
+              })),
             });
           }
         }
@@ -2316,7 +3103,25 @@ export class GameScene extends Phaser.Scene {
           levelIndex: this.levelIndex,
           floorSeed: this.floorSeed,
           modifier: this.floor.modifier,
-          players: [this.playerState, ...Array.from(this.remotePlayers.values())],
+          hostGx: this.currentRoom.gx,
+          hostGy: this.currentRoom.gy,
+          players: [this.playerState, ...Array.from(this.remotePlayers.values()).filter((p) => net.players.has(p.id))],
+          projectiles: this.projectiles
+            .filter((p) => p.sprite.active)
+            .map((p) => ({
+              uid: p.uid,
+              gx: this.currentRoom.gx,
+              gy: this.currentRoom.gy,
+              x: p.sprite.x,
+              y: p.sprite.y,
+              vx: p.vx,
+              vy: p.vy,
+              color: p.color,
+              fromPlayer: p.fromPlayer,
+              ownerId: p.ownerId,
+              damage: p.damage,
+              burns: p.burns,
+            })),
           roomStates,
         });
       }
@@ -2336,6 +3141,19 @@ export class GameScene extends Phaser.Scene {
       promptText = '[E] Inspect Altar';
     } else if (this.specialObjs.portal && Phaser.Math.Distance.Between(px, py, 88, 88) < 32) {
       promptText = '[E] Enter Portal';
+    } else if (
+      this.currentRoom.type === 'puzzle' &&
+      !this.currentRoom.puzzleSolved &&
+      this.specialObjs.resetRune &&
+      Phaser.Math.Distance.Between(px, py, this.specialObjs.resetRune.x, this.specialObjs.resetRune.y) < 26
+    ) {
+      promptText = '[E] Reset Blocks';
+    } else if (
+      this.currentRoom.type === 'puzzle' &&
+      !this.currentRoom.puzzleSolved &&
+      this.specialObjs.mirrors.some((m) => Phaser.Math.Distance.Between(px, py, m.x, m.y) < 24)
+    ) {
+      promptText = '[E] Rotate Mirror';
     } else {
       for (const l of this.lootObjs) {
         if (!l.collected && (l.kind === 'chest' || l.kind === 'item') && Phaser.Math.Distance.Between(px, py, l.sprite.x, l.sprite.y) < 26) {

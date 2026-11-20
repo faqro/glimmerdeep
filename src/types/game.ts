@@ -203,12 +203,50 @@ export interface ShopStockItem {
   sold: boolean;
 }
 
+export type PuzzleKind = 'plates' | 'mirror_beam' | 'block_push';
+
 export interface PuzzlePlate {
   id: string;
   tx: number;
   ty: number;
   order: number;
   activated: boolean;
+}
+
+export interface PuzzleMirror {
+  id: string;
+  tx: number;
+  ty: number;
+  orientation: 'slash' | 'backslash';
+}
+
+export interface PuzzleBlock {
+  id: string;
+  tx: number;
+  ty: number;
+  initialTx: number;
+  initialTy: number;
+}
+
+export interface PuzzleGoal {
+  tx: number;
+  ty: number;
+}
+
+export interface PuzzleBeamSetup {
+  emitterTx: number;
+  emitterTy: number;
+  emitterDir: Direction;
+  targetTx: number;
+  targetTy: number;
+  mirrors: PuzzleMirror[];
+}
+
+export interface PuzzleBlockSetup {
+  blocks: PuzzleBlock[];
+  goals: PuzzleGoal[];
+  resetTx: number;
+  resetTy: number;
 }
 
 export interface RoomData {
@@ -228,8 +266,11 @@ export interface RoomData {
   healingUsed?: boolean;
   eventUsed?: boolean;
   eventKind?: 'fairy_circle' | 'wishing_well' | 'cursed_altar' | 'lore_stone';
+  puzzleKind?: PuzzleKind;
   puzzleSolved?: boolean;
   puzzlePlates?: PuzzlePlate[];
+  puzzleBeam?: PuzzleBeamSetup;
+  puzzleBlock?: PuzzleBlockSetup;
   bossDefeated?: boolean;
   brokenCrates?: string[];
 }
@@ -278,4 +319,5 @@ export interface LobbyPlayerInfo {
   paletteId: string;
   ready: boolean;
   isHost: boolean;
+  joinedAt?: number;
 }

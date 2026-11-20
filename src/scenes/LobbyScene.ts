@@ -6,9 +6,10 @@ import { getDailySeed } from '../utils/SeededGenerator';
 
 export class LobbyScene extends Phaser.Scene {
   private playerRows: Phaser.GameObjects.Container[] = [];
+  private actionBtnGroup: Phaser.GameObjects.GameObject[] = [];
   private isReady = false;
   private statusText!: Phaser.GameObjects.BitmapText;
-  private startBtn!: Phaser.GameObjects.Image;
+  private startBtn?: Phaser.GameObjects.Image;
 
   constructor() {
     super({ key: 'LobbyScene' });
@@ -38,27 +39,7 @@ export class LobbyScene extends Phaser.Scene {
 
     this.statusText = addPixelText(this, 180, 218, '', 8, 0xb8a1ff, 0.5, 0.5, 320);
 
-    if (net.mode === 'host') {
-      this.startBtn = this.add.image(245, 244, 'ui_btn').setDisplaySize(116, 22).setInteractive({ useHandCursor: true });
-      addPixelText(this, 245, 244, 'START RUN', 8, 0xffffff, 0.5, 0.5);
-      this.startBtn.on('pointerdown', () => {
-        const allReady = Array.from(net.players.values()).every((p) => p.ready);
-        if (!allReady) return;
-        SoundSystem.playUnlock();
-        const seed = getDailySeed(0);
-        net.broadcastStart(seed, 0);
-        this.scene.start('GameScene', { levelIndex: 0, floorSeed: seed, resetRun: true });
-      });
-    } else {
-      const readyBtn = this.add.image(245, 244, 'ui_btn').setDisplaySize(116, 22).setInteractive({ useHandCursor: true });
-      const readyTxt = addPixelText(this, 245, 244, 'READY', 8, 0xffffff, 0.5, 0.5);
-      readyBtn.on('pointerdown', () => {
-        this.isReady = !this.isReady;
-        readyTxt.setText(this.isReady ? 'UNREADY' : 'READY');
-        net.broadcastLobbySelf(this.isReady);
-        SoundSystem.playPickup();
-      });
-    }
+    this.rebuildActionButton();
 
     const backBtn = this.add.image(115, 244, 'ui_btn').setDisplaySize(100, 22).setInteractive({ useHandCursor: true });
     addPixelText(this, 115, 244, 'BACK', 8, 0xffffff, 0.5, 0.5);
@@ -68,11 +49,70 @@ export class LobbyScene extends Phaser.Scene {
     });
 
     net.onLobbyUpdate = () => this.refreshPlayers();
-    net.onGameStart = (seed, levelIndex) => {
-      this.scene.start('GameScene', { levelIndex, floorSeed: seed, resetRun: true });
+    net.onPeerLeft = undefined;
+    net.onHostMigrated = (newHostPeerId, isLocalNewHost) => {
+      if (isLocalNewHost) {
+        this.isReady = true;
+      }
+      this.rebuildActionButton();
+      this.refreshPlayers();
+      const hostName = net.players.get(newHostPeerId)?.name ?? 'Player';
+      const notice = addPixelText(
+        this,
+        180,
+        74,
+        isLocalNewHost ? 'HOST LEFT - YOU ARE NOW HOST!' : `HOST MIGRATED TO ${hostName}`,
+        8,
+        0xffe066,
+        0.5,
+        0.5
+      );
+      this.time.delayedCall(2500, () => {
+        if (notice.active) notice.destroy();
+      });
+    };
+    net.onGameStart = (seed, levelIndex, restorePlayer) => {
+      this.scene.start('GameScene', {
+        levelIndex,
+        floorSeed: seed,
+        resetRun: !restorePlayer,
+        carryPlayer: restorePlayer,
+        restoreReconnect: !!restorePlayer,
+      });
     };
 
     this.refreshPlayers();
+  }
+
+  private rebuildActionButton(): void {
+    for (const obj of this.actionBtnGroup) obj.destroy();
+    this.actionBtnGroup = [];
+    this.startBtn = undefined;
+
+    if (net.mode === 'host') {
+      const btn = this.add.image(245, 244, 'ui_btn').setDisplaySize(116, 22).setInteractive({ useHandCursor: true });
+      const txt = addPixelText(this, 245, 244, 'START RUN', 8, 0xffffff, 0.5, 0.5);
+      btn.on('pointerdown', () => {
+        const allReady = Array.from(net.players.values()).every((p) => p.ready);
+        if (!allReady) return;
+        SoundSystem.playUnlock();
+        const seed = getDailySeed(0);
+        net.broadcastStart(seed, 0);
+        this.scene.start('GameScene', { levelIndex: 0, floorSeed: seed, resetRun: true });
+      });
+      this.startBtn = btn;
+      this.actionBtnGroup.push(btn, txt);
+    } else {
+      const readyBtn = this.add.image(245, 244, 'ui_btn').setDisplaySize(116, 22).setInteractive({ useHandCursor: true });
+      const readyTxt = addPixelText(this, 245, 244, this.isReady ? 'UNREADY' : 'READY', 8, 0xffffff, 0.5, 0.5);
+      readyBtn.on('pointerdown', () => {
+        this.isReady = !this.isReady;
+        readyTxt.setText(this.isReady ? 'UNREADY' : 'READY');
+        net.broadcastLobbySelf(this.isReady);
+        SoundSystem.playPickup();
+      });
+      this.actionBtnGroup.push(readyBtn, readyTxt);
+    }
   }
 
   private refreshPlayers(): void {

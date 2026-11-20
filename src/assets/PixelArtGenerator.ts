@@ -335,6 +335,69 @@ export class PixelArtGenerator {
       tex.refresh();
     }
 
+    // Beam emitter (16x16)
+    {
+      const { ctx, tex } = this.createCanvas('obj_emitter', 16, 16);
+      this.px(ctx, 2, 2, '#100d24', 12, 12);
+      this.px(ctx, 3, 3, '#3b2d5e', 10, 10);
+      this.px(ctx, 5, 5, '#ffe066', 6, 6);
+      this.px(ctx, 6, 6, '#ffffff', 4, 4);
+      tex.refresh();
+    }
+
+    // Beam target crystal (16x16) unlit and lit
+    for (const lit of [false, true]) {
+      const { ctx, tex } = this.createCanvas(lit ? 'obj_beam_target_lit' : 'obj_beam_target', 16, 16);
+      this.px(ctx, 3, 2, '#100d24', 10, 12);
+      this.px(ctx, 4, 3, lit ? '#66ffd9' : '#4a4375', 8, 10);
+      this.px(ctx, 6, 5, lit ? '#ffffff' : '#8e7cc3', 4, 6);
+      tex.refresh();
+    }
+
+    // Diagonal mirrors (16x16) slash '/' and backslash '\'
+    for (const kind of ['slash', 'backslash'] as const) {
+      const { ctx, tex } = this.createCanvas(`obj_mirror_${kind}`, 16, 16);
+      this.px(ctx, 2, 2, '#100d24', 12, 12);
+      this.px(ctx, 3, 3, '#2c254a', 10, 10);
+      for (let i = 0; i < 8; i++) {
+        const mx = kind === 'slash' ? 11 - i : 4 + i;
+        const my = 4 + i;
+        this.px(ctx, mx - 1, my, '#6ef3ff', 2, 2);
+        this.px(ctx, mx, my, '#ffffff', 1, 1);
+      }
+      tex.refresh();
+    }
+
+    // Pushable rune block (16x16)
+    {
+      const { ctx, tex } = this.createCanvas('obj_push_block', 16, 16);
+      this.px(ctx, 1, 1, '#100d24', 14, 14);
+      this.px(ctx, 2, 2, '#5e508a', 12, 12);
+      this.px(ctx, 3, 3, '#8e7cc3', 10, 8);
+      this.px(ctx, 6, 5, '#66ffd9', 4, 4);
+      this.px(ctx, 7, 6, '#ffffff', 2, 2);
+      tex.refresh();
+    }
+
+    // Block goal socket (16x16) unlit and lit
+    for (const lit of [false, true]) {
+      const { ctx, tex } = this.createCanvas(lit ? 'obj_block_goal_lit' : 'obj_block_goal', 16, 16);
+      this.px(ctx, 2, 2, '#100d24', 12, 12);
+      this.px(ctx, 3, 3, lit ? '#66ffd9' : '#251e42', 10, 10);
+      this.px(ctx, 5, 5, lit ? '#ffffff' : '#66ffd9', 6, 6);
+      if (!lit) this.px(ctx, 6, 6, '#251e42', 4, 4);
+      tex.refresh();
+    }
+
+    // Reset rune pedestal (16x16)
+    {
+      const { ctx, tex } = this.createCanvas('obj_reset_rune', 16, 16);
+      this.px(ctx, 3, 3, '#100d24', 10, 10);
+      this.px(ctx, 4, 4, '#4a2b4f', 8, 8);
+      this.px(ctx, 6, 6, '#ff75c3', 4, 4);
+      tex.refresh();
+    }
+
     // Glowing Mushroom prop (12x14)
     const mush = this.createCanvas('prop_mushroom', 12, 14);
     this.drawGrid(mush.ctx, 0, 0, [

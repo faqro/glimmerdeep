@@ -18,19 +18,52 @@ export interface NetInteractEvent {
   peerId: string;
   gx: number;
   gy: number;
-  kind: 'pickup' | 'drop' | 'buy' | 'heal' | 'event' | 'revive' | 'exit' | 'plate';
+  kind:
+    | 'pickup'
+    | 'drop'
+    | 'buy'
+    | 'heal'
+    | 'event'
+    | 'revive'
+    | 'exit'
+    | 'plate'
+    | 'mirror'
+    | 'block'
+    | 'block_reset'
+    | 'crate'
+    | 'enemy_hit';
   targetId?: string;
+  lootKind?: 'shard' | 'item' | 'heart' | 'chest';
+  amount?: number;
   itemId?: string;
   uses?: number;
   x?: number;
   y?: number;
 }
 
+export interface SyncedProjectile {
+  uid: string;
+  gx: number;
+  gy: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  color: number;
+  fromPlayer: boolean;
+  ownerId: string;
+  damage: number;
+  burns?: boolean;
+}
+
 export interface NetWorldSync {
   levelIndex: number;
   floorSeed: number;
   modifier: string;
+  hostGx?: number;
+  hostGy?: number;
   players: PlayerStateSnapshot[];
+  projectiles?: SyncedProjectile[];
   roomStates: Array<{
     gx: number;
     gy: number;
@@ -40,8 +73,21 @@ export interface NetWorldSync {
     secretRevealed: boolean;
     bossDefeated?: boolean;
     puzzleSolved?: boolean;
+    puzzleMirrors?: Array<{ id: string; orientation: 'slash' | 'backslash' }>;
+    puzzleBlocks?: Array<{ id: string; tx: number; ty: number }>;
+    brokenCrates?: string[];
+    shopSold?: boolean[];
     enemies: Array<{ uid: string; x: number; y: number; hp: number; alive: boolean }>;
-    loot: Array<{ uid: string; collected: boolean }>;
+    loot: Array<{
+      uid: string;
+      kind: 'shard' | 'item' | 'heart' | 'chest';
+      x: number;
+      y: number;
+      itemId?: string;
+      uses?: number;
+      amount?: number;
+      collected: boolean;
+    }>;
   }>;
 }
 
@@ -53,20 +99,24 @@ export class MultiplayerSystem {
   public localPaletteId = 'lavender';
   public players = new Map<string, LobbyPlayerInfo>();
 
+  private localJoinedAt = 0;
   private room: Room | null = null;
   private sendLobbyFn: ((data: LobbyPlayerInfo, target?: string) => void) | null = null;
-  private sendStartFn: ((data: { seed: number; levelIndex: number }, target?: string) => void) | null = null;
+  private sendStartFn: ((data: { seed: number; levelIndex: number; restorePlayer?: PlayerStateSnapshot }, target?: string) => void) | null = null;
   private sendPlayerStateFn: ((data: PlayerStateSnapshot, target?: string) => void) | null = null;
   private sendWorldSyncFn: ((data: NetWorldSync, target?: string) => void) | null = null;
   private sendAttackFn: ((data: NetAttackEvent, target?: string) => void) | null = null;
   private sendInteractFn: ((data: NetInteractEvent, target?: string) => void) | null = null;
 
   public onLobbyUpdate?: () => void;
-  public onGameStart?: (seed: number, levelIndex: number) => void;
+  public onGameStart?: (seed: number, levelIndex: number, restorePlayer?: PlayerStateSnapshot) => void;
   public onRemotePlayerState?: (state: PlayerStateSnapshot, fromPeer: string) => void;
   public onWorldSync?: (sync: NetWorldSync) => void;
   public onRemoteAttack?: (ev: NetAttackEvent, fromPeer: string) => void;
   public onRemoteInteract?: (ev: NetInteractEvent, fromPeer: string) => void;
+  public onPeerJoined?: (peerId: string, info: LobbyPlayerInfo) => void;
+  public onPeerLeft?: (peerId: string, leavingPlayer?: LobbyPlayerInfo) => void;
+  public onHostMigrated?: (newHostPeerId: string, isLocalNewHost: boolean) => void;
 
   static generateInviteCode(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -110,6 +160,7 @@ export class MultiplayerSystem {
     const room = joinRoom({ appId: APP_ID }, `gd-${code}`);
     this.room = room;
     this.localPeerId = (room as unknown as { selfId?: string }).selfId ?? `peer_${Math.floor(Math.random() * 100000)}`;
+    this.localJoinedAt = isHost ? 0 : Date.now();
 
     this.players.set(this.localPeerId, {
       peerId: this.localPeerId,
@@ -117,10 +168,11 @@ export class MultiplayerSystem {
       paletteId: this.localPaletteId,
       ready: isHost,
       isHost,
+      joinedAt: this.localJoinedAt,
     });
 
     const lobbyAct = room.makeAction<LobbyPlayerInfo>('lobby');
-    const startAct = room.makeAction<{ seed: number; levelIndex: number }>('start');
+    const startAct = room.makeAction<{ seed: number; levelIndex: number; restorePlayer?: PlayerStateSnapshot }>('start');
     const playerAct = room.makeAction<PlayerStateSnapshot>('pstate');
     const worldAct = room.makeAction<NetWorldSync>('wsync');
     const attackAct = room.makeAction<NetAttackEvent>('attack');
@@ -135,7 +187,9 @@ export class MultiplayerSystem {
 
     lobbyAct.onMessage((info, ctx) => {
       if (this.players.size >= 4 && !this.players.has(ctx.peerId)) return;
-      this.players.set(ctx.peerId, { ...info, peerId: ctx.peerId });
+      const isNew = !this.players.has(ctx.peerId);
+      const fullInfo = { ...info, peerId: ctx.peerId };
+      this.players.set(ctx.peerId, fullInfo);
 
       // Ensure no two players share the same skin: non-host (or lexicographically higher peerId) re-rolls on collision
       const selfInfo = this.players.get(this.localPeerId);
@@ -146,11 +200,14 @@ export class MultiplayerSystem {
         this.sendLobbyFn?.(selfInfo);
       }
 
+      if (isNew) {
+        this.onPeerJoined?.(ctx.peerId, fullInfo);
+      }
       this.onLobbyUpdate?.();
     });
 
     startAct.onMessage((payload) => {
-      this.onGameStart?.(payload.seed, payload.levelIndex);
+      this.onGameStart?.(payload.seed, payload.levelIndex, payload.restorePlayer);
     });
 
     playerAct.onMessage((state, ctx) => {
@@ -182,8 +239,7 @@ export class MultiplayerSystem {
 
     room.onPeerLeave((ctx) => {
       const peerId = typeof ctx === 'string' ? ctx : ctx.peerId;
-      this.players.delete(peerId);
-      this.onLobbyUpdate?.();
+      this.handlePeerLeave(peerId);
     });
 
     // Broadcast our initial lobby info
@@ -193,6 +249,34 @@ export class MultiplayerSystem {
     }
   }
 
+  handlePeerLeave(peerId: string): void {
+    const leaving = this.players.get(peerId);
+    this.players.delete(peerId);
+    this.onPeerLeft?.(peerId, leaving);
+
+    if (leaving?.isHost && this.players.size > 0) {
+      const candidates = Array.from(this.players.values()).sort((a, b) => {
+        const ta = a.joinedAt ?? Number.MAX_SAFE_INTEGER;
+        const tb = b.joinedAt ?? Number.MAX_SAFE_INTEGER;
+        if (ta !== tb) return ta - tb;
+        return a.peerId.localeCompare(b.peerId);
+      });
+      const newHost = candidates[0];
+      for (const p of candidates) {
+        p.isHost = p.peerId === newHost.peerId;
+      }
+      newHost.ready = true;
+      const isLocalNewHost = newHost.peerId === this.localPeerId;
+      if (isLocalNewHost) {
+        this.mode = 'host';
+        this.sendLobbyFn?.(newHost);
+      }
+      this.onHostMigrated?.(newHost.peerId, isLocalNewHost);
+    }
+
+    this.onLobbyUpdate?.();
+  }
+
   broadcastLobbySelf(ready: boolean): void {
     const info: LobbyPlayerInfo = {
       peerId: this.localPeerId,
@@ -200,6 +284,7 @@ export class MultiplayerSystem {
       paletteId: this.localPaletteId,
       ready,
       isHost: this.mode === 'host',
+      joinedAt: this.localJoinedAt,
     };
     this.players.set(this.localPeerId, info);
     this.sendLobbyFn?.(info);
@@ -209,6 +294,11 @@ export class MultiplayerSystem {
   broadcastStart(seed: number, levelIndex = 0): void {
     if (this.mode !== 'host') return;
     this.sendStartFn?.({ seed, levelIndex });
+  }
+
+  sendStartToPeer(peerId: string, seed: number, levelIndex: number, restorePlayer?: PlayerStateSnapshot): void {
+    if (this.mode !== 'host') return;
+    this.sendStartFn?.({ seed, levelIndex, restorePlayer }, peerId);
   }
 
   broadcastPlayerState(state: PlayerStateSnapshot): void {
@@ -247,6 +337,15 @@ export class MultiplayerSystem {
     this.sendWorldSyncFn = null;
     this.sendAttackFn = null;
     this.sendInteractFn = null;
+    this.onLobbyUpdate = undefined;
+    this.onGameStart = undefined;
+    this.onRemotePlayerState = undefined;
+    this.onWorldSync = undefined;
+    this.onRemoteAttack = undefined;
+    this.onRemoteInteract = undefined;
+    this.onPeerJoined = undefined;
+    this.onPeerLeft = undefined;
+    this.onHostMigrated = undefined;
   }
 }
 
