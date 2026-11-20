@@ -340,7 +340,7 @@ export class GameScene extends Phaser.Scene {
     };
 
     net.onRemoteInteract = (ev) => {
-      if (net.mode === 'host' && ev.kind === 'revive' && ev.targetId === this.playerState.id) {
+      if (ev.kind === 'revive' && (ev.targetId === this.playerState.id || ev.targetId === 'all') && this.playerState.downed) {
         this.reviveSelf();
       } else if (ev.kind === 'drop' && ev.itemId && ev.targetId) {
         const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
@@ -879,19 +879,40 @@ export class GameScene extends Phaser.Scene {
         this.createPlayerProjectile(this.playerSprite.x, this.playerSprite.y, a, 210, 2, 0xff75c3, false, false, 1, false, false);
       }
     } else if (item.id === 'revive_totem') {
-      const downedAlly = Array.from(this.remotePlayers.values()).find((p) => p.downed);
-      if (downedAlly) {
+      // Pick the downed ally who has been dead the longest (smallest remaining downedTimerMs)
+      const downedAllies = Array.from(this.remotePlayers.values())
+        .filter((p) => p.downed)
+        .sort((a, b) => a.downedTimerMs - b.downedTimerMs);
+      const longestDowned = downedAllies[0];
+      if (longestDowned) {
         net.broadcastInteract({
           peerId: this.playerState.id,
-          gx: downedAlly.gx,
-          gy: downedAlly.gy,
+          gx: longestDowned.gx,
+          gy: longestDowned.gy,
           kind: 'revive',
-          targetId: downedAlly.id,
+          targetId: longestDowned.id,
         });
         SoundSystem.playHeal();
-        this.ui.showToast(`Revived ${downedAlly.name}!`, '#ffe066');
+        this.ui.showToast(`Revived ${longestDowned.name}!`, '#ffe066');
       } else {
         this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 4);
+        SoundSystem.playHeal();
+      }
+    } else if (item.id === 'necromancy_altar') {
+      const downedAllies = Array.from(this.remotePlayers.values()).filter((p) => p.downed);
+      if (downedAllies.length > 0) {
+        net.broadcastInteract({
+          peerId: this.playerState.id,
+          gx: this.currentRoom.gx,
+          gy: this.currentRoom.gy,
+          kind: 'revive',
+          targetId: 'all',
+        });
+        SoundSystem.playHeal();
+        this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0xc084fc, 14);
+        this.ui.showToast('Necromancy Altar revived all allies!', '#c084fc');
+      } else {
+        this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 6);
         SoundSystem.playHeal();
       }
     }
@@ -1518,13 +1539,16 @@ export class GameScene extends Phaser.Scene {
   }
 
   private onPlayerZeroHp(): void {
-    const totemIdx = this.playerState.inventory.findIndex((i) => i?.id === 'revive_totem');
+    const totemIdx = this.playerState.inventory.findIndex(
+      (i) => i?.id === 'revive_totem' || i?.id === 'necromancy_altar'
+    );
     if (totemIdx !== -1) {
+      const usedItem = this.playerState.inventory[totemIdx]!;
       consumeUse(this.playerState.inventory, totemIdx, 1);
       this.playerState.hp = 6;
       this.invulnMs = 1500;
       SoundSystem.playHeal();
-      this.ui.showToast('Revive Totem saved you!', '#ffe066');
+      this.ui.showToast(`${usedItem.name} saved you!`, '#ffe066');
       return;
     }
 

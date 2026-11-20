@@ -924,6 +924,20 @@ export class PixelArtGenerator {
         ],
         pal: { o: '#100d24', Y: '#ffe066', C: '#6ef3ff', P: '#ff47b6', w: '#ffffff' },
       },
+      item_necromancy_altar: {
+        rows: [
+          '....oooooooo....',
+          '...oPPPPPPPPo...',
+          '..oPPwPPPPwPPo..',
+          '..oPPPPPPPPPPo..',
+          '...oPPooooPPo...',
+          '..oooooooooooo..',
+          '.oSSSSSSSSSSSSo.',
+          '.oSSYYYYYYYYSSo.',
+          'oooooooooooooooo',
+        ],
+        pal: { o: '#100d24', P: '#c084fc', w: '#ffffff', S: '#4a4375', Y: '#ff47b6' },
+      },
       item_everheart_core: {
         rows: [
           '..ooo....ooo....',

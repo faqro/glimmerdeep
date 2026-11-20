@@ -83,6 +83,16 @@ export const CONSUMABLES: Record<string, ConsumableDef> = {
     price: 46,
     merchantOnly: true,
   },
+  necromancy_altar: {
+    id: 'necromancy_altar',
+    name: 'Necromancy Altar',
+    rarity: 'super_rare',
+    description: 'Revives all allies/self',
+    maxUses: 1,
+    iconKey: 'item_necromancy_altar',
+    price: 52,
+    merchantOnly: true,
+  },
 };
 
 export const ARTIFACTS: Record<string, ArtifactDef> = {
