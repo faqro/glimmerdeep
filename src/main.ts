@@ -1,10 +1,16 @@
 import Phaser from 'phaser';
+import { isMobileMode } from './mobile/MobileInput';
+import { mountMobileShell } from './mobile/MobileShell';
 import { BootScene } from './scenes/BootScene';
 import { GameOverScene } from './scenes/GameOverScene';
 import { GameScene } from './scenes/GameScene';
 import { LobbyScene } from './scenes/LobbyScene';
 import { MenuScene } from './scenes/MenuScene';
 import { UIScene } from './scenes/UIScene';
+
+if (isMobileMode()) {
+  mountMobileShell();
+}
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,

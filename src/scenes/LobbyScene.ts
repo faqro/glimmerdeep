@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
+import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { net } from '../systems/MultiplayerSystem';
 import { getDailySeed } from '../utils/SeededGenerator';
 
@@ -11,12 +12,25 @@ export class LobbyScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.BitmapText;
   private startBtn?: Phaser.GameObjects.Image;
 
+  private copyBtn!: Phaser.GameObjects.BitmapText;
+  private backBtn!: Phaser.GameObjects.Image;
+  private backTxt!: Phaser.GameObjects.BitmapText;
+  private actionBtn?: Phaser.GameObjects.Image;
+  private actionTxt?: Phaser.GameObjects.BitmapText;
+  private onCopyAction!: () => void;
+  private onBackAction!: () => void;
+  private onMainAction?: () => void;
+  private mobileFocusIndex = 2; // 0: COPY, 1: BACK, 2: START/READY
+  private unsubNav?: () => void;
+  private unsubBtn?: () => void;
+
   constructor() {
     super({ key: 'LobbyScene' });
   }
 
   create(): void {
     this.isReady = net.mode === 'host';
+    this.mobileFocusIndex = 2;
     this.add.rectangle(180, 135, 360, 270, 0x0e0c21);
 
     addPixelText(this, 180, 24, 'CO-OP LOBBY', 16, 0xf49ac1, 0.5, 0.5);
@@ -24,16 +38,18 @@ export class LobbyScene extends Phaser.Scene {
     this.add.image(180, 52, 'ui_panel').setDisplaySize(220, 28);
     addPixelText(this, 130, 52, `CODE: ${net.inviteCode}`, 8, 0xffe066, 0.5, 0.5);
 
-    const copyBtn = addPixelText(this, 235, 52, '[COPY]', 8, 0x66ffd9, 0.5, 0.5).setInteractive({ useHandCursor: true });
-
-    copyBtn.on('pointerdown', () => {
+    this.copyBtn = addPixelText(this, 235, 52, '[COPY]', 8, 0x66ffd9, 0.5, 0.5);
+    this.onCopyAction = () => {
       navigator.clipboard?.writeText(net.inviteCode).catch(() => {});
-      copyBtn.setText('[COPIED]');
+      this.copyBtn.setText('[COPIED]');
       SoundSystem.playPickup();
       this.time.delayedCall(1200, () => {
-        if (copyBtn.active) copyBtn.setText('[COPY]');
+        if (this.copyBtn.active) this.copyBtn.setText('[COPY]');
       });
-    });
+    };
+    if (!isMobileMode()) {
+      this.copyBtn.setInteractive({ useHandCursor: true }).on('pointerdown', this.onCopyAction);
+    }
 
     this.add.image(180, 142, 'ui_panel').setDisplaySize(308, 130);
 
@@ -41,12 +57,15 @@ export class LobbyScene extends Phaser.Scene {
 
     this.rebuildActionButton();
 
-    const backBtn = this.add.image(115, 244, 'ui_btn').setDisplaySize(100, 22).setInteractive({ useHandCursor: true });
-    addPixelText(this, 115, 244, 'BACK', 8, 0xffffff, 0.5, 0.5);
-    backBtn.on('pointerdown', () => {
+    this.backBtn = this.add.image(115, 244, 'ui_btn').setDisplaySize(100, 22);
+    this.backTxt = addPixelText(this, 115, 244, 'BACK', 8, 0xffffff, 0.5, 0.5);
+    this.onBackAction = () => {
       net.disconnect();
       this.scene.start('MenuScene');
-    });
+    };
+    if (!isMobileMode()) {
+      this.backBtn.setInteractive({ useHandCursor: true }).on('pointerdown', this.onBackAction);
+    }
 
     net.onLobbyUpdate = () => this.refreshPlayers();
     net.onPeerLeft = undefined;
@@ -83,36 +102,96 @@ export class LobbyScene extends Phaser.Scene {
 
     net.broadcastLobbySelf(this.isReady);
     this.refreshPlayers();
+
+    if (isMobileMode()) {
+      this.refreshMobileFocus();
+      this.unsubNav = mobileInput.onNav((dir) => this.handleMobileNav(dir));
+      this.unsubBtn = mobileInput.onButton((btn) => this.handleMobileButton(btn));
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+        this.unsubNav?.();
+        this.unsubBtn?.();
+      });
+    }
   }
 
   private rebuildActionButton(): void {
     for (const obj of this.actionBtnGroup) obj.destroy();
     this.actionBtnGroup = [];
     this.startBtn = undefined;
+    this.actionBtn = undefined;
+    this.actionTxt = undefined;
 
     if (net.mode === 'host') {
-      const btn = this.add.image(245, 244, 'ui_btn').setDisplaySize(116, 22).setInteractive({ useHandCursor: true });
+      const btn = this.add.image(245, 244, 'ui_btn').setDisplaySize(116, 22);
       const txt = addPixelText(this, 245, 244, 'START RUN', 8, 0xffffff, 0.5, 0.5);
-      btn.on('pointerdown', () => {
+      this.onMainAction = () => {
         const allReady = Array.from(net.players.values()).every((p) => p.ready);
         if (!allReady) return;
         SoundSystem.playUnlock();
         const seed = getDailySeed(0);
         net.broadcastStart(seed, 0);
         this.scene.start('GameScene', { levelIndex: 0, floorSeed: seed, resetRun: true });
-      });
+      };
+      if (!isMobileMode()) {
+        btn.setInteractive({ useHandCursor: true }).on('pointerdown', this.onMainAction);
+      }
       this.startBtn = btn;
+      this.actionBtn = btn;
+      this.actionTxt = txt;
       this.actionBtnGroup.push(btn, txt);
     } else {
-      const readyBtn = this.add.image(245, 244, 'ui_btn').setDisplaySize(116, 22).setInteractive({ useHandCursor: true });
+      const readyBtn = this.add.image(245, 244, 'ui_btn').setDisplaySize(116, 22);
       const readyTxt = addPixelText(this, 245, 244, this.isReady ? 'UNREADY' : 'READY', 8, 0xffffff, 0.5, 0.5);
-      readyBtn.on('pointerdown', () => {
+      this.onMainAction = () => {
         this.isReady = !this.isReady;
         readyTxt.setText(this.isReady ? 'UNREADY' : 'READY');
         net.broadcastLobbySelf(this.isReady);
         SoundSystem.playPickup();
-      });
+      };
+      if (!isMobileMode()) {
+        readyBtn.setInteractive({ useHandCursor: true }).on('pointerdown', this.onMainAction);
+      }
+      this.actionBtn = readyBtn;
+      this.actionTxt = readyTxt;
       this.actionBtnGroup.push(readyBtn, readyTxt);
+    }
+    if (isMobileMode()) {
+      this.refreshMobileFocus();
+    }
+  }
+
+  private handleMobileNav(dir: NavDir): void {
+    SoundSystem.playSwing();
+    if (dir === 'up' || dir === 'down') {
+      this.mobileFocusIndex = this.mobileFocusIndex === 0 ? 2 : 0;
+    } else if (dir === 'left' || dir === 'right') {
+      if (this.mobileFocusIndex === 0) this.mobileFocusIndex = 2;
+      else this.mobileFocusIndex = this.mobileFocusIndex === 1 ? 2 : 1;
+    }
+    this.refreshMobileFocus();
+  }
+
+  private handleMobileButton(btn: VirtualButton): void {
+    if (btn === 'esc') {
+      this.onBackAction();
+      return;
+    }
+    if (btn !== 'e' && btn !== 'space') return;
+    if (this.mobileFocusIndex === 0) this.onCopyAction();
+    else if (this.mobileFocusIndex === 1) this.onBackAction();
+    else this.onMainAction?.();
+  }
+
+  private refreshMobileFocus(): void {
+    if (!isMobileMode()) return;
+    this.copyBtn.setTint(this.mobileFocusIndex === 0 ? 0xffe066 : 0x66ffd9);
+    if (this.backBtn && this.backTxt) {
+      this.backBtn.setTexture(this.mobileFocusIndex === 1 ? 'ui_btn_hover' : 'ui_btn');
+      this.backTxt.setTint(this.mobileFocusIndex === 1 ? 0xffe066 : 0xffffff);
+    }
+    if (this.actionBtn && this.actionTxt) {
+      this.actionBtn.setTexture(this.mobileFocusIndex === 2 ? 'ui_btn_hover' : 'ui_btn');
+      this.actionTxt.setTint(this.mobileFocusIndex === 2 ? 0xffe066 : 0xffffff);
     }
   }
 

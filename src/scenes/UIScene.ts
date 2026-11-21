@@ -4,6 +4,7 @@ import { SoundSystem } from '../audio/SoundSystem';
 import { BIOMES, LEVEL_MODIFIERS } from '../data/biomes';
 import { ARTIFACTS, CONSUMABLES, STATUS_EFFECTS } from '../data/items';
 import { WEAPONS } from '../data/weapons';
+import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { PlayerStateSnapshot, RoomData, ShopStockItem } from '../types/game';
 
 export interface UIStatePayload {
@@ -60,6 +61,16 @@ export class UIScene extends Phaser.Scene {
   private onQuitCallback?: () => void;
   private onSpectatePrev?: () => void;
   private onSpectateNext?: () => void;
+
+  private pauseButtons: Array<{ bg: Phaser.GameObjects.Image; txt: Phaser.GameObjects.BitmapText; action: () => void }> = [];
+  private pauseFocusIndex = 0;
+
+  private shopCards: Array<{ card: Phaser.GameObjects.Image; sold: boolean; idx: number }> = [];
+  private shopCloseTxt?: Phaser.GameObjects.BitmapText;
+  private shopFocusRing?: Phaser.GameObjects.Rectangle;
+  private shopFocusIndex = 0; // 0..2 = cards, 3 = CLOSE
+  private unsubNav?: () => void;
+  private unsubBtn?: () => void;
 
   constructor() {
     super({ key: 'UIScene' });
@@ -130,19 +141,30 @@ export class UIScene extends Phaser.Scene {
     this.buildShopOverlay();
     this.buildPauseOverlay();
     this.buildSpectateBar();
+
+    if (isMobileMode()) {
+      this.unsubNav = mobileInput.onNav((dir) => this.handleMobileNav(dir));
+      this.unsubBtn = mobileInput.onButton((btn) => this.handleMobileButton(btn));
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+        this.unsubNav?.();
+        this.unsubBtn?.();
+      });
+    }
   }
 
   private buildSpectateBar(): void {
     this.spectateBar = this.add.container(0, 0).setVisible(false).setDepth(25);
     const bg = this.add.rectangle(180, 250, 184, 22, 0x100d24, 0.9).setStrokeStyle(1, 0x66ffd9, 0.7);
-    this.spectatePrevBtn = this.add.image(102, 250, 'ui_btn').setDisplaySize(22, 16).setInteractive({ useHandCursor: true });
+    this.spectatePrevBtn = this.add.image(102, 250, 'ui_btn').setDisplaySize(22, 16);
     const prevTxt = addPixelText(this, 102, 250, '<', 8, 0xffffff, 0.5, 0.5);
-    this.spectateNextBtn = this.add.image(258, 250, 'ui_btn').setDisplaySize(22, 16).setInteractive({ useHandCursor: true });
+    this.spectateNextBtn = this.add.image(258, 250, 'ui_btn').setDisplaySize(22, 16);
     const nextTxt = addPixelText(this, 258, 250, '>', 8, 0xffffff, 0.5, 0.5);
     this.spectateTxt = addPixelText(this, 180, 250, '', 8, 0xffe066, 0.5, 0.5, 130);
 
-    this.spectatePrevBtn.on('pointerdown', () => this.onSpectatePrev?.());
-    this.spectateNextBtn.on('pointerdown', () => this.onSpectateNext?.());
+    if (!isMobileMode()) {
+      this.spectatePrevBtn.setInteractive({ useHandCursor: true }).on('pointerdown', () => this.onSpectatePrev?.());
+      this.spectateNextBtn.setInteractive({ useHandCursor: true }).on('pointerdown', () => this.onSpectateNext?.());
+    }
 
     this.spectateBar.add([bg, this.spectatePrevBtn, prevTxt, this.spectateNextBtn, nextTxt, this.spectateTxt]);
   }
@@ -180,26 +202,36 @@ export class UIScene extends Phaser.Scene {
 
   private buildPauseOverlay(): void {
     this.pauseOverlay = this.add.container(0, 0).setVisible(false).setDepth(70);
+    this.pauseButtons = [];
     const dim = this.add.rectangle(180, 135, 360, 270, 0x0b0917, 0.75);
     const panel = this.add.image(180, 135, 'ui_panel').setDisplaySize(180, 138);
     const title = addPixelText(this, 180, 82, 'PAUSED', 8, 0xf49ac1, 0.5, 0.5);
 
     const mkBtn = (y: number, label: string, cb: () => void) => {
-      const b = this.add.image(180, y, 'ui_btn').setDisplaySize(128, 20).setInteractive({ useHandCursor: true });
+      const b = this.add.image(180, y, 'ui_btn').setDisplaySize(128, 20);
       const t = addPixelText(this, 180, y, label, 8, 0xffffff, 0.5, 0.5);
-      b.on('pointerover', () => b.setTexture('ui_btn_hover'));
-      b.on('pointerout', () => b.setTexture('ui_btn'));
-      b.on('pointerdown', cb);
-      return [b, t];
+      if (!isMobileMode()) {
+        b.setInteractive({ useHandCursor: true });
+        b.on('pointerover', () => b.setTexture('ui_btn_hover'));
+        b.on('pointerout', () => b.setTexture('ui_btn'));
+        b.on('pointerdown', cb);
+      }
+      this.pauseButtons.push({ bg: b, txt: t, action: cb });
+      return [b, t] as const;
     };
 
     const resumeEls = mkBtn(108, 'RESUME', () => this.togglePause(false));
-    const muteBtn = this.add.image(180, 132, 'ui_btn').setDisplaySize(128, 20).setInteractive({ useHandCursor: true });
+
+    const muteBtn = this.add.image(180, 132, 'ui_btn').setDisplaySize(128, 20);
     const muteTxt = addPixelText(this, 180, 132, SoundSystem.muted ? 'AUDIO: OFF' : 'AUDIO: ON', 8, 0xffffff, 0.5, 0.5);
-    muteBtn.on('pointerdown', () => {
+    const toggleMute = () => {
       SoundSystem.muted = !SoundSystem.muted;
       muteTxt.setText(SoundSystem.muted ? 'AUDIO: OFF' : 'AUDIO: ON');
-    });
+    };
+    if (!isMobileMode()) {
+      muteBtn.setInteractive({ useHandCursor: true }).on('pointerdown', toggleMute);
+    }
+    this.pauseButtons.push({ bg: muteBtn, txt: muteTxt, action: toggleMute });
 
     const fsEls = mkBtn(156, 'FULLSCREEN', () => {
       if (this.scale.isFullscreen) this.scale.stopFullscreen();
@@ -229,6 +261,10 @@ export class UIScene extends Phaser.Scene {
   togglePause(force?: boolean): boolean {
     const next = force !== undefined ? force : !this.pauseOverlay.visible;
     this.pauseOverlay.setVisible(next);
+    if (next && isMobileMode()) {
+      this.pauseFocusIndex = 0;
+      this.refreshPauseFocus();
+    }
     return next;
   }
 
@@ -239,6 +275,7 @@ export class UIScene extends Phaser.Scene {
   openShop(stock: ShopStockItem[], shards: number, onBuy: (idx: number) => void): void {
     this.onBuyCallback = onBuy;
     this.shopOverlay.removeAll(true);
+    this.shopCards = [];
     const dim = this.add.rectangle(180, 135, 360, 270, 0x0b0917, 0.78);
     const panel = this.add.image(180, 135, 'ui_panel').setDisplaySize(344, 218);
     const title = addPixelText(this, 180, 38, "MIMI'S MAGICAL WARES", 8, 0xffd275, 0.5, 0.5);
@@ -246,7 +283,9 @@ export class UIScene extends Phaser.Scene {
       this,
       180,
       52,
-      `Shards: ${shards} (Click item, Esc close)`,
+      isMobileMode()
+        ? `Shards: ${shards} (Stick/D-Pad Move, E Buy, Esc Close)`
+        : `Shards: ${shards} (Click item, Esc close)`,
       8,
       0x6ef3ff,
       0.5,
@@ -270,24 +309,104 @@ export class UIScene extends Phaser.Scene {
       const priceColor = entry.sold ? 0x7e71b8 : shards >= entry.price ? 0x66ffd9 : 0xff5d8f;
       const priceTxt = addPixelText(this, cx, cy + 48, entry.sold ? 'SOLD' : `${entry.price} SHARDS`, 8, priceColor, 0.5, 0.5);
 
-      if (!entry.sold) {
+      if (!entry.sold && !isMobileMode()) {
         card.setInteractive({ useHandCursor: true });
         card.on('pointerdown', () => {
           this.onBuyCallback?.(i);
         });
       }
+      this.shopCards.push({ card, sold: entry.sold, idx: i });
       this.shopOverlay.add([card, icon, nameTxt, descTxt, priceTxt]);
     });
 
-    const closeBtn = addPixelText(this, 180, 222, '[CLOSE]', 8, 0xf49ac1, 0.5, 0.5)
-      .setInteractive({ useHandCursor: true });
-    closeBtn.on('pointerdown', () => this.closeShop());
-    this.shopOverlay.add(closeBtn);
+    this.shopCloseTxt = addPixelText(this, 180, 222, '[CLOSE]', 8, 0xf49ac1, 0.5, 0.5);
+    if (!isMobileMode()) {
+      this.shopCloseTxt.setInteractive({ useHandCursor: true }).on('pointerdown', () => this.closeShop());
+    }
+    this.shopFocusRing = this.add.rectangle(72, 134, 106, 134).setStrokeStyle(2, 0xffe066).setVisible(false);
+    this.shopOverlay.add([this.shopCloseTxt, this.shopFocusRing]);
     this.shopOverlay.setVisible(true);
+
+    if (isMobileMode()) {
+      this.shopFocusIndex = Math.min(this.shopFocusIndex, Math.max(0, this.shopCards.length - 1));
+      this.refreshShopFocus();
+    }
   }
 
   closeShop(): void {
     this.shopOverlay.setVisible(false);
+  }
+
+  private handleMobileNav(dir: NavDir): void {
+    if (this.pauseOverlay.visible) {
+      SoundSystem.playSwing();
+      if (dir === 'up') {
+        this.pauseFocusIndex = (this.pauseFocusIndex - 1 + this.pauseButtons.length) % this.pauseButtons.length;
+      } else if (dir === 'down') {
+        this.pauseFocusIndex = (this.pauseFocusIndex + 1) % this.pauseButtons.length;
+      }
+      this.refreshPauseFocus();
+      return;
+    }
+
+    if (this.shopOverlay.visible) {
+      SoundSystem.playSwing();
+      if (dir === 'left') {
+        if (this.shopFocusIndex < 3) this.shopFocusIndex = (this.shopFocusIndex + 2) % 3;
+      } else if (dir === 'right') {
+        if (this.shopFocusIndex < 3) this.shopFocusIndex = (this.shopFocusIndex + 1) % 3;
+      } else if (dir === 'down') {
+        this.shopFocusIndex = this.shopFocusIndex < 3 ? 3 : 1;
+      } else if (dir === 'up') {
+        this.shopFocusIndex = this.shopFocusIndex === 3 ? 1 : 3;
+      }
+      this.refreshShopFocus();
+    }
+  }
+
+  private handleMobileButton(btn: VirtualButton): void {
+    if (this.pauseOverlay.visible) {
+      if (btn === 'e' || btn === 'space') {
+        this.pauseButtons[this.pauseFocusIndex]?.action();
+      }
+      return;
+    }
+
+    if (this.shopOverlay.visible) {
+      if (btn === 'e' || btn === 'space') {
+        if (this.shopFocusIndex === 3) {
+          this.closeShop();
+        } else {
+          const card = this.shopCards[this.shopFocusIndex];
+          if (card && !card.sold) {
+            this.onBuyCallback?.(card.idx);
+          } else {
+            SoundSystem.playHit();
+          }
+        }
+      }
+    }
+  }
+
+  private refreshPauseFocus(): void {
+    if (!isMobileMode()) return;
+    this.pauseButtons.forEach((b, idx) => {
+      const focused = idx === this.pauseFocusIndex;
+      b.bg.setTexture(focused ? 'ui_btn_hover' : 'ui_btn');
+      b.txt.setTint(focused ? 0xffe066 : 0xffffff);
+    });
+  }
+
+  private refreshShopFocus(): void {
+    if (!isMobileMode() || !this.shopFocusRing || !this.shopCloseTxt) return;
+    if (this.shopFocusIndex < 3) {
+      const cx = 72 + this.shopFocusIndex * 108;
+      this.shopFocusRing.setPosition(cx, 134).setSize(106, 134).setVisible(true);
+      this.shopCloseTxt.setTint(0xf49ac1);
+    } else {
+      this.shopFocusRing.setVisible(false);
+      this.shopCloseTxt.setTint(0xffe066);
+    }
   }
 
   showToast(message: string, color = '#66ffd9'): void {

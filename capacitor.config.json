@@ -1,0 +1,8 @@
+{
+  "appId": "com.glimmerdeep.game",
+  "appName": "Glimmerdeep",
+  "webDir": "dist-mobile",
+  "server": {
+    "androidScheme": "https"
+  }
+}

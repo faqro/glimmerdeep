@@ -6,6 +6,7 @@ import { ARTIFACTS, CONSUMABLES } from '../data/items';
 import { ROOM_TEMPLATES } from '../data/roomTemplates';
 import { WEAPONS } from '../data/weapons';
 import { SoundSystem } from '../audio/SoundSystem';
+import { isMobileMode, mobileInput } from '../mobile/MobileInput';
 import { DungeonGenerator, GeneratedFloor } from '../systems/DungeonGenerator';
 import { addItemToSlots, consumeUse, createItemInstance, hasArtifact, rollRandomItemId } from '../systems/InventorySystem';
 import { net, NetRoomSync, NetWorldSync, SyncedProjectile } from '../systems/MultiplayerSystem';
@@ -378,14 +379,53 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-D', () => switchSpectator(1));
 
     this.input.mouse?.disableContextMenu();
-    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (this.paused || this.ui.isOverlayOpen() || this.playerState.downed) return;
-      if (pointer.rightButtonDown()) {
-        this.handleSecondaryAction();
-      } else {
-        this.handlePrimaryAttack();
-      }
-    });
+    if (!isMobileMode()) {
+      this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        if (this.paused || this.ui.isOverlayOpen() || this.playerState.downed) return;
+        if (pointer.rightButtonDown()) {
+          this.handleSecondaryAction();
+        } else {
+          this.handlePrimaryAttack();
+        }
+      });
+    } else {
+      const unsubBtn = mobileInput.onButton((btn) => {
+        if (btn === 'tab') {
+          this.ui.toggleMap();
+        } else if (btn === 'esc') {
+          if (this.ui.isOverlayOpen()) {
+            this.ui.closeShop();
+            this.paused = this.ui.togglePause(false);
+          } else {
+            this.paused = this.ui.togglePause();
+          }
+        } else if (btn === 'q') {
+          if (!this.paused && !this.ui.isOverlayOpen() && !this.playerState.downed) {
+            this.dropActiveItem();
+          }
+        } else if (btn === 'slot1') {
+          if (!this.paused && !this.ui.isOverlayOpen()) this.playerState.activeSlot = 0;
+        } else if (btn === 'slot2') {
+          if (!this.paused && !this.ui.isOverlayOpen()) this.playerState.activeSlot = 1;
+        } else if (btn === 'slot3') {
+          if (!this.paused && !this.ui.isOverlayOpen()) this.playerState.activeSlot = 2;
+        } else if (btn === 'e') {
+          if (!this.paused && !this.ui.isOverlayOpen()) {
+            this.handleInteract();
+          }
+        }
+      });
+
+      const unsubNav = mobileInput.onNav((dir) => {
+        if (dir === 'left') switchSpectator(-1);
+        else if (dir === 'right') switchSpectator(1);
+      });
+
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+        unsubBtn();
+        unsubNav();
+      });
+    }
   }
 
   private setupNetworking(): void {
@@ -1385,12 +1425,16 @@ export class GameScene extends Phaser.Scene {
   private handlePrimaryAttack(): void {
     if (this.attackCooldownMs > 0 || this.dodgeMs > 0) return;
     const item = this.playerState.inventory[this.playerState.activeSlot];
-    const angle = Phaser.Math.Angle.Between(
-      this.playerSprite.x,
-      this.playerSprite.y,
-      this.input.activePointer.worldX,
-      this.input.activePointer.worldY
-    );
+    const angle = isMobileMode()
+      ? mobileInput.dpadActive || mobileInput.dpadDirX !== 0 || mobileInput.dpadDirY !== 0
+        ? mobileInput.dpadAngle
+        : this.playerState.aimAngle
+      : Phaser.Math.Angle.Between(
+          this.playerSprite.x,
+          this.playerSprite.y,
+          this.input.activePointer.worldX,
+          this.input.activePointer.worldY
+        );
     this.playerState.aimAngle = angle;
 
     if (item && item.category === 'consumable') {
@@ -2155,12 +2199,14 @@ export class GameScene extends Phaser.Scene {
     const item = this.playerState.inventory[this.playerState.activeSlot];
     if (!item) return;
     this.playerState.inventory[this.playerState.activeSlot] = null;
-    const angle = Phaser.Math.Angle.Between(
-      this.playerSprite.x,
-      this.playerSprite.y,
-      this.input.activePointer.worldX,
-      this.input.activePointer.worldY
-    );
+    const angle = isMobileMode()
+      ? this.playerState.aimAngle
+      : Phaser.Math.Angle.Between(
+          this.playerSprite.x,
+          this.playerSprite.y,
+          this.input.activePointer.worldX,
+          this.input.activePointer.worldY
+        );
     const tx = this.playerSprite.x + Math.cos(angle) * 18;
     const ty = this.playerSprite.y + Math.sin(angle) * 18;
     this.spawnPersistentFloorItem(item.id, tx, ty, item.uses);
@@ -2628,14 +2674,33 @@ export class GameScene extends Phaser.Scene {
     if (this.keys.w.isDown || this.keys.up.isDown) dy -= 1;
     if (this.keys.s.isDown || this.keys.down.isDown) dy += 1;
 
+    if (isMobileMode()) {
+      if (Math.abs(mobileInput.moveX) > 0.05 || Math.abs(mobileInput.moveY) > 0.05) {
+        dx = mobileInput.moveX;
+        dy = mobileInput.moveY;
+        if (!mobileInput.dpadActive) {
+          this.playerState.aimAngle = Math.atan2(dy, dx);
+        }
+      }
+      if (mobileInput.consumeAttack() || mobileInput.dpadActive) {
+        this.handlePrimaryAttack();
+      }
+    }
+
     if (dx !== 0 && dy !== 0) {
-      const inv = 1 / Math.SQRT2;
-      dx *= inv;
-      dy *= inv;
+      const mag = Math.hypot(dx, dy);
+      if (mag > 1) {
+        dx /= mag;
+        dy /= mag;
+      }
     }
 
     // Dodge input
-    if ((Phaser.Input.Keyboard.JustDown(this.keys.space) || Phaser.Input.Keyboard.JustDown(this.keys.shift)) && this.dodgeMs <= 0) {
+    const wantDodge =
+      Phaser.Input.Keyboard.JustDown(this.keys.space) ||
+      Phaser.Input.Keyboard.JustDown(this.keys.shift) ||
+      (isMobileMode() && mobileInput.consumeDodge());
+    if (wantDodge && this.dodgeMs <= 0) {
       if (this.playerState.stamina >= 1) {
         this.playerState.stamina -= 1;
         this.dodgeMs = 200;
@@ -3298,6 +3363,10 @@ export class GameScene extends Phaser.Scene {
     if (this.keys.d.isDown || this.keys.right.isDown) moveX += 1;
     if (this.keys.w.isDown || this.keys.up.isDown) moveY -= 1;
     if (this.keys.s.isDown || this.keys.down.isDown) moveY += 1;
+    if (isMobileMode()) {
+      if (Math.abs(mobileInput.moveX) > 0.25) moveX = Math.sign(mobileInput.moveX);
+      if (Math.abs(mobileInput.moveY) > 0.25) moveY = Math.sign(mobileInput.moveY);
+    }
     if (moveX === 0 && moveY === 0) return;
 
     const px = this.playerSprite.x;

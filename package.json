@@ -2,22 +2,28 @@
   "name": "glimmerdeep",
   "version": "1.0.0",
   "description": "Glimmerdeep - 16-bit top-down action roguelike",
-  "type": "module",
+  "type": "commonjs",
   "scripts": {
     "dev": "vite",
+    "dev:mobile": "vite --config vite.mobile.config.ts",
     "build": "tsc --noEmit && vite build",
+    "build:mobile": "tsc --noEmit && vite build --config vite.mobile.config.ts",
+    "android:sync": "npm run build:mobile && npx cap sync android",
+    "android:build": "npm run android:sync && cd android && gradlew.bat assembleDebug",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
+    "@capacitor/core": "^8.6.2",
     "phaser": "^4.2.1",
     "trystero": "^0.27.0"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/cli": "^8.6.2",
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"

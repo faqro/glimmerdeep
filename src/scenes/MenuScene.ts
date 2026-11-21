@@ -2,6 +2,8 @@ import Phaser from 'phaser';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
 import { pickRandomPaletteId } from '../data/palettes';
+import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { VirtualKeyboard } from '../mobile/VirtualKeyboard';
 import { net } from '../systems/MultiplayerSystem';
 import { getDailySeed } from '../utils/SeededGenerator';
 
@@ -19,6 +21,17 @@ export class MenuScene extends Phaser.Scene {
   private joinModal!: Phaser.GameObjects.Container;
   private codeBoxBg!: Phaser.GameObjects.Rectangle;
   private codeText!: Phaser.GameObjects.BitmapText;
+  private joinBtnBg!: Phaser.GameObjects.Image;
+  private joinBtnTxt!: Phaser.GameObjects.BitmapText;
+  private cancelBtnBg!: Phaser.GameObjects.Image;
+  private cancelBtnTxt!: Phaser.GameObjects.BitmapText;
+
+  private menuButtons: Array<{ bg: Phaser.GameObjects.Image; txt: Phaser.GameObjects.BitmapText; onClick: () => void }> = [];
+  private mobileFocusIndex = 0; // 0: PLAY SOLO, 1: CREATE CO-OP, 2: JOIN CO-OP, 3: NAME BOX
+  private modalFocusIndex = 0; // 0: CODE BOX, 1: JOIN, 2: CANCEL
+  private virtualKeyboard?: VirtualKeyboard;
+  private unsubNav?: () => void;
+  private unsubBtn?: () => void;
 
   private cursorBlink = true;
   private fireflies: Array<{ sprite: Phaser.GameObjects.Image; vx: number; vy: number; phase: number }> = [];
@@ -30,8 +43,11 @@ export class MenuScene extends Phaser.Scene {
   create(): void {
     net.disconnect();
     this.fireflies = [];
+    this.menuButtons = [];
     this.activeField = 'none';
     this.joinCode = '';
+    this.mobileFocusIndex = 0;
+    this.modalFocusIndex = 0;
     try {
       const saved = localStorage.getItem(USERNAME_STORAGE_KEY);
       if (saved && saved.trim().length > 0) {
@@ -84,18 +100,18 @@ export class MenuScene extends Phaser.Scene {
     });
 
     addPixelText(this, 96, 166, 'NAME:', 8, 0x9d8ce0, 0.5, 0);
-    this.nameBoxBg = this.add
-      .rectangle(96, 186, 106, 18, 0x100d24)
-      .setStrokeStyle(1, 0x6c5bb3)
-      .setInteractive({ useHandCursor: true });
+    this.nameBoxBg = this.add.rectangle(96, 186, 106, 18, 0x100d24).setStrokeStyle(1, 0x6c5bb3);
     this.nameText = addPixelText(this, 96, 186, this.playerName, 8, 0xffffff, 0.5, 0.5);
 
-    this.nameBoxBg.on('pointerdown', () => {
-      if (this.joinModal.visible) return;
-      this.activeField = 'name';
-      SoundSystem.playSwing();
-      this.refreshTextboxes();
-    });
+    if (!isMobileMode()) {
+      this.nameBoxBg.setInteractive({ useHandCursor: true });
+      this.nameBoxBg.on('pointerdown', () => {
+        if (this.joinModal.visible) return;
+        this.activeField = 'name';
+        SoundSystem.playSwing();
+        this.refreshTextboxes();
+      });
+    }
 
     this.createPixelButton(256, 108, 'PLAY SOLO', () => {
       if (this.joinModal.visible) return;
@@ -122,7 +138,9 @@ export class MenuScene extends Phaser.Scene {
       this,
       180,
       248,
-      'WASD Move | Mouse Aim/Attack | Space Dodge | E Interact | Tab Map',
+      isMobileMode()
+        ? 'Stick/D-Pad: Navigate | E/Space: Select'
+        : 'WASD Move | Mouse Aim/Attack | Space Dodge | E Interact | Tab Map',
       8,
       0x7e71b8,
       0.5,
@@ -131,6 +149,18 @@ export class MenuScene extends Phaser.Scene {
     );
 
     this.buildJoinModal();
+
+    if (isMobileMode()) {
+      this.virtualKeyboard = new VirtualKeyboard(this);
+      this.refreshMobileFocus();
+      this.unsubNav = mobileInput.onNav((dir) => this.handleMobileNav(dir));
+      this.unsubBtn = mobileInput.onButton((btn) => this.handleMobileButton(btn));
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+        this.unsubNav?.();
+        this.unsubBtn?.();
+        this.virtualKeyboard?.destroy();
+      });
+    }
 
     this.time.addEvent({
       delay: 420,
@@ -195,47 +225,69 @@ export class MenuScene extends Phaser.Scene {
 
   private buildJoinModal(): void {
     this.joinModal = this.add.container(0, 0).setVisible(false).setDepth(30);
-    const dim = this.add.rectangle(180, 135, 360, 270, 0x0b0917, 0.78).setInteractive();
+    const dim = this.add.rectangle(180, 135, 360, 270, 0x0b0917, 0.78);
+    if (!isMobileMode()) dim.setInteractive();
     const panel = this.add.image(180, 135, 'ui_panel').setDisplaySize(210, 114);
     const title = addPixelText(this, 180, 96, 'ENTER INVITE CODE', 8, 0xf49ac1, 0.5, 0.5);
 
-    this.codeBoxBg = this.add
-      .rectangle(180, 126, 120, 22, 0x100d24)
-      .setStrokeStyle(1, 0xffe066)
-      .setInteractive({ useHandCursor: true });
+    this.codeBoxBg = this.add.rectangle(180, 126, 120, 22, 0x100d24).setStrokeStyle(1, 0xffe066);
     this.codeText = addPixelText(this, 180, 126, '', 16, 0xffe066, 0.5, 0.5);
 
-    this.codeBoxBg.on('pointerdown', () => {
-      this.activeField = 'code';
-      this.refreshTextboxes();
-    });
+    this.joinBtnBg = this.add.image(132, 164, 'ui_btn').setDisplaySize(82, 20);
+    this.joinBtnTxt = addPixelText(this, 132, 164, 'JOIN', 8, 0xffffff, 0.5, 0.5);
 
-    const joinBtn = this.add.image(132, 164, 'ui_btn').setDisplaySize(82, 20).setInteractive({ useHandCursor: true });
-    const joinTxt = addPixelText(this, 132, 164, 'JOIN', 8, 0xffffff, 0.5, 0.5);
-    joinBtn.on('pointerover', () => joinBtn.setTexture('ui_btn_hover'));
-    joinBtn.on('pointerout', () => joinBtn.setTexture('ui_btn'));
-    joinBtn.on('pointerdown', () => this.submitJoinCode());
+    this.cancelBtnBg = this.add.image(228, 164, 'ui_btn').setDisplaySize(82, 20);
+    this.cancelBtnTxt = addPixelText(this, 228, 164, 'CANCEL', 8, 0xffffff, 0.5, 0.5);
 
-    const cancelBtn = this.add.image(228, 164, 'ui_btn').setDisplaySize(82, 20).setInteractive({ useHandCursor: true });
-    const cancelTxt = addPixelText(this, 228, 164, 'CANCEL', 8, 0xffffff, 0.5, 0.5);
-    cancelBtn.on('pointerover', () => cancelBtn.setTexture('ui_btn_hover'));
-    cancelBtn.on('pointerout', () => cancelBtn.setTexture('ui_btn'));
-    cancelBtn.on('pointerdown', () => this.closeJoinModal());
+    if (!isMobileMode()) {
+      this.codeBoxBg.setInteractive({ useHandCursor: true });
+      this.codeBoxBg.on('pointerdown', () => {
+        this.activeField = 'code';
+        this.refreshTextboxes();
+      });
 
-    this.joinModal.add([dim, panel, title, this.codeBoxBg, this.codeText, joinBtn, joinTxt, cancelBtn, cancelTxt]);
+      this.joinBtnBg.setInteractive({ useHandCursor: true });
+      this.joinBtnBg.on('pointerover', () => this.joinBtnBg.setTexture('ui_btn_hover'));
+      this.joinBtnBg.on('pointerout', () => this.joinBtnBg.setTexture('ui_btn'));
+      this.joinBtnBg.on('pointerdown', () => this.submitJoinCode());
+
+      this.cancelBtnBg.setInteractive({ useHandCursor: true });
+      this.cancelBtnBg.on('pointerover', () => this.cancelBtnBg.setTexture('ui_btn_hover'));
+      this.cancelBtnBg.on('pointerout', () => this.cancelBtnBg.setTexture('ui_btn'));
+      this.cancelBtnBg.on('pointerdown', () => this.closeJoinModal());
+    }
+
+    this.joinModal.add([
+      dim,
+      panel,
+      title,
+      this.codeBoxBg,
+      this.codeText,
+      this.joinBtnBg,
+      this.joinBtnTxt,
+      this.cancelBtnBg,
+      this.cancelBtnTxt,
+    ]);
   }
 
   private openJoinModal(): void {
     this.joinCode = '';
-    this.activeField = 'code';
+    this.activeField = isMobileMode() ? 'none' : 'code';
+    this.modalFocusIndex = 0;
     this.joinModal.setVisible(true);
     this.refreshTextboxes();
+    if (isMobileMode()) {
+      this.refreshMobileFocus();
+    }
   }
 
   private closeJoinModal(): void {
     this.joinModal.setVisible(false);
     this.activeField = 'none';
     this.refreshTextboxes();
+    if (isMobileMode()) {
+      this.refreshMobileFocus();
+    }
   }
 
   private submitJoinCode(): void {
@@ -279,21 +331,170 @@ export class MenuScene extends Phaser.Scene {
       this.codeBoxBg.setStrokeStyle(1, 0x6c5bb3);
       this.codeText.setText(this.joinCode);
     }
+
+    if (isMobileMode()) {
+      this.refreshMobileFocus();
+    }
   }
 
   private createPixelButton(x: number, y: number, label: string, onClick: () => void): void {
-    const bg = this.add.image(x, y, 'ui_btn').setDisplaySize(136, 24).setInteractive({ useHandCursor: true });
+    const bg = this.add.image(x, y, 'ui_btn').setDisplaySize(136, 24);
     const txt = addPixelText(this, x, y, label, 8, 0xffffff, 0.5, 0.5);
+    this.menuButtons.push({ bg, txt, onClick });
 
-    bg.on('pointerover', () => {
-      bg.setTexture('ui_btn_hover');
-      txt.setTint(0xffe066);
+    if (!isMobileMode()) {
+      bg.setInteractive({ useHandCursor: true });
+      bg.on('pointerover', () => {
+        bg.setTexture('ui_btn_hover');
+        txt.setTint(0xffe066);
+      });
+      bg.on('pointerout', () => {
+        bg.setTexture('ui_btn');
+        txt.setTint(0xffffff);
+      });
+      bg.on('pointerdown', onClick);
+    }
+  }
+
+  private handleMobileNav(dir: NavDir): void {
+    if (this.virtualKeyboard?.visible) {
+      this.virtualKeyboard.handleNav(dir);
+      return;
+    }
+
+    SoundSystem.playSwing();
+    if (this.joinModal.visible) {
+      if (dir === 'up') {
+        this.modalFocusIndex = 0;
+      } else if (dir === 'down') {
+        if (this.modalFocusIndex === 0) this.modalFocusIndex = 1;
+        else this.modalFocusIndex = 0;
+      } else if (dir === 'left' || dir === 'right') {
+        if (this.modalFocusIndex === 1) this.modalFocusIndex = 2;
+        else if (this.modalFocusIndex === 2) this.modalFocusIndex = 1;
+      }
+      this.refreshMobileFocus();
+      return;
+    }
+
+    if (dir === 'up') {
+      if (this.mobileFocusIndex === 3) this.mobileFocusIndex = 2;
+      else this.mobileFocusIndex = (this.mobileFocusIndex + 2) % 3;
+    } else if (dir === 'down') {
+      if (this.mobileFocusIndex === 3) this.mobileFocusIndex = 0;
+      else this.mobileFocusIndex = (this.mobileFocusIndex + 1) % 3;
+    } else if (dir === 'left') {
+      this.mobileFocusIndex = 3;
+    } else if (dir === 'right') {
+      if (this.mobileFocusIndex === 3) this.mobileFocusIndex = 0;
+    }
+    this.refreshMobileFocus();
+  }
+
+  private handleMobileButton(btn: VirtualButton): void {
+    if (this.virtualKeyboard?.visible) {
+      this.virtualKeyboard.handleButton(btn);
+      return;
+    }
+
+    if (btn === 'esc') {
+      if (this.joinModal.visible) {
+        SoundSystem.playHit();
+        this.closeJoinModal();
+      }
+      return;
+    }
+
+    if (btn !== 'e' && btn !== 'space') return;
+
+    if (this.joinModal.visible) {
+      if (this.modalFocusIndex === 0) {
+        SoundSystem.playSwing();
+        this.virtualKeyboard?.open({
+          title: 'ENTER INVITE CODE',
+          initialValue: this.joinCode,
+          maxLength: 6,
+          uppercaseOnly: true,
+          allowSymbols: false,
+          onChange: (val) => {
+            this.joinCode = val.toUpperCase();
+            this.refreshTextboxes();
+          },
+          onEnter: (val) => {
+            this.joinCode = val.trim().toUpperCase();
+            this.refreshTextboxes();
+            if (this.joinCode.length >= 4) {
+              this.submitJoinCode();
+            } else {
+              this.modalFocusIndex = 1;
+              this.refreshMobileFocus();
+            }
+          },
+          onCancel: () => {
+            this.refreshMobileFocus();
+          },
+        });
+      } else if (this.modalFocusIndex === 1) {
+        this.submitJoinCode();
+      } else {
+        this.closeJoinModal();
+      }
+      return;
+    }
+
+    if (this.mobileFocusIndex === 3) {
+      SoundSystem.playSwing();
+      this.virtualKeyboard?.open({
+        title: 'ENTER USERNAME',
+        initialValue: this.playerName,
+        maxLength: 12,
+        uppercaseOnly: false,
+        allowSymbols: true,
+        onChange: (val) => {
+          this.playerName = val;
+          this.saveUsername();
+          this.refreshTextboxes();
+        },
+        onEnter: (val) => {
+          this.playerName = val.trim() || 'Wanderer';
+          this.saveUsername();
+          this.refreshTextboxes();
+          this.refreshMobileFocus();
+        },
+        onCancel: () => {
+          this.refreshMobileFocus();
+        },
+      });
+      return;
+    }
+
+    this.menuButtons[this.mobileFocusIndex]?.onClick();
+  }
+
+  private refreshMobileFocus(): void {
+    if (!isMobileMode()) return;
+
+    this.menuButtons.forEach((b, idx) => {
+      const focused = !this.joinModal.visible && this.mobileFocusIndex === idx;
+      b.bg.setTexture(focused ? 'ui_btn_hover' : 'ui_btn');
+      b.txt.setTint(focused ? 0xffe066 : 0xffffff);
     });
-    bg.on('pointerout', () => {
-      bg.setTexture('ui_btn');
-      txt.setTint(0xffffff);
-    });
-    bg.on('pointerdown', onClick);
+
+    if (!this.joinModal.visible && this.mobileFocusIndex === 3) {
+      this.nameBoxBg.setStrokeStyle(2, 0xffe066);
+      this.nameText.setTint(0xffe066);
+    } else {
+      this.nameBoxBg.setStrokeStyle(1, 0x6c5bb3);
+      this.nameText.setTint(0xffffff);
+    }
+
+    if (this.joinModal.visible) {
+      this.codeBoxBg.setStrokeStyle(this.modalFocusIndex === 0 ? 2 : 1, this.modalFocusIndex === 0 ? 0xffe066 : 0x6c5bb3);
+      this.joinBtnBg.setTexture(this.modalFocusIndex === 1 ? 'ui_btn_hover' : 'ui_btn');
+      this.joinBtnTxt.setTint(this.modalFocusIndex === 1 ? 0xffe066 : 0xffffff);
+      this.cancelBtnBg.setTexture(this.modalFocusIndex === 2 ? 'ui_btn_hover' : 'ui_btn');
+      this.cancelBtnTxt.setTint(this.modalFocusIndex === 2 ? 0xffe066 : 0xffffff);
+    }
   }
 
   private cyclePalette(_dir: number): void {

@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
+import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { net } from '../systems/MultiplayerSystem';
 
 export interface GameOverData {
@@ -11,6 +12,9 @@ export interface GameOverData {
 }
 
 export class GameOverScene extends Phaser.Scene {
+  private unsubNav?: () => void;
+  private unsubBtn?: () => void;
+
   constructor() {
     super({ key: 'GameOverScene' });
   }
@@ -55,16 +59,29 @@ export class GameOverScene extends Phaser.Scene {
     addPixelText(this, 180, 140, `Foes Banished: ${data.enemiesDefeated}`, 8, 0xffe066, 0.5, 0.5);
 
     if (net.mode === 'solo') {
-      const btn = this.add.image(180, 186, 'ui_btn').setDisplaySize(130, 22).setInteractive({ useHandCursor: true });
-      addPixelText(this, 180, 186, 'MAIN MENU', 8, 0xffffff, 0.5, 0.5);
-
-      btn.on('pointerover', () => btn.setTexture('ui_btn_hover'));
-      btn.on('pointerout', () => btn.setTexture('ui_btn'));
-      btn.on('pointerdown', () => {
+      const btn = this.add.image(180, 186, 'ui_btn').setDisplaySize(130, 22);
+      const btnTxt = addPixelText(this, 180, 186, 'MAIN MENU', 8, 0xffffff, 0.5, 0.5);
+      const goMenu = () => {
         SoundSystem.playPickup();
         net.disconnect();
         this.scene.start('MenuScene');
-      });
+      };
+
+      if (isMobileMode()) {
+        btn.setTexture('ui_btn_hover');
+        btnTxt.setTint(0xffe066);
+        this.unsubBtn = mobileInput.onButton((b) => {
+          if (b === 'e' || b === 'space' || b === 'esc') goMenu();
+        });
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+          this.unsubBtn?.();
+        });
+      } else {
+        btn.setInteractive({ useHandCursor: true });
+        btn.on('pointerover', () => btn.setTexture('ui_btn_hover'));
+        btn.on('pointerout', () => btn.setTexture('ui_btn'));
+        btn.on('pointerdown', goMenu);
+      }
       return;
     }
 
@@ -80,29 +97,28 @@ export class GameOverScene extends Phaser.Scene {
       250
     );
 
-    const menuBtn = this.add.image(115, 188, 'ui_btn').setDisplaySize(106, 22).setInteractive({ useHandCursor: true });
-    addPixelText(this, 115, 188, 'MAIN MENU', 8, 0xffffff, 0.5, 0.5);
-    menuBtn.on('pointerover', () => menuBtn.setTexture('ui_btn_hover'));
-    menuBtn.on('pointerout', () => menuBtn.setTexture('ui_btn'));
-    menuBtn.on('pointerdown', () => {
+    const menuBtn = this.add.image(115, 188, 'ui_btn').setDisplaySize(106, 22);
+    const menuTxt = addPixelText(this, 115, 188, 'MAIN MENU', 8, 0xffffff, 0.5, 0.5);
+    const onMenu = () => {
       SoundSystem.playPickup();
       net.disconnect();
       this.scene.start('MenuScene');
-    });
+    };
+    if (!isMobileMode()) {
+      menuBtn.setInteractive({ useHandCursor: true });
+      menuBtn.on('pointerover', () => menuBtn.setTexture('ui_btn_hover'));
+      menuBtn.on('pointerout', () => menuBtn.setTexture('ui_btn'));
+      menuBtn.on('pointerdown', onMenu);
+    }
 
     let playAgainReady = net.mode === 'host';
     const playAgainBtn = this.add
       .image(245, 188, 'ui_btn')
       .setDisplaySize(116, 22)
-      .setAlpha(playAgainReady ? 1 : 0.4)
-      .setInteractive({ useHandCursor: playAgainReady });
+      .setAlpha(playAgainReady ? 1 : 0.4);
     const playAgainTxt = addPixelText(this, 245, 188, 'PLAY AGAIN', 8, playAgainReady ? 0xffffff : 0x9d8ce0, 0.5, 0.5);
 
-    playAgainBtn.on('pointerover', () => {
-      if (playAgainReady) playAgainBtn.setTexture('ui_btn_hover');
-    });
-    playAgainBtn.on('pointerout', () => playAgainBtn.setTexture('ui_btn'));
-    playAgainBtn.on('pointerdown', () => {
+    const onPlayAgain = () => {
       if (!playAgainReady) return;
       SoundSystem.playUnlock();
       if (net.mode === 'host') {
@@ -114,24 +130,69 @@ export class GameOverScene extends Phaser.Scene {
       net.onPlayAgain = undefined;
       net.onHostMigrated = undefined;
       this.scene.start('LobbyScene');
-    });
+    };
+
+    if (!isMobileMode()) {
+      playAgainBtn.setInteractive({ useHandCursor: playAgainReady });
+      playAgainBtn.on('pointerover', () => {
+        if (playAgainReady) playAgainBtn.setTexture('ui_btn_hover');
+      });
+      playAgainBtn.on('pointerout', () => playAgainBtn.setTexture('ui_btn'));
+      playAgainBtn.on('pointerdown', onPlayAgain);
+    }
+
+    let focusIdx = playAgainReady ? 1 : 0;
+    const refreshFocus = () => {
+      if (!isMobileMode()) return;
+      menuBtn.setTexture(focusIdx === 0 ? 'ui_btn_hover' : 'ui_btn');
+      menuTxt.setTint(focusIdx === 0 ? 0xffe066 : 0xffffff);
+      playAgainBtn.setTexture(focusIdx === 1 ? 'ui_btn_hover' : 'ui_btn');
+      playAgainTxt.setTint(focusIdx === 1 ? 0xffe066 : playAgainReady ? 0xffffff : 0x9d8ce0);
+    };
+
+    if (isMobileMode()) {
+      refreshFocus();
+      this.unsubNav = mobileInput.onNav((dir: NavDir) => {
+        if (dir === 'left' || dir === 'right') {
+          SoundSystem.playSwing();
+          focusIdx = focusIdx === 0 ? 1 : 0;
+          refreshFocus();
+        }
+      });
+      this.unsubBtn = mobileInput.onButton((b: VirtualButton) => {
+        if (b === 'esc') {
+          onMenu();
+          return;
+        }
+        if (b === 'e' || b === 'space') {
+          if (focusIdx === 0) onMenu();
+          else onPlayAgain();
+        }
+      });
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+        this.unsubNav?.();
+        this.unsubBtn?.();
+      });
+    }
 
     net.onPlayAgain = () => {
       playAgainReady = true;
       playAgainBtn.setAlpha(1);
-      playAgainBtn.setInteractive({ useHandCursor: true });
+      if (!isMobileMode()) playAgainBtn.setInteractive({ useHandCursor: true });
       playAgainTxt.setText('REJOIN PARTY').setTint(0xffffff);
       statusHint.setText('Host opened the party!').setTint(0x66ffd9);
       SoundSystem.playPickup();
+      refreshFocus();
     };
 
     net.onHostMigrated = (_newHostPeerId, isLocalNewHost) => {
       if (isLocalNewHost) {
         playAgainReady = true;
         playAgainBtn.setAlpha(1);
-        playAgainBtn.setInteractive({ useHandCursor: true });
+        if (!isMobileMode()) playAgainBtn.setInteractive({ useHandCursor: true });
         playAgainTxt.setText('PLAY AGAIN').setTint(0xffffff);
         statusHint.setText('You are now Host!').setTint(0xffe066);
+        refreshFocus();
       }
     };
   }
