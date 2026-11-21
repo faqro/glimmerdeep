@@ -1121,6 +1121,20 @@ export class PixelArtGenerator {
         ],
         pal: { o: '#100d24', G: '#ffd275', P: '#ff75c3', w: '#ffffff' },
       },
+      item_lucky_backpack: {
+        rows: [
+          '.....oooooo.....',
+          '....oBBBBBBoo...',
+          '...oBBYYYYBBBo..',
+          '..oBBBBBBBBBBBo.',
+          '..oBBGYYYYGBBBo.',
+          '..oBBGYYYYGBBBo.',
+          '..oBBBBBBBBBBBo.',
+          '...oBBBBBBBBBo..',
+          '....ooooooooo...',
+        ],
+        pal: { o: '#100d24', B: '#b45309', G: '#ffd275', Y: '#ffe066' },
+      },
       item_tiny_comet: {
         rows: [
           '......oooo......',
@@ -1278,7 +1292,13 @@ export class PixelArtGenerator {
   }
 
   private generateEnemySprites(): void {
-    const enemies: Array<{ key: string; body: number; hi: number; eye: string; shape: 'slime' | 'moth' | 'mushroom' | 'eye' | 'beetle' | 'armour' | 'doll' | 'void' }> = [
+    const enemies: Array<{
+      key: string;
+      body: number;
+      hi: number;
+      eye: string;
+      shape: 'slime' | 'moth' | 'mushroom' | 'eye' | 'beetle' | 'armour' | 'doll' | 'void' | 'spider' | 'ghost' | 'construct';
+    }> = [
       { key: 'enemy_slimelet', body: 0x7b6cf6, hi: 0xc4b5fd, eye: '#ffffff', shape: 'slime' },
       { key: 'enemy_tiny_moth', body: 0xf49ac1, hi: 0xfde2e4, eye: '#100d24', shape: 'moth' },
       { key: 'enemy_sleepy_mushroom', body: 0xe879f9, hi: 0xf5d0fe, eye: '#100d24', shape: 'mushroom' },
@@ -1292,6 +1312,33 @@ export class PixelArtGenerator {
       { key: 'enemy_haunted_armour', body: 0x94a3b8, hi: 0xe2e8f0, eye: '#ff75c3', shape: 'armour' },
       { key: 'enemy_button_doll', body: 0xfb7185, hi: 0xffd275, eye: '#100d24', shape: 'doll' },
       { key: 'enemy_voidling', body: 0x3b0764, hi: 0xff47b6, eye: '#ffffff', shape: 'void' },
+      // Floor 2
+      { key: 'enemy_prism_mite', body: 0x22d3ee, hi: 0xe0f2fe, eye: '#100d24', shape: 'beetle' },
+      { key: 'enemy_echo_wisp', body: 0x4f46e5, hi: 0x6ef3ff, eye: '#ffffff', shape: 'eye' },
+      { key: 'enemy_shard_golem', body: 0x0ea5e9, hi: 0xbae6fd, eye: '#ffe066', shape: 'construct' },
+      { key: 'enemy_cave_crawler', body: 0x475569, hi: 0x6ef3ff, eye: '#ffe066', shape: 'spider' },
+      // Floor 3
+      { key: 'enemy_mycelium_mite', body: 0x10b981, hi: 0xa7f3d0, eye: '#100d24', shape: 'spider' },
+      { key: 'enemy_glow_toadstool', body: 0xc026d3, hi: 0x66ffd9, eye: '#100d24', shape: 'mushroom' },
+      { key: 'enemy_rot_moth', body: 0x7e22ce, hi: 0x9ef01a, eye: '#ffffff', shape: 'moth' },
+      { key: 'enemy_moss_hulk', body: 0x059669, hi: 0x6ee7b7, eye: '#ffe066', shape: 'construct' },
+      { key: 'enemy_spore_eye', body: 0x14b8a6, hi: 0x99f6e4, eye: '#9ef01a', shape: 'eye' },
+      // Floor 4
+      { key: 'enemy_copper_scarab', body: 0xd97706, hi: 0x66ffd9, eye: '#100d24', shape: 'beetle' },
+      { key: 'enemy_ooze_ling', body: 0x65a30d, hi: 0xbef264, eye: '#100d24', shape: 'slime' },
+      { key: 'enemy_brine_wraith', body: 0x2dd4bf, hi: 0xa6ff4d, eye: '#100d24', shape: 'ghost' },
+      { key: 'enemy_brass_sentinel', body: 0xb45309, hi: 0x5eead4, eye: '#a6ff4d', shape: 'construct' },
+      // Floor 5
+      { key: 'enemy_clockwork_tick', body: 0xf59e0b, hi: 0xfef08a, eye: '#100d24', shape: 'spider' },
+      { key: 'enemy_porcelain_mask', body: 0xfda4af, hi: 0xfff1f2, eye: '#100d24', shape: 'ghost' },
+      { key: 'enemy_pendulum_knight', body: 0x7c3aed, hi: 0xffd275, eye: '#ffd275', shape: 'armour' },
+      { key: 'enemy_velvet_moth', body: 0xe11d48, hi: 0xffd275, eye: '#ffffff', shape: 'moth' },
+      { key: 'enemy_gear_golem', body: 0x64748b, hi: 0xfbbf24, eye: '#ffd275', shape: 'construct' },
+      // Floor 6
+      { key: 'enemy_shadow_mote', body: 0x581c87, hi: 0xff47b6, eye: '#ffffff', shape: 'ghost' },
+      { key: 'enemy_night_weaver', body: 0x1e1b4b, hi: 0xf472b6, eye: '#ff47b6', shape: 'spider' },
+      { key: 'enemy_abyss_watcher', body: 0x4c1d95, hi: 0xe879f9, eye: '#ff47b6', shape: 'eye' },
+      { key: 'enemy_dread_knight', body: 0x312e81, hi: 0xff47b6, eye: '#ff47b6', shape: 'armour' },
     ];
 
     for (const e of enemies) {
@@ -1343,6 +1390,32 @@ export class PixelArtGenerator {
           this.px(ctx, ox + 6, 4 + dy, hi, 4, 2);
           this.px(ctx, ox + 6, 6 + dy, e.eye, 1, 1);
           this.px(ctx, ox + 9, 6 + dy, e.eye, 1, 1);
+        } else if (e.shape === 'spider') {
+          const legY = f === 0 ? 9 : 8;
+          this.px(ctx, ox + 1, legY, '#100d24', 3, 2);
+          this.px(ctx, ox + 12, legY, '#100d24', 3, 2);
+          this.px(ctx, ox + 2, legY + 2, '#100d24', 2, 2);
+          this.px(ctx, ox + 12, legY + 2, '#100d24', 2, 2);
+          this.px(ctx, ox + 4, 5 + dy, '#100d24', 8, 7);
+          this.px(ctx, ox + 5, 6 + dy, b, 6, 5);
+          this.px(ctx, ox + 6, 6 + dy, hi, 4, 2);
+          this.px(ctx, ox + 6, 9 + dy, e.eye, 1, 1);
+          this.px(ctx, ox + 9, 9 + dy, e.eye, 1, 1);
+        } else if (e.shape === 'ghost') {
+          this.px(ctx, ox + 3, 2 + dy, '#100d24', 10, 11);
+          this.px(ctx, ox + 4, 3 + dy, b, 8, 9);
+          this.px(ctx, ox + 5, 4 + dy, hi, 6, 3);
+          this.px(ctx, ox + 4 + (f === 1 ? 1 : 0), 12 + dy, '#100d24', 2, 2);
+          this.px(ctx, ox + 9 - (f === 1 ? 1 : 0), 12 + dy, '#100d24', 2, 2);
+          this.px(ctx, ox + 6, 6 + dy, e.eye, 1, 2);
+          this.px(ctx, ox + 9, 6 + dy, e.eye, 1, 2);
+        } else if (e.shape === 'construct') {
+          this.px(ctx, ox + 2, 2 + dy, '#100d24', 12, 12);
+          this.px(ctx, ox + 3, 3 + dy, b, 10, 10);
+          this.px(ctx, ox + 4, 3 + dy, hi, 8, 2);
+          this.px(ctx, ox + 5, 6 + dy, '#100d24', 6, 2);
+          this.px(ctx, ox + 6, 6 + dy, e.eye, 1, 1);
+          this.px(ctx, ox + 9, 6 + dy, e.eye, 1, 1);
         } else {
           // doll / void
           this.px(ctx, ox + 4, 3 + dy, '#100d24', 8, 11);
@@ -1377,24 +1450,130 @@ export class PixelArtGenerator {
       for (let f = 0; f < 2; f++) {
         const ox = f * 32;
         const dy = f === 1 ? 1 : 0;
-        // Crown / horns
-        this.px(ctx, ox + 6, 2 + dy, '#100d24', 5, 6);
-        this.px(ctx, ox + 7, 3 + dy, a, 3, 4);
-        this.px(ctx, ox + 21, 2 + dy, '#100d24', 5, 6);
-        this.px(ctx, ox + 22, 3 + dy, a, 3, 4);
 
-        // Main silhouette
-        this.px(ctx, ox + 6, 6 + dy, '#100d24', 20, 22);
-        this.px(ctx, ox + 7, 7 + dy, b, 18, 20);
-        this.px(ctx, ox + 10, 9 + dy, a, 12, 4);
-
-        // Glowing eyes
-        this.px(ctx, ox + 10, 14 + dy, boss.eye, 3, 3);
-        this.px(ctx, ox + 19, 14 + dy, boss.eye, 3, 3);
-
-        // Core rune
-        this.px(ctx, ox + 14, 20 + dy, a, 4, 4);
-        this.px(ctx, ox + 15, 21 + dy, '#ffffff', 2, 2);
+        if (boss.key === 'boss_hollow_stag') {
+          // Crown / horns (kept exact for Floor 1 boss)
+          this.px(ctx, ox + 6, 2 + dy, '#100d24', 5, 6);
+          this.px(ctx, ox + 7, 3 + dy, a, 3, 4);
+          this.px(ctx, ox + 21, 2 + dy, '#100d24', 5, 6);
+          this.px(ctx, ox + 22, 3 + dy, a, 3, 4);
+          // Main silhouette
+          this.px(ctx, ox + 6, 6 + dy, '#100d24', 20, 22);
+          this.px(ctx, ox + 7, 7 + dy, b, 18, 20);
+          this.px(ctx, ox + 10, 9 + dy, a, 12, 4);
+          // Glowing eyes
+          this.px(ctx, ox + 10, 14 + dy, boss.eye, 3, 3);
+          this.px(ctx, ox + 19, 14 + dy, boss.eye, 3, 3);
+          // Core rune
+          this.px(ctx, ox + 14, 20 + dy, a, 4, 4);
+          this.px(ctx, ox + 15, 21 + dy, '#ffffff', 2, 2);
+        } else if (boss.key === 'boss_crystal_guardian') {
+          // Floating diamond crystal monolith + orbiting shards
+          const shardY = f === 0 ? 11 : 15;
+          this.px(ctx, ox + 1, shardY, '#100d24', 5, 7);
+          this.px(ctx, ox + 2, shardY + 1, a, 3, 5);
+          this.px(ctx, ox + 26, 26 - shardY, '#100d24', 5, 7);
+          this.px(ctx, ox + 27, 27 - shardY, a, 3, 5);
+          // Diamond body
+          this.px(ctx, ox + 13, 2 + dy, '#100d24', 6, 4);
+          this.px(ctx, ox + 10, 5 + dy, '#100d24', 12, 5);
+          this.px(ctx, ox + 7, 9 + dy, '#100d24', 18, 12);
+          this.px(ctx, ox + 10, 21 + dy, '#100d24', 12, 5);
+          this.px(ctx, ox + 13, 26 + dy, '#100d24', 6, 4);
+          this.px(ctx, ox + 14, 3 + dy, a, 4, 3);
+          this.px(ctx, ox + 11, 6 + dy, b, 10, 4);
+          this.px(ctx, ox + 8, 10 + dy, b, 16, 10);
+          this.px(ctx, ox + 11, 20 + dy, b, 10, 5);
+          this.px(ctx, ox + 14, 25 + dy, a, 4, 3);
+          // Visor & prism core
+          this.px(ctx, ox + 10, 12 + dy, '#100d24', 12, 3);
+          this.px(ctx, ox + 11, 13 + dy, boss.eye, 10, 1);
+          this.px(ctx, ox + 13, 17 + dy, a, 6, 4);
+          this.px(ctx, ox + 15, 18 + dy, '#ffffff', 2, 2);
+        } else if (boss.key === 'boss_mothercap') {
+          // Wide spotted fungal cap + thick stalk
+          this.px(ctx, ox + 4, 3 + dy, '#100d24', 24, 5);
+          this.px(ctx, ox + 2, 7 + dy, '#100d24', 28, 10);
+          this.px(ctx, ox + 5, 4 + dy, b, 22, 4);
+          this.px(ctx, ox + 3, 8 + dy, b, 26, 8);
+          // Glowing spots on cap
+          this.px(ctx, ox + 6, 6 + dy, a, 4, 3);
+          this.px(ctx, ox + 14, 5 + dy, a, 5, 3);
+          this.px(ctx, ox + 22, 7 + dy, a, 4, 3);
+          this.px(ctx, ox + 9, 12 + dy, a, 3, 3);
+          this.px(ctx, ox + 19, 12 + dy, a, 3, 3);
+          // Stalk & eyes
+          this.px(ctx, ox + 9, 17 + dy, '#100d24', 14, 12);
+          this.px(ctx, ox + 10, 17 + dy, '#e2e8f0', 12, 11);
+          this.px(ctx, ox + 11, 17 + dy, a, 10, 2);
+          this.px(ctx, ox + 11, 21 + dy, '#100d24', 3, 3);
+          this.px(ctx, ox + 18, 21 + dy, '#100d24', 3, 3);
+          this.px(ctx, ox + 12, 22 + dy, boss.eye, 2, 2);
+          this.px(ctx, ox + 19, 22 + dy, boss.eye, 2, 2);
+        } else if (boss.key === 'boss_sludge_empress') {
+          // Crowned bubbling slime empress
+          this.px(ctx, ox + 10, 2 + dy, '#100d24', 12, 6);
+          this.px(ctx, ox + 11, 3 + dy, '#ffd275', 2, 4);
+          this.px(ctx, ox + 15, 2 + dy, '#ffd275', 2, 5);
+          this.px(ctx, ox + 19, 3 + dy, '#ffd275', 2, 4);
+          // Wide gelatinous body
+          this.px(ctx, ox + 4, 8 + dy, '#100d24', 24, 20);
+          this.px(ctx, ox + 2, 14 + dy, '#100d24', 28, 14);
+          this.px(ctx, ox + 5, 9 + dy, b, 22, 18);
+          this.px(ctx, ox + 3, 15 + dy, b, 26, 12);
+          // Acid highlights & bubbles
+          this.px(ctx, ox + 7, 11 + dy, a, 6, 3);
+          this.px(ctx, ox + 20, 20 + dy, a, 4, 4);
+          this.px(ctx, ox + 6, 22 + dy, a, 3, 3);
+          // Fierce eyes
+          this.px(ctx, ox + 10, 15 + dy, boss.eye, 3, 3);
+          this.px(ctx, ox + 19, 15 + dy, boss.eye, 3, 3);
+        } else if (boss.key === 'boss_clockwork_witch') {
+          // Floating gears on left & right
+          const gOff = f === 0 ? 0 : 2;
+          this.px(ctx, ox + 1, 13 + gOff, '#100d24', 6, 6);
+          this.px(ctx, ox + 2, 14 + gOff, a, 4, 4);
+          this.px(ctx, ox + 25, 15 - gOff, '#100d24', 6, 6);
+          this.px(ctx, ox + 26, 16 - gOff, a, 4, 4);
+          // Pointed witch hat
+          this.px(ctx, ox + 14, 1 + dy, '#100d24', 4, 4);
+          this.px(ctx, ox + 11, 5 + dy, '#100d24', 10, 5);
+          this.px(ctx, ox + 6, 10 + dy, '#100d24', 20, 4);
+          this.px(ctx, ox + 14, 2 + dy, b, 3, 3);
+          this.px(ctx, ox + 12, 6 + dy, b, 8, 4);
+          this.px(ctx, ox + 7, 11 + dy, a, 18, 2);
+          // Cloak & face
+          this.px(ctx, ox + 8, 14 + dy, '#100d24', 16, 15);
+          this.px(ctx, ox + 9, 14 + dy, b, 14, 14);
+          this.px(ctx, ox + 11, 15 + dy, '#100d24', 10, 5);
+          this.px(ctx, ox + 12, 17 + dy, boss.eye, 2, 2);
+          this.px(ctx, ox + 18, 17 + dy, boss.eye, 2, 2);
+          // Timepiece core
+          this.px(ctx, ox + 14, 22 + dy, a, 4, 4);
+          this.px(ctx, ox + 15, 23 + dy, '#100d24', 2, 2);
+        } else {
+          // boss_withered_everheart: thorny fractured heart with 3 void eyes
+          this.px(ctx, ox + 3, 4 + dy, '#100d24', 11, 10);
+          this.px(ctx, ox + 18, 4 + dy, '#100d24', 11, 10);
+          this.px(ctx, ox + 5, 12 + dy, '#100d24', 22, 9);
+          this.px(ctx, ox + 9, 20 + dy, '#100d24', 14, 6);
+          this.px(ctx, ox + 13, 25 + dy, '#100d24', 6, 5);
+          // Heart lobes & body
+          this.px(ctx, ox + 4, 5 + dy, b, 9, 8);
+          this.px(ctx, ox + 19, 5 + dy, b, 9, 8);
+          this.px(ctx, ox + 6, 12 + dy, b, 20, 8);
+          this.px(ctx, ox + 10, 20 + dy, b, 12, 5);
+          this.px(ctx, ox + 14, 25 + dy, b, 4, 3);
+          // Thorns
+          this.px(ctx, ox + 1, 9 + dy, a, 3, 2);
+          this.px(ctx, ox + 28, 9 + dy, a, 3, 2);
+          // Three glowing void eyes + pulsing core
+          this.px(ctx, ox + 9, 10 + dy, boss.eye, 2, 3);
+          this.px(ctx, ox + 21, 10 + dy, boss.eye, 2, 3);
+          this.px(ctx, ox + 15, 7 + dy, a, 2, 3);
+          this.px(ctx, ox + 13, 16 + dy, a, 6, 5);
+          this.px(ctx, ox + 15, 17 + dy, '#ffffff', 2, 3);
+        }
       }
 
       tex.refresh();

@@ -30,7 +30,7 @@ export class MenuScene extends Phaser.Scene {
   private netToggleBg!: Phaser.GameObjects.Rectangle;
   private netToggleIcon!: Phaser.GameObjects.BitmapText;
   private netToggleLabel!: Phaser.GameObjects.BitmapText;
-  private mobileFocusIndex = 0; // 0: PLAY SOLO, 1: CREATE CO-OP, 2: JOIN CO-OP, 3: NAME BOX, 4: NET SWITCH
+  private mobileFocusIndex = 0; // 0: PLAY SOLO, 1: CREATE CO-OP, 2: JOIN CO-OP, 3: JOURNAL, 4: NAME BOX, 5: NET SWITCH
   private modalFocusIndex = 0; // 0: CODE BOX, 1: JOIN, 2: CANCEL
   private virtualKeyboard?: VirtualKeyboard;
   private unsubNav?: () => void;
@@ -116,7 +116,7 @@ export class MenuScene extends Phaser.Scene {
       });
     }
 
-    this.createPixelButton(256, 108, 'PLAY SOLO', () => {
+    this.createPixelButton(256, 92, 'PLAY SOLO', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
       net.startSolo(this.playerName.trim() || 'Wanderer', pickRandomPaletteId());
@@ -124,25 +124,31 @@ export class MenuScene extends Phaser.Scene {
       this.scene.start('GameScene', { levelIndex: 0, floorSeed: seed, resetRun: true });
     });
 
-    this.createPixelButton(256, 140, 'CREATE CO-OP', () => {
+    this.createPixelButton(256, 119, 'CREATE CO-OP', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
       net.hostGame(this.playerName.trim() || 'Host', pickRandomPaletteId());
       this.scene.start('LobbyScene');
     });
 
-    this.createPixelButton(256, 172, 'JOIN CO-OP', () => {
+    this.createPixelButton(256, 146, 'JOIN CO-OP', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
       this.openJoinModal();
     });
 
-    // Tiny square button under JOIN CO-OP to switch between Nostr (default) and MQTT
+    this.createPixelButton(256, 173, 'JOURNAL', () => {
+      if (this.joinModal.visible) return;
+      SoundSystem.playPickup();
+      this.scene.start('JournalScene');
+    });
+
+    // Tiny square button under JOURNAL to switch between Nostr (default) and MQTT
     this.netToggleBg = this.add
-      .rectangle(216, 198, 14, 14, 0x100d24)
+      .rectangle(216, 200, 14, 14, 0x100d24)
       .setStrokeStyle(1, 0x6c5bb3);
-    this.netToggleIcon = addPixelText(this, 216, 198, 'N', 8, 0x66ffd9, 0.5, 0.5);
-    this.netToggleLabel = addPixelText(this, 228, 198, 'NET: NOSTR', 8, 0xb8a1ff, 0, 0.5);
+    this.netToggleIcon = addPixelText(this, 216, 200, 'N', 8, 0x66ffd9, 0.5, 0.5);
+    this.netToggleLabel = addPixelText(this, 228, 200, 'NET: NOSTR', 8, 0xb8a1ff, 0, 0.5);
     this.refreshNetToggle();
 
     if (!isMobileMode()) {
@@ -404,7 +410,7 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private createPixelButton(x: number, y: number, label: string, onClick: () => void): void {
-    const bg = this.add.image(x, y, 'ui_btn').setDisplaySize(136, 24);
+    const bg = this.add.image(x, y, 'ui_btn').setDisplaySize(136, 22);
     const txt = addPixelText(this, x, y, label, 8, 0xffffff, 0.5, 0.5);
     this.menuButtons.push({ bg, txt, onClick });
 
@@ -444,19 +450,19 @@ export class MenuScene extends Phaser.Scene {
     }
 
     if (dir === 'up') {
-      if (this.mobileFocusIndex === 3) this.mobileFocusIndex = 2;
-      else if (this.mobileFocusIndex === 4) this.mobileFocusIndex = 2;
-      else if (this.mobileFocusIndex === 0) this.mobileFocusIndex = 4;
+      if (this.mobileFocusIndex === 4) this.mobileFocusIndex = 3;
+      else if (this.mobileFocusIndex === 5) this.mobileFocusIndex = 3;
+      else if (this.mobileFocusIndex === 0) this.mobileFocusIndex = 5;
       else this.mobileFocusIndex = this.mobileFocusIndex - 1;
     } else if (dir === 'down') {
-      if (this.mobileFocusIndex === 3) this.mobileFocusIndex = 0;
-      else if (this.mobileFocusIndex === 2) this.mobileFocusIndex = 4;
-      else if (this.mobileFocusIndex === 4) this.mobileFocusIndex = 0;
+      if (this.mobileFocusIndex === 4) this.mobileFocusIndex = 0;
+      else if (this.mobileFocusIndex === 3) this.mobileFocusIndex = 5;
+      else if (this.mobileFocusIndex === 5) this.mobileFocusIndex = 0;
       else this.mobileFocusIndex = this.mobileFocusIndex + 1;
     } else if (dir === 'left') {
-      this.mobileFocusIndex = 3;
+      this.mobileFocusIndex = 4;
     } else if (dir === 'right') {
-      if (this.mobileFocusIndex === 3) this.mobileFocusIndex = 0;
+      if (this.mobileFocusIndex === 4) this.mobileFocusIndex = 0;
     }
     this.refreshMobileFocus();
   }
@@ -512,7 +518,7 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
 
-    if (this.mobileFocusIndex === 3) {
+    if (this.mobileFocusIndex === 4) {
       SoundSystem.playSwing();
       this.virtualKeyboard?.open({
         title: 'ENTER USERNAME',
@@ -538,7 +544,7 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
 
-    if (this.mobileFocusIndex === 4) {
+    if (this.mobileFocusIndex === 5) {
       this.toggleSignalingBackend();
       return;
     }
@@ -555,7 +561,7 @@ export class MenuScene extends Phaser.Scene {
       b.txt.setTint(focused ? 0xffe066 : 0xffffff);
     });
 
-    if (!this.joinModal.visible && this.mobileFocusIndex === 3) {
+    if (!this.joinModal.visible && this.mobileFocusIndex === 4) {
       this.nameBoxBg.setStrokeStyle(2, 0xffe066);
       this.nameText.setTint(0xffe066);
     } else {
@@ -563,7 +569,7 @@ export class MenuScene extends Phaser.Scene {
       this.nameText.setTint(0xffffff);
     }
 
-    if (!this.joinModal.visible && this.mobileFocusIndex === 4) {
+    if (!this.joinModal.visible && this.mobileFocusIndex === 5) {
       this.netToggleBg.setStrokeStyle(2, 0xffe066);
     } else {
       this.netToggleBg.setStrokeStyle(1, 0x6c5bb3);

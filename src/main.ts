@@ -4,6 +4,7 @@ import { mountMobileShell } from './mobile/MobileShell';
 import { BootScene } from './scenes/BootScene';
 import { GameOverScene } from './scenes/GameOverScene';
 import { GameScene } from './scenes/GameScene';
+import { JournalScene } from './scenes/JournalScene';
 import { LobbyScene } from './scenes/LobbyScene';
 import { MenuScene } from './scenes/MenuScene';
 import { UIScene } from './scenes/UIScene';
@@ -37,7 +38,7 @@ const config: Phaser.Types.Core.GameConfig = {
       debug: false,
     },
   },
-  scene: [BootScene, MenuScene, LobbyScene, GameScene, UIScene, GameOverScene],
+  scene: [BootScene, MenuScene, JournalScene, LobbyScene, GameScene, UIScene, GameOverScene],
 };
 
 new Phaser.Game(config);

@@ -59,6 +59,7 @@ export class UIScene extends Phaser.Scene {
   private lastPayload: UIStatePayload | null = null;
   private onBuyCallback?: (idx: number) => void;
   private onQuitCallback?: () => void;
+  private onPauseChangeCallback?: (paused: boolean) => void;
   private onSpectatePrev?: () => void;
   private onSpectateNext?: () => void;
 
@@ -68,6 +69,7 @@ export class UIScene extends Phaser.Scene {
   private shopCards: Array<{ card: Phaser.GameObjects.Image; sold: boolean; idx: number }> = [];
   private shopCloseTxt?: Phaser.GameObjects.BitmapText;
   private shopFocusRing?: Phaser.GameObjects.Rectangle;
+  private overlayOpenedFrame = -1;
   private shopFocusIndex = 0; // 0..2 = cards, 3 = CLOSE
   private unsubNav?: () => void;
   private unsubBtn?: () => void;
@@ -250,6 +252,10 @@ export class UIScene extends Phaser.Scene {
     this.onQuitCallback = cb;
   }
 
+  setPauseChangeHandler(cb: (paused: boolean) => void): void {
+    this.onPauseChangeCallback = cb;
+  }
+
   toggleMap(): void {
     const next = !this.mapOverlay.visible;
     this.mapOverlay.setVisible(next);
@@ -261,9 +267,16 @@ export class UIScene extends Phaser.Scene {
   togglePause(force?: boolean): boolean {
     const next = force !== undefined ? force : !this.pauseOverlay.visible;
     this.pauseOverlay.setVisible(next);
-    if (next && isMobileMode()) {
-      this.pauseFocusIndex = 0;
-      this.refreshPauseFocus();
+    this.onPauseChangeCallback?.(next);
+    if (next) {
+      this.overlayOpenedFrame = this.game.loop.frame;
+      if (isMobileMode()) {
+        mobileInput.clearQueuedActions();
+        this.pauseFocusIndex = 0;
+        this.refreshPauseFocus();
+      }
+    } else if (isMobileMode()) {
+      mobileInput.clearQueuedActions();
     }
     return next;
   }
@@ -273,6 +286,7 @@ export class UIScene extends Phaser.Scene {
   }
 
   openShop(stock: ShopStockItem[], shards: number, onBuy: (idx: number) => void): void {
+    this.overlayOpenedFrame = this.game.loop.frame;
     this.onBuyCallback = onBuy;
     this.shopOverlay.removeAll(true);
     this.shopCards = [];
@@ -335,6 +349,9 @@ export class UIScene extends Phaser.Scene {
 
   closeShop(): void {
     this.shopOverlay.setVisible(false);
+    if (isMobileMode()) {
+      mobileInput.clearQueuedActions();
+    }
   }
 
   private handleMobileNav(dir: NavDir): void {
@@ -365,6 +382,8 @@ export class UIScene extends Phaser.Scene {
   }
 
   private handleMobileButton(btn: VirtualButton): void {
+    if (this.game.loop.frame <= this.overlayOpenedFrame) return;
+
     if (this.pauseOverlay.visible) {
       if (btn === 'e' || btn === 'space') {
         this.pauseButtons[this.pauseFocusIndex]?.action();

@@ -2,6 +2,7 @@ import { ARTIFACTS, ARTIFACT_IDS, CONSUMABLES, CONSUMABLE_IDS } from '../data/it
 import { WEAPONS, WEAPON_IDS } from '../data/weapons';
 import { InventoryItem } from '../types/game';
 import { SeededRandom } from '../utils/SeededGenerator';
+import { JournalSystem } from './JournalSystem';
 
 let nextInstanceSeq = 1;
 
@@ -74,6 +75,7 @@ export function addItemToSlots(
   activeSlot: number,
   item: InventoryItem
 ): { added: boolean; replaced: InventoryItem | null } {
+  JournalSystem.discoverItem(item.id);
   const emptyIdx = slots.findIndex((s) => s === null);
   if (emptyIdx !== -1) {
     slots[emptyIdx] = item;

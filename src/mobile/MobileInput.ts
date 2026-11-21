@@ -20,6 +20,8 @@ class MobileInputState {
 
   private dodgeQueued = false;
   private attackQueued = false;
+  private suppressAttackUntilRelease = false;
+  private suppressCombatUntilMs = 0;
 
   private navListeners = new Set<(dir: NavDir) => void>();
   private buttonListeners = new Set<(btn: VirtualButton) => void>();
@@ -36,28 +38,59 @@ class MobileInputState {
     this.dpadActive = active;
     this.dpadDirX = dirX;
     this.dpadDirY = dirY;
-    if (active && (dirX !== 0 || dirY !== 0)) {
+    if (!active) {
+      this.suppressAttackUntilRelease = false;
+      return;
+    }
+    if (dirX !== 0 || dirY !== 0) {
       this.dpadAngle = Math.atan2(dirY, dirX);
-      if (!wasActive || dirX !== prevDirX || dirY !== prevDirY) {
-        this.attackQueued = true;
+      if (!this.suppressAttackUntilRelease && Date.now() >= this.suppressCombatUntilMs) {
+        if (!wasActive || dirX !== prevDirX || dirY !== prevDirY) {
+          this.attackQueued = true;
+        }
       }
     }
   }
 
   public queueDodge(): void {
+    if (Date.now() < this.suppressCombatUntilMs) return;
     this.dodgeQueued = true;
   }
 
   public consumeDodge(): boolean {
+    if (Date.now() < this.suppressCombatUntilMs) {
+      this.dodgeQueued = false;
+      return false;
+    }
     if (!this.dodgeQueued) return false;
     this.dodgeQueued = false;
     return true;
   }
 
   public consumeAttack(): boolean {
+    if (this.suppressAttackUntilRelease || Date.now() < this.suppressCombatUntilMs) {
+      this.attackQueued = false;
+      return false;
+    }
     if (!this.attackQueued) return false;
     this.attackQueued = false;
     return true;
+  }
+
+  public isDpadAttackActive(): boolean {
+    if (this.suppressAttackUntilRelease || Date.now() < this.suppressCombatUntilMs) {
+      return false;
+    }
+    return this.dpadActive;
+  }
+
+  public clearQueuedActions(): void {
+    this.attackQueued = false;
+    this.dodgeQueued = false;
+    if (this.dpadActive) {
+      this.suppressAttackUntilRelease = true;
+    }
+    this.suppressCombatUntilMs = Date.now() + 140;
   }
 
   public emitNav(dir: NavDir): void {

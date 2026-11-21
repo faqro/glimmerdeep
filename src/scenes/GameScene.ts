@@ -9,6 +9,7 @@ import { SoundSystem } from '../audio/SoundSystem';
 import { isMobileMode, mobileInput } from '../mobile/MobileInput';
 import { DungeonGenerator, GeneratedFloor } from '../systems/DungeonGenerator';
 import { addItemToSlots, consumeUse, createItemInstance, hasArtifact, rollRandomItemId } from '../systems/InventorySystem';
+import { JournalSystem } from '../systems/JournalSystem';
 import { net, NetRoomSync, NetWorldSync, SyncedProjectile } from '../systems/MultiplayerSystem';
 import { StatusEffectManager } from '../systems/StatusEffectSystem';
 import {
@@ -45,6 +46,7 @@ interface ActiveEnemy {
   burnTickMs: number;
   hitFlashMs: number;
   phase: number;
+  bossStep?: number;
   targetX?: number;
   targetY?: number;
 }
@@ -237,6 +239,8 @@ export class GameScene extends Phaser.Scene {
         animState: 'idle',
         flipX: false,
       };
+      JournalSystem.discoverItem('moonblade');
+      JournalSystem.discoverItem('heartdew_potion');
     } else if (data.restoreReconnect) {
       net.localPaletteId = data.carryPlayer.paletteId;
       this.playerState = {
@@ -257,6 +261,9 @@ export class GameScene extends Phaser.Scene {
     }
 
     const playerCount = net.mode === 'solo' ? 1 : Math.max(1, net.players.size);
+    if (this.playerState.name === 'ADMIN') {
+      JournalSystem.unlockAll();
+    }
     this.floor = DungeonGenerator.generateFloor(this.levelIndex, this.floorSeed, playerCount);
     const spawnGx = data.restoreReconnect ? this.playerState.gx : 0;
     const spawnGy = data.restoreReconnect ? this.playerState.gy : 2;
@@ -297,6 +304,9 @@ export class GameScene extends Phaser.Scene {
       SoundSystem.setMusicTrack('normal');
       this.scene.stop('UIScene');
       this.scene.start('MenuScene');
+    });
+    this.ui.setPauseChangeHandler((paused) => {
+      this.paused = paused;
     });
     this.ui.setSpectateHandlers(
       () => this.cycleSpectateTarget(-1),
@@ -342,13 +352,31 @@ export class GameScene extends Phaser.Scene {
       this.ui.toggleMap();
     });
 
-    kb.on('keydown-ESC', () => {
+    let lastEscMs = 0;
+    const handleEscToggle = () => {
+      const now = performance.now();
+      if (now - lastEscMs < 80) return;
+      lastEscMs = now;
+      if (!this.ui) return;
       if (this.ui.isOverlayOpen()) {
         this.ui.closeShop();
         this.paused = this.ui.togglePause(false);
       } else {
         this.paused = this.ui.togglePause();
       }
+    };
+
+    kb.on('keydown-ESC', handleEscToggle);
+
+    const onWindowKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape' && !ev.repeat) {
+        ev.preventDefault();
+        handleEscToggle();
+      }
+    };
+    window.addEventListener('keydown', onWindowKeyDown);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      window.removeEventListener('keydown', onWindowKeyDown);
     });
 
     kb.on('keydown-Q', () => {
@@ -1380,6 +1408,9 @@ export class GameScene extends Phaser.Scene {
     isBoss: boolean
   ): void {
     const def = isBoss ? BOSSES[defId] : ENEMIES[defId];
+    if (!def) return;
+    if (isBoss) JournalSystem.discoverBoss(defId);
+    else JournalSystem.discoverEnemy(defId);
     const sprite = this.physics.add.sprite(x, y, def.spriteKey, 0).setDepth(9);
     if (isElite) {
       sprite.setScale(1.35);
@@ -1598,6 +1629,41 @@ export class GameScene extends Phaser.Scene {
         this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 6);
         SoundSystem.playHeal();
       }
+    } else if (item.id === 'lucky_backpack') {
+      const hasDownedAlly = Array.from(this.remotePlayers.values()).some((p) => p.downed);
+      const bladeStyles = new Set(['melee_arc', 'heavy_sword', 'echo_blade', 'frost_blade', 'venom_blade']);
+      const hasBlade = this.playerState.inventory.some(
+        (s) => s !== null && s.category === 'weapon' && WEAPONS[s.id] && bladeStyles.has(WEAPONS[s.id].style)
+      );
+
+      let grantedId: string;
+      if (hasDownedAlly) {
+        grantedId = 'revive_totem';
+      } else if (this.playerState.hp <= 4) {
+        grantedId = 'heartdew_potion';
+      } else if (!hasBlade) {
+        const blades = Object.values(WEAPONS)
+          .filter((w) => (w.rarity === 'common' || w.rarity === 'uncommon') && bladeStyles.has(w.style))
+          .map((w) => w.id);
+        grantedId = blades[Math.floor(Math.random() * blades.length)] ?? 'moonblade';
+      } else {
+        const pool = [
+          ...Object.values(WEAPONS).filter((w) => (w.rarity === 'common' || w.rarity === 'uncommon') && !w.merchantOnly),
+          ...Object.values(CONSUMABLES).filter((c) => (c.rarity === 'common' || c.rarity === 'uncommon') && !c.merchantOnly),
+          ...Object.values(ARTIFACTS).filter((a) => (a.rarity === 'common' || a.rarity === 'uncommon') && !a.merchantOnly),
+        ].map((x) => x.id);
+        grantedId = pool[Math.floor(Math.random() * pool.length)] ?? 'heartdew_potion';
+      }
+
+      consumeUse(this.playerState.inventory, slotIdx, 1);
+      const granted = createItemInstance(grantedId);
+      if (granted) {
+        addItemToSlots(this.playerState.inventory, slotIdx, granted);
+        SoundSystem.playUnlock();
+        this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0xffe066, 12);
+        this.ui.showToast(`Lucky Backpack: ${granted.name}!`, '#ffe066');
+      }
+      return;
     }
 
     consumeUse(this.playerState.inventory, slotIdx, 1);
@@ -1876,6 +1942,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private damageEnemy(enemy: ActiveEnemy, dmg: number, knockbackAngle?: number): void {
+    if (this.playerState.name === 'ADMIN') {
+      dmg = Math.max(dmg, enemy.hp, 9999);
+    }
     enemy.hitFlashMs = 120;
     enemy.sprite.setTint(0xffffff);
     SoundSystem.playHit();
@@ -2263,6 +2332,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private damagePlayer(rawDmg: number): void {
+    if (this.playerState.name === 'ADMIN') return;
     if (this.invulnMs > 0 || this.dodgeMs > 0 || this.playerState.downed) return;
 
     const coreIdx = hasArtifact(this.playerState.inventory, 'everheart_core');
@@ -2591,6 +2661,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(time: number, delta: number): void {
+    if (isMobileMode() && (this.paused || this.ui.isOverlayOpen())) {
+      mobileInput.clearQueuedActions();
+    }
     if (this.paused || this.transitioningLevel) return;
 
     this.attackCooldownMs = Math.max(0, this.attackCooldownMs - delta);
@@ -2688,7 +2761,7 @@ export class GameScene extends Phaser.Scene {
           this.playerState.aimAngle = Math.atan2(dy, dx);
         }
       }
-      if (mobileInput.consumeAttack() || mobileInput.dpadActive) {
+      if (mobileInput.consumeAttack() || mobileInput.isDpadAttackActive()) {
         this.handlePrimaryAttack();
       }
     }
@@ -2948,7 +3021,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private updateBossAI(e: ActiveEnemy, angle: number, _dist: number, delta: number, slowFactor: number): void {
+  private updateBossAI(e: ActiveEnemy, angle: number, dist: number, delta: number, slowFactor: number): void {
     const bossDef = BOSSES[e.defId];
     if (e.hp < e.maxHp * 0.5 && e.phase === 1) {
       e.phase = 2;
@@ -2956,62 +3029,186 @@ export class GameScene extends Phaser.Scene {
       this.spawnParticles(e.sprite.x, e.sprite.y, bossDef.accentColor, 14);
     }
 
-    const isFirstBoss = e.defId === 'hollow_stag';
-
-    // First boss spends 1 extra second in an idle position before attacking/switching state
-    if (e.idleMs > 0) {
-      e.idleMs -= delta;
-      e.sprite.setVelocity(0, 0);
-      if (e.idleMs > 0) return;
-      // Idle pause finished: execute attack now
-      e.aiTimerMs = e.phase === 2 ? 1450 : 1850;
-      const projDmg = isFirstBoss ? 1 : e.damage;
-      const pattern = Math.random();
-      if (pattern < 0.45) {
-        const bolts = e.phase === 2 ? 8 : 5;
-        for (let i = 0; i < bolts; i++) {
-          const a = angle + (Math.PI * 2 * i) / bolts;
-          this.createEnemyProjectile(e.sprite.x, e.sprite.y, a, 110, projDmg, bossDef.accentColor, false);
+    // Floor 1 boss: keep original behavior intact
+    if (e.defId === 'hollow_stag') {
+      if (e.idleMs > 0) {
+        e.idleMs -= delta;
+        e.sprite.setVelocity(0, 0);
+        if (e.idleMs > 0) return;
+        e.aiTimerMs = e.phase === 2 ? 1450 : 1850;
+        const projDmg = 1;
+        const pattern = Math.random();
+        if (pattern < 0.45) {
+          const bolts = e.phase === 2 ? 8 : 5;
+          for (let i = 0; i < bolts; i++) {
+            const a = angle + (Math.PI * 2 * i) / bolts;
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, a, 110, projDmg, bossDef.accentColor, false);
+          }
+        } else if (pattern < 0.8) {
+          e.windupMs = 420;
+          e.sprite.setTint(0xffe066);
+        } else {
+          for (const off of [-0.25, 0, 0.25]) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 130, projDmg, bossDef.accentColor, false);
+          }
         }
-      } else if (pattern < 0.8) {
-        e.windupMs = 420;
-        e.sprite.setTint(0xffe066);
-      } else {
-        for (const off of [-0.25, 0, 0.25]) {
-          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 130, projDmg, bossDef.accentColor, false);
+        return;
+      }
+
+      const spd = e.speed * slowFactor * (e.phase === 2 ? 1.2 : 1);
+      e.sprite.setVelocity(Math.cos(angle) * spd, Math.sin(angle) * spd);
+      if (e.aiTimerMs <= 0) {
+        e.idleMs = 1000;
+        e.sprite.setVelocity(0, 0);
+      }
+      return;
+    }
+
+    const spd = e.speed * slowFactor * (e.phase === 2 ? 1.22 : 1);
+    const step = (e.bossStep ?? 0);
+
+    // Floor 2: Crystal Guardian — orbiting prism turret with rotating rings & fast sniper volleys
+    if (e.defId === 'crystal_guardian') {
+      const moveAngle = dist < 56 ? angle + Math.PI : dist > 105 ? angle : angle + Math.PI / 2;
+      e.sprite.setVelocity(Math.cos(moveAngle) * spd, Math.sin(moveAngle) * spd);
+      if (e.aiTimerMs <= 0) {
+        e.bossStep = step + 1;
+        e.aiTimerMs = e.phase === 2 ? 1000 : 1350;
+        if (step % 3 === 0) {
+          // Rotating crystal ring
+          const bolts = e.phase === 2 ? 10 : 6;
+          const rot = step * 0.45;
+          for (let i = 0; i < bolts; i++) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, rot + (Math.PI * 2 * i) / bolts, 115, e.damage, bossDef.accentColor, false);
+          }
+        } else if (step % 3 === 1) {
+          // Fast aimed twin laser
+          for (const off of [-0.1, 0.1]) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 175, e.damage, 0xffffff, false);
+          }
+        } else {
+          // 4-way diamond burst aimed at player
+          for (const off of [-0.45, -0.15, 0.15, 0.45]) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 140, e.damage, bossDef.accentColor, false);
+          }
         }
       }
       return;
     }
 
-    const spd = e.speed * slowFactor * (e.phase === 2 ? 1.2 : 1);
-    e.sprite.setVelocity(Math.cos(angle) * spd, Math.sin(angle) * spd);
-
-    if (e.aiTimerMs <= 0) {
-      if (isFirstBoss) {
-        e.idleMs = 1000;
-        e.sprite.setVelocity(0, 0);
-        return;
-      }
-
-      e.aiTimerMs = e.phase === 2 ? 1150 : 1550;
-      const pattern = Math.random();
-      const burns = e.defId === 'withered_everheart';
-      if (pattern < 0.45) {
-        // Radial burst
-        const bolts = e.phase === 2 ? 8 : 5;
-        for (let i = 0; i < bolts; i++) {
-          const a = angle + (Math.PI * 2 * i) / bolts;
-          this.createEnemyProjectile(e.sprite.x, e.sprite.y, a, 120, e.damage, bossDef.accentColor, burns);
+    // Floor 3: The Mothercap — slow spore sovereign that summons fungal adds & slow drifting spore rings
+    if (e.defId === 'mothercap') {
+      e.sprite.setVelocity(Math.cos(angle) * spd * 0.55, Math.sin(angle) * spd * 0.55);
+      if (e.aiTimerMs <= 0) {
+        e.bossStep = step + 1;
+        e.aiTimerMs = e.phase === 2 ? 1300 : 1750;
+        const minionCount = this.activeEnemies.filter((m) => !m.isBoss && m.hp > 0).length;
+        if (step % 3 === 0 && minionCount < 3) {
+          const sx = Phaser.Math.Clamp(e.sprite.x + (Math.random() < 0.5 ? -26 : 26), 28, 148);
+          const sy = Phaser.Math.Clamp(e.sprite.y + (Math.random() < 0.5 ? -20 : 20), 28, 148);
+          const addDef = ENEMIES.mycelium_mite;
+          this.spawnEnemyEntity(`boss_add_${Date.now()}_${step}`, 'mycelium_mite', sx, sy, addDef.hp, addDef.hp, false, false);
+          this.spawnParticles(sx, sy, bossDef.accentColor, 8);
+        } else {
+          const bolts = e.phase === 2 ? 12 : 8;
+          const offset = (step % 2) * (Math.PI / bolts);
+          for (let i = 0; i < bolts; i++) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, offset + (Math.PI * 2 * i) / bolts, 85, e.damage, bossDef.accentColor, false);
+          }
         }
-      } else if (pattern < 0.8) {
-        // Charge telegraph
-        e.windupMs = 380;
-        e.sprite.setTint(0xffe066);
+      }
+      return;
+    }
+
+    // Floor 4: The Sludge Empress — frequent dash-charges & 5-way acid shotguns
+    if (e.defId === 'sludge_empress') {
+      e.sprite.setVelocity(Math.cos(angle) * spd * 0.9, Math.sin(angle) * spd * 0.9);
+      if (e.aiTimerMs <= 0) {
+        e.bossStep = step + 1;
+        e.aiTimerMs = e.phase === 2 ? 950 : 1300;
+        if (step % 2 === 0) {
+          // Fast dash charge + acid splash
+          e.windupMs = 260;
+          e.sprite.setTint(0xa6ff4d);
+          const splash = e.phase === 2 ? 6 : 4;
+          for (let i = 0; i < splash; i++) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + (Math.PI * 2 * i) / splash, 105, e.damage, bossDef.accentColor, false);
+          }
+        } else {
+          // 5-way wide acid shotgun
+          for (const off of [-0.5, -0.25, 0, 0.25, 0.5]) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 145, e.damage, bossDef.accentColor, false);
+          }
+        }
+      }
+      return;
+    }
+
+    // Floor 5: The Clockwork Witch — teleports across quadrants & fires alternating + / x / sweeping arcs
+    if (e.defId === 'clockwork_witch') {
+      e.sprite.setVelocity(Math.cos(angle) * spd * 0.65, Math.sin(angle) * spd * 0.65);
+      if (e.aiTimerMs <= 0) {
+        e.bossStep = step + 1;
+        e.aiTimerMs = e.phase === 2 ? 1050 : 1400;
+        if (step % 3 === 0) {
+          // Blink to another corner away from the player
+          this.spawnParticles(e.sprite.x, e.sprite.y, bossDef.accentColor, 10);
+          const nx = this.playerSprite.x < 88 ? Phaser.Math.Between(108, 144) : Phaser.Math.Between(32, 68);
+          const ny = this.playerSprite.y < 88 ? Phaser.Math.Between(108, 144) : Phaser.Math.Between(32, 68);
+          e.sprite.setPosition(nx, ny);
+          this.spawnParticles(nx, ny, bossDef.accentColor, 10);
+          const sweepAngle = Phaser.Math.Angle.Between(nx, ny, this.playerSprite.x, this.playerSprite.y);
+          for (const off of [-0.4, -0.2, 0, 0.2, 0.4]) {
+            this.createEnemyProjectile(nx, ny, sweepAngle + off, 150, e.damage, bossDef.accentColor, false);
+          }
+        } else {
+          // Alternating + and x clockwork cross volleys
+          const base = (step % 2) * (Math.PI / 4);
+          const spokes = e.phase === 2 ? 8 : 4;
+          for (let i = 0; i < spokes; i++) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, base + (Math.PI * 2 * i) / spokes, 135, e.damage, bossDef.accentColor, false);
+          }
+        }
+      }
+      return;
+    }
+
+    // Floor 6: The Withered Everheart — burning spiral barrages, shadow summons, teleports & dashes
+    e.sprite.setVelocity(Math.cos(angle) * spd, Math.sin(angle) * spd);
+    if (e.aiTimerMs <= 0) {
+      e.bossStep = step + 1;
+      e.aiTimerMs = e.phase === 2 ? 900 : 1250;
+      const mode = step % 4;
+      if (mode === 0) {
+        const bolts = e.phase === 2 ? 12 : 8;
+        const rot = step * 0.35;
+        for (let i = 0; i < bolts; i++) {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, rot + (Math.PI * 2 * i) / bolts, 125, e.damage, bossDef.accentColor, true);
+        }
+      } else if (mode === 1) {
+        e.windupMs = 300;
+        e.sprite.setTint(0xff47b6);
+      } else if (mode === 2) {
+        const minionCount = this.activeEnemies.filter((m) => !m.isBoss && m.hp > 0).length;
+        if (e.phase === 2 && minionCount < 2) {
+          const sx = Phaser.Math.Clamp(e.sprite.x + (Math.random() < 0.5 ? -24 : 24), 28, 148);
+          const sy = Phaser.Math.Clamp(e.sprite.y + (Math.random() < 0.5 ? -20 : 20), 28, 148);
+          const addDef = ENEMIES.shadow_mote;
+          this.spawnEnemyEntity(`boss_add_${Date.now()}_${step}`, 'shadow_mote', sx, sy, addDef.hp, addDef.hp, false, false);
+        }
+        for (const off of [-0.45, -0.22, 0, 0.22, 0.45]) {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 155, e.damage, bossDef.accentColor, true);
+        }
       } else {
-        // Aimed 3-way spread
-        for (const off of [-0.25, 0, 0.25]) {
-          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 140, e.damage, bossDef.accentColor, burns);
+        if (e.phase === 2) {
+          this.spawnParticles(e.sprite.x, e.sprite.y, bossDef.accentColor, 10);
+          const nx = this.playerSprite.x < 88 ? Phaser.Math.Between(104, 142) : Phaser.Math.Between(34, 72);
+          const ny = this.playerSprite.y < 88 ? Phaser.Math.Between(104, 142) : Phaser.Math.Between(34, 72);
+          e.sprite.setPosition(nx, ny);
+          this.spawnParticles(nx, ny, bossDef.accentColor, 10);
+        }
+        for (const off of [-0.2, 0, 0.2]) {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 165, e.damage, 0xffffff, true);
         }
       }
     }

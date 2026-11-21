@@ -93,6 +93,16 @@ export const CONSUMABLES: Record<string, ConsumableDef> = {
     price: 52,
     merchantOnly: true,
   },
+  lucky_backpack: {
+    id: 'lucky_backpack',
+    name: 'Lucky Backpack',
+    rarity: 'super_rare',
+    description: 'Gives you what you need most.',
+    maxUses: 1,
+    iconKey: 'item_lucky_backpack',
+    price: 48,
+    merchantOnly: true,
+  },
 };
 
 export const ARTIFACTS: Record<string, ArtifactDef> = {

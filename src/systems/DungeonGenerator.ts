@@ -269,8 +269,9 @@ export class DungeonGenerator {
       const secondaryId = useTwoTypes ? rng.pick(secondaryCandidates) : primaryId;
 
       const primaryDef = ENEMIES[primaryId];
-      // Weaker enemies spawn in larger numbers; tougher enemies spawn in smaller numbers
-      const strengthBase = primaryDef.hp <= 5 ? 3 : primaryDef.hp <= 7 ? 2 : 1;
+      // Weaker/swarm enemies spawn in larger numbers; tougher enemies spawn in smaller numbers
+      const strengthBase =
+        primaryDef.hp <= 4 ? 4 : primaryDef.hp <= 6 ? 3 : primaryDef.hp <= 9 ? 2 : 1;
       const levelBonus = Math.floor(levelIndex / 2);
       const playerMult = 1 + (Math.max(1, playerCount) - 1) * 0.35; // 1p=1.0, 2p=1.35, 3p=1.7, 4p=2.05
       const rawCount = Math.round((strengthBase + rng.int(0, 1) + levelBonus) * playerMult);
