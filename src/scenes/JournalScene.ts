@@ -353,9 +353,27 @@ export class JournalScene extends Phaser.Scene {
       }
     } else if (this.mobileArea === 'grid') {
       const localIdx = this.selectedIndex - start;
-      if (dir === 'left' || dir === 'right') {
-        const alt = localIdx % 2 === 0 ? localIdx + 1 : localIdx - 1;
-        if (alt >= 0 && alt < pageCount) this.selectedIndex = start + alt;
+      const row = Math.floor(localIdx / 2);
+      const totalPages = Math.max(1, Math.ceil(this.currentEntries.length / ITEMS_PER_PAGE));
+
+      if (dir === 'right') {
+        if (localIdx % 2 === 0) {
+          if (localIdx + 1 < pageCount) {
+            this.selectedIndex = start + localIdx + 1;
+          }
+        } else if (this.page + 1 < totalPages) {
+          this.page++;
+          const nextStart = this.page * ITEMS_PER_PAGE;
+          this.selectedIndex = Math.min(nextStart + row * 2, this.currentEntries.length - 1);
+        }
+      } else if (dir === 'left') {
+        if (localIdx % 2 === 1) {
+          this.selectedIndex = start + localIdx - 1;
+        } else if (this.page > 0) {
+          this.page--;
+          const prevStart = this.page * ITEMS_PER_PAGE;
+          this.selectedIndex = Math.min(prevStart + row * 2 + 1, prevStart + ITEMS_PER_PAGE - 1);
+        }
       } else if (dir === 'up') {
         if (localIdx - 2 >= 0) this.selectedIndex = start + localIdx - 2;
         else this.mobileArea = 'tabs';
