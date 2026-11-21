@@ -205,21 +205,55 @@ export class MenuScene extends Phaser.Scene {
         return;
       }
 
-      if (ev.key.length === 1) {
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+
+      let typed = ev.key;
+      if (typed === 'Unidentified' && ev.code) {
+        if (ev.code.startsWith('Key')) typed = ev.code.slice(3);
+        else if (ev.code.startsWith('Digit')) typed = ev.code.slice(5);
+        else if (ev.code.startsWith('Numpad') && ev.code.length === 7) typed = ev.code.slice(6);
+      }
+
+      if (typed.length === 1) {
         if (this.activeField === 'name') {
-          if (this.playerName.length < 12 && /^[a-zA-Z0-9 _-]$/.test(ev.key)) {
-            this.playerName += ev.key;
+          if (this.playerName.length < 12 && /^[a-zA-Z0-9 _-]$/.test(typed)) {
+            this.playerName += typed;
             this.saveUsername();
             this.refreshTextboxes();
           }
         } else if (this.activeField === 'code') {
-          const ch = ev.key.toUpperCase();
+          const ch = typed.toUpperCase();
           if (this.joinCode.length < 6 && /^[A-Z0-9]$/.test(ch)) {
             this.joinCode += ch;
             this.refreshTextboxes();
           }
         }
       }
+    });
+
+    const onPaste = (ev: ClipboardEvent) => {
+      if (this.activeField === 'none') return;
+      const text = ev.clipboardData?.getData('text') ?? '';
+      if (!text) return;
+      ev.preventDefault();
+      if (this.activeField === 'code') {
+        const cleaned = text.toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (cleaned.length > 0) {
+          this.joinCode = (this.joinCode + cleaned).slice(0, 6);
+          this.refreshTextboxes();
+        }
+      } else if (this.activeField === 'name') {
+        const cleaned = text.replace(/[^a-zA-Z0-9 _-]/g, '');
+        if (cleaned.length > 0) {
+          this.playerName = (this.playerName + cleaned).slice(0, 12);
+          this.saveUsername();
+          this.refreshTextboxes();
+        }
+      }
+    };
+    window.addEventListener('paste', onPaste);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      window.removeEventListener('paste', onPaste);
     });
   }
 

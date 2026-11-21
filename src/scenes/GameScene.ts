@@ -436,8 +436,12 @@ export class GameScene extends Phaser.Scene {
     net.onPlayAgain = undefined;
     net.onRemotePlayerState = (state, peerId) => {
       if (net.players.has(peerId)) {
-        this.remotePlayers.set(peerId, state);
+        this.remotePlayers.set(peerId, { ...state, id: peerId });
       }
+    };
+
+    net.onSelfIdResolved = (peerId) => {
+      this.playerState.id = peerId;
     };
 
     net.onPeerJoined = (peerId, info) => {
@@ -3635,6 +3639,7 @@ export class GameScene extends Phaser.Scene {
           hostGx: this.currentRoom.gx,
           hostGy: this.currentRoom.gy,
           players: [this.playerState, ...Array.from(this.remotePlayers.values()).filter((p) => net.players.has(p.id))],
+          lobbyPlayers: Array.from(net.players.values()),
           projectiles: this.projectiles
             .filter((p) => p.sprite.active)
             .map((p) => ({

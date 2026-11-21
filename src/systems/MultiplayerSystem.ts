@@ -3,6 +3,54 @@ import { pickRandomPaletteId } from '../data/palettes';
 import { GameMode, LobbyPlayerInfo, PlayerStateSnapshot } from '../types/game';
 
 const APP_ID = 'glimmerdeep-roguelike-v1';
+const HEARTBEAT_INTERVAL_MS = 3000;
+const PEER_STALE_TIMEOUT_MS = 12000;
+
+function buildIceServers(): RTCIceServer[] {
+  const servers: RTCIceServer[] = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
+  ];
+
+  const customTurnUrl = import.meta.env?.VITE_TURN_URL as string | undefined;
+  const customTurnUser = import.meta.env?.VITE_TURN_USERNAME as string | undefined;
+  const customTurnCred = import.meta.env?.VITE_TURN_CREDENTIAL as string | undefined;
+  if (customTurnUrl) {
+    servers.push({
+      urls: customTurnUrl,
+      ...(customTurnUser ? { username: customTurnUser } : {}),
+      ...(customTurnCred ? { credential: customTurnCred } : {}),
+    });
+  }
+
+  // Public OpenRelay TURN servers for cross-network / symmetric NAT traversal
+  servers.push(
+    {
+      urls: 'turn:standard.relay.metered.ca:80',
+      username: 'e8dd65b92f6dde54d2b4e524',
+      credential: 'uWdWNmkhvyqTWKjN',
+    },
+    {
+      urls: 'turn:standard.relay.metered.ca:80?transport=tcp',
+      username: 'e8dd65b92f6dde54d2b4e524',
+      credential: 'uWdWNmkhvyqTWKjN',
+    },
+    {
+      urls: 'turn:standard.relay.metered.ca:443',
+      username: 'e8dd65b92f6dde54d2b4e524',
+      credential: 'uWdWNmkhvyqTWKjN',
+    },
+    {
+      urls: 'turns:standard.relay.metered.ca:443?transport=tcp',
+      username: 'e8dd65b92f6dde54d2b4e524',
+      credential: 'uWdWNmkhvyqTWKjN',
+    }
+  );
+
+  return servers;
+}
 
 export interface NetAttackEvent {
   peerId: string;
@@ -74,6 +122,7 @@ export interface NetWorldSync {
   hostGx?: number;
   hostGy?: number;
   players: PlayerStateSnapshot[];
+  lobbyPlayers?: LobbyPlayerInfo[];
   projectiles?: SyncedProjectile[];
   roomStates: Array<{
     gx: number;
@@ -112,6 +161,9 @@ export class MultiplayerSystem {
 
   private localJoinedAt = 0;
   private room: Room | null = null;
+  private peerLastSeen = new Map<string, number>();
+  private directPeers = new Set<string>();
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private sendLobbyFn: ((data: LobbyPlayerInfo, target?: string) => void) | null = null;
   private sendStartFn: ((data: { seed: number; levelIndex: number; restorePlayer?: PlayerStateSnapshot }, target?: string) => void) | null = null;
   private sendPlayerStateFn: ((data: PlayerStateSnapshot, target?: string) => void) | null = null;
@@ -132,6 +184,9 @@ export class MultiplayerSystem {
   public onPeerLeft?: (peerId: string, leavingPlayer?: LobbyPlayerInfo) => void;
   public onHostMigrated?: (newHostPeerId: string, isLocalNewHost: boolean) => void;
   public onPlayAgain?: () => void;
+  public onSelfIdResolved?: (peerId: string) => void;
+  public onConnectionError?: (message: string) => void;
+  public connectionError: string | null = null;
 
   static generateInviteCode(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -172,9 +227,30 @@ export class MultiplayerSystem {
   }
 
   private connectRoom(code: string, isHost: boolean): void {
-    const room = joinRoom({ appId: APP_ID }, `gd-${code}`);
+    const normalizedCode = code.trim().toUpperCase();
+    this.inviteCode = normalizedCode;
+    this.connectionError = null;
+
+    const room = joinRoom(
+      {
+        appId: APP_ID,
+        trickleIce: true,
+        rtcConfig: {
+          iceServers: buildIceServers(),
+          iceCandidatePoolSize: 4,
+        },
+        relayConfig: {
+          redundancy: 12,
+        },
+      },
+      `gd-${normalizedCode}`
+    );
     this.room = room;
-    this.localPeerId = (room as unknown as { selfId?: string }).selfId ?? `peer_${Math.floor(Math.random() * 100000)}`;
+    const rawSelfId = (room as unknown as { selfId?: string }).selfId;
+    this.localPeerId =
+      rawSelfId && rawSelfId.length > 0
+        ? rawSelfId
+        : `pending_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
     this.localJoinedAt = isHost ? 0 : Date.now();
 
     this.players.set(this.localPeerId, {
@@ -186,6 +262,33 @@ export class MultiplayerSystem {
       joinedAt: this.localJoinedAt,
     });
 
+    room
+      .getSelf()
+      .then((self) => {
+        if (this.room !== room || !self.peerId || self.peerId === this.localPeerId) return;
+        const prevId = this.localPeerId;
+        const existing = this.players.get(prevId);
+        this.players.delete(prevId);
+        this.localPeerId = self.peerId;
+        const selfInfo: LobbyPlayerInfo = existing
+          ? { ...existing, peerId: self.peerId }
+          : {
+              peerId: self.peerId,
+              name: this.localName,
+              paletteId: this.localPaletteId,
+              ready: isHost,
+              isHost,
+              joinedAt: this.localJoinedAt,
+            };
+        this.players.set(self.peerId, selfInfo);
+        this.onSelfIdResolved?.(self.peerId);
+        this.sendLobbyFn?.(selfInfo);
+        this.onLobbyUpdate?.();
+      })
+      .catch(() => {
+        // ignore if room was left before getSelf resolved
+      });
+
     const lobbyAct = room.makeAction<LobbyPlayerInfo>('lobby');
     const startAct = room.makeAction<{ seed: number; levelIndex: number; restorePlayer?: PlayerStateSnapshot }>('start');
     const playerAct = room.makeAction<PlayerStateSnapshot>('pstate');
@@ -195,16 +298,34 @@ export class MultiplayerSystem {
     const interactAct = room.makeAction<NetInteractEvent>('interact');
     const playAgainAct = room.makeAction<{ ts: number }>('playagain');
 
-    this.sendLobbyFn = (data, target) => lobbyAct.send(data, target ? { target } : undefined);
-    this.sendStartFn = (data, target) => startAct.send(data, target ? { target } : undefined);
-    this.sendPlayerStateFn = (data, target) => playerAct.send(data, target ? { target } : undefined);
-    this.sendWorldSyncFn = (data, target) => worldAct.send(data, target ? { target } : undefined);
-    this.sendRoomSyncFn = (data, target) => roomSyncAct.send(data, target ? { target } : undefined);
-    this.sendAttackFn = (data, target) => attackAct.send(data, target ? { target } : undefined);
-    this.sendInteractFn = (data, target) => interactAct.send(data, target ? { target } : undefined);
-    this.sendPlayAgainFn = (data, target) => playAgainAct.send(data, target ? { target } : undefined);
+    this.sendLobbyFn = (data, target) => {
+      lobbyAct.send(data, target ? { target } : undefined).catch(() => {});
+    };
+    this.sendStartFn = (data, target) => {
+      startAct.send(data, target ? { target } : undefined).catch(() => {});
+    };
+    this.sendPlayerStateFn = (data, target) => {
+      playerAct.send(data, target ? { target } : undefined).catch(() => {});
+    };
+    this.sendWorldSyncFn = (data, target) => {
+      worldAct.send(data, target ? { target } : undefined).catch(() => {});
+    };
+    this.sendRoomSyncFn = (data, target) => {
+      roomSyncAct.send(data, target ? { target } : undefined).catch(() => {});
+    };
+    this.sendAttackFn = (data, target) => {
+      attackAct.send(data, target ? { target } : undefined).catch(() => {});
+    };
+    this.sendInteractFn = (data, target) => {
+      interactAct.send(data, target ? { target } : undefined).catch(() => {});
+    };
+    this.sendPlayAgainFn = (data, target) => {
+      playAgainAct.send(data, target ? { target } : undefined).catch(() => {});
+    };
 
     lobbyAct.onMessage((info, ctx) => {
+      this.peerLastSeen.set(ctx.peerId, Date.now());
+      if (ctx.peerId === this.localPeerId) return;
       if (this.players.size >= 4 && !this.players.has(ctx.peerId)) return;
       const isNew = !this.players.has(ctx.peerId);
       const fullInfo = { ...info, peerId: ctx.peerId };
@@ -225,33 +346,43 @@ export class MultiplayerSystem {
       this.onLobbyUpdate?.();
     });
 
-    startAct.onMessage((payload) => {
+    startAct.onMessage((payload, ctx) => {
+      this.peerLastSeen.set(ctx.peerId, Date.now());
       this.onGameStart?.(payload.seed, payload.levelIndex, payload.restorePlayer);
     });
 
     playerAct.onMessage((state, ctx) => {
+      this.peerLastSeen.set(ctx.peerId, Date.now());
       this.onRemotePlayerState?.(state, ctx.peerId);
     });
 
-    worldAct.onMessage((sync) => {
+    worldAct.onMessage((sync, ctx) => {
+      this.peerLastSeen.set(ctx.peerId, Date.now());
       if (this.mode === 'client') {
+        if (sync.lobbyPlayers) {
+          this.syncRosterFromHost(sync.lobbyPlayers);
+        }
         this.onWorldSync?.(sync);
       }
     });
 
     roomSyncAct.onMessage((sync, ctx) => {
+      this.peerLastSeen.set(ctx.peerId, Date.now());
       this.onRoomSync?.(sync, ctx.peerId);
     });
 
     attackAct.onMessage((ev, ctx) => {
+      this.peerLastSeen.set(ctx.peerId, Date.now());
       this.onRemoteAttack?.(ev, ctx.peerId);
     });
 
     interactAct.onMessage((ev, ctx) => {
+      this.peerLastSeen.set(ctx.peerId, Date.now());
       this.onRemoteInteract?.(ev, ctx.peerId);
     });
 
-    playAgainAct.onMessage(() => {
+    playAgainAct.onMessage((_data, ctx) => {
+      this.peerLastSeen.set(ctx.peerId, Date.now());
       for (const p of this.players.values()) {
         p.ready = p.isHost;
       }
@@ -260,6 +391,9 @@ export class MultiplayerSystem {
 
     room.onPeerJoin((ctx) => {
       const peerId = typeof ctx === 'string' ? ctx : ctx.peerId;
+      this.directPeers.add(peerId);
+      this.peerLastSeen.set(peerId, Date.now());
+      this.connectionError = null;
       const selfInfo = this.players.get(this.localPeerId);
       if (selfInfo) {
         this.sendLobbyFn?.(selfInfo, peerId);
@@ -269,8 +403,23 @@ export class MultiplayerSystem {
 
     room.onPeerLeave((ctx) => {
       const peerId = typeof ctx === 'string' ? ctx : ctx.peerId;
+      this.directPeers.delete(peerId);
       this.handlePeerLeave(peerId);
     });
+
+    room.onError((err) => {
+      if (this.room !== room) return;
+      if (err.code === 'relay-failed' || err.code === 'peer-connect-failed') {
+        this.connectionError =
+          err.code === 'relay-failed'
+            ? 'Signaling relay error - check internet connection'
+            : 'Peer connection failed across network';
+        this.onConnectionError?.(this.connectionError);
+        this.onLobbyUpdate?.();
+      }
+    });
+
+    this.startHeartbeat(room);
 
     // Broadcast our initial lobby info
     const selfInfo = this.players.get(this.localPeerId);
@@ -279,9 +428,71 @@ export class MultiplayerSystem {
     }
   }
 
+  private startHeartbeat(room: Room): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.heartbeatTimer = setInterval(() => {
+      if (this.room !== room || this.mode === 'solo') return;
+      const now = Date.now();
+      const activeDirect = Object.keys(room.getPeers());
+      for (const peerId of activeDirect) {
+        this.directPeers.add(peerId);
+        Promise.race([
+          room.ping(peerId),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('ping-timeout')), 2500)),
+        ])
+          .then(() => {
+            if (this.room === room) {
+              this.peerLastSeen.set(peerId, Date.now());
+            }
+          })
+          .catch(() => {
+            // rely on stale timeout check below
+          });
+      }
+
+      for (const peerId of Array.from(this.directPeers)) {
+        if (peerId === this.localPeerId) continue;
+        const last = this.peerLastSeen.get(peerId) ?? now;
+        if (now - last > PEER_STALE_TIMEOUT_MS && this.players.has(peerId)) {
+          this.directPeers.delete(peerId);
+          this.handlePeerLeave(peerId);
+        }
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private syncRosterFromHost(lobbyPlayers: LobbyPlayerInfo[]): void {
+    const now = Date.now();
+    const hostRosterIds = new Set<string>();
+    for (const lp of lobbyPlayers) {
+      hostRosterIds.add(lp.peerId);
+      if (lp.peerId === this.localPeerId) continue;
+      this.peerLastSeen.set(lp.peerId, now);
+      if (!this.players.has(lp.peerId)) {
+        this.players.set(lp.peerId, { ...lp });
+      } else {
+        const existing = this.players.get(lp.peerId)!;
+        existing.isHost = lp.isHost;
+        existing.name = lp.name;
+        existing.paletteId = lp.paletteId;
+        existing.ready = lp.ready;
+      }
+    }
+    for (const peerId of Array.from(this.players.keys())) {
+      if (peerId !== this.localPeerId && !hostRosterIds.has(peerId) && !this.directPeers.has(peerId)) {
+        this.handlePeerLeave(peerId);
+      }
+    }
+  }
+
   handlePeerLeave(peerId: string): void {
     const leaving = this.players.get(peerId);
     this.players.delete(peerId);
+    this.peerLastSeen.delete(peerId);
+    this.directPeers.delete(peerId);
     this.onPeerLeft?.(peerId, leaving);
 
     if (leaving?.isHost && this.players.size > 0) {
@@ -365,6 +576,10 @@ export class MultiplayerSystem {
   }
 
   disconnect(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
     if (this.room) {
       try {
         this.room.leave();
@@ -374,6 +589,8 @@ export class MultiplayerSystem {
       this.room = null;
     }
     this.players.clear();
+    this.peerLastSeen.clear();
+    this.directPeers.clear();
     this.sendLobbyFn = null;
     this.sendStartFn = null;
     this.sendPlayerStateFn = null;
@@ -393,6 +610,9 @@ export class MultiplayerSystem {
     this.onPeerLeft = undefined;
     this.onHostMigrated = undefined;
     this.onPlayAgain = undefined;
+    this.onSelfIdResolved = undefined;
+    this.onConnectionError = undefined;
+    this.connectionError = null;
   }
 }
 

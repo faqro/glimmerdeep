@@ -21,6 +21,7 @@ export class LobbyScene extends Phaser.Scene {
   private onBackAction!: () => void;
   private onMainAction?: () => void;
   private mobileFocusIndex = 2; // 0: COPY, 1: BACK, 2: START/READY
+  private connectTimedOut = false;
   private unsubNav?: () => void;
   private unsubBtn?: () => void;
 
@@ -31,6 +32,7 @@ export class LobbyScene extends Phaser.Scene {
   create(): void {
     this.isReady = net.mode === 'host';
     this.mobileFocusIndex = 2;
+    this.connectTimedOut = false;
     this.add.rectangle(180, 135, 360, 270, 0x0e0c21);
 
     addPixelText(this, 180, 24, 'CO-OP LOBBY', 16, 0xf49ac1, 0.5, 0.5);
@@ -102,6 +104,16 @@ export class LobbyScene extends Phaser.Scene {
 
     net.broadcastLobbySelf(this.isReady);
     this.refreshPlayers();
+
+    if (net.mode === 'client') {
+      this.time.delayedCall(8000, () => {
+        if (!this.scene.isActive('LobbyScene')) return;
+        if (net.mode === 'client' && net.players.size <= 1) {
+          this.connectTimedOut = true;
+          this.refreshPlayers();
+        }
+      });
+    }
 
     if (isMobileMode()) {
       this.refreshMobileFocus();
@@ -213,14 +225,20 @@ export class LobbyScene extends Phaser.Scene {
 
     const allReady = list.length > 0 && list.every((p) => p.ready);
     if (net.mode === 'host') {
-      this.statusText.setText(
-        allReady ? `${list.length}/4 Adventurers Ready` : 'Waiting for all players to ready up...'
-      );
+      this.statusText
+        .setText(allReady ? `${list.length}/4 Adventurers Ready` : 'Waiting for all players to ready up...')
+        .setTint(0xb8a1ff);
       if (this.startBtn) {
         this.startBtn.setAlpha(allReady ? 1 : 0.45);
       }
+    } else if (net.connectionError && list.length <= 1) {
+      this.statusText.setText(net.connectionError).setTint(0xff5d8f);
+    } else if (list.length <= 1) {
+      this.statusText
+        .setText(this.connectTimedOut ? 'No host found yet - check code & network' : 'Connecting to party...')
+        .setTint(this.connectTimedOut ? 0xffe066 : 0xb8a1ff);
     } else {
-      this.statusText.setText(`Connected (${list.length}/4) - Waiting for host...`);
+      this.statusText.setText(`Connected (${list.length}/4) - Waiting for host...`).setTint(0xb8a1ff);
     }
   }
 }
