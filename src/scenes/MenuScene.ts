@@ -27,7 +27,10 @@ export class MenuScene extends Phaser.Scene {
   private cancelBtnTxt!: Phaser.GameObjects.BitmapText;
 
   private menuButtons: Array<{ bg: Phaser.GameObjects.Image; txt: Phaser.GameObjects.BitmapText; onClick: () => void }> = [];
-  private mobileFocusIndex = 0; // 0: PLAY SOLO, 1: CREATE CO-OP, 2: JOIN CO-OP, 3: NAME BOX
+  private netToggleBg!: Phaser.GameObjects.Rectangle;
+  private netToggleIcon!: Phaser.GameObjects.BitmapText;
+  private netToggleLabel!: Phaser.GameObjects.BitmapText;
+  private mobileFocusIndex = 0; // 0: PLAY SOLO, 1: CREATE CO-OP, 2: JOIN CO-OP, 3: NAME BOX, 4: NET SWITCH
   private modalFocusIndex = 0; // 0: CODE BOX, 1: JOIN, 2: CANCEL
   private virtualKeyboard?: VirtualKeyboard;
   private unsubNav?: () => void;
@@ -133,6 +136,21 @@ export class MenuScene extends Phaser.Scene {
       SoundSystem.playPickup();
       this.openJoinModal();
     });
+
+    // Tiny square button under JOIN CO-OP to switch between Nostr (default) and MQTT
+    this.netToggleBg = this.add
+      .rectangle(216, 198, 14, 14, 0x100d24)
+      .setStrokeStyle(1, 0x6c5bb3);
+    this.netToggleIcon = addPixelText(this, 216, 198, 'N', 8, 0x66ffd9, 0.5, 0.5);
+    this.netToggleLabel = addPixelText(this, 228, 198, 'NET: NOSTR', 8, 0xb8a1ff, 0, 0.5);
+    this.refreshNetToggle();
+
+    if (!isMobileMode()) {
+      this.netToggleBg.setInteractive({ useHandCursor: true });
+      this.netToggleBg.on('pointerover', () => this.netToggleBg.setStrokeStyle(1, 0xffe066));
+      this.netToggleBg.on('pointerout', () => this.netToggleBg.setStrokeStyle(1, 0x6c5bb3));
+      this.netToggleBg.on('pointerdown', () => this.toggleSignalingBackend());
+    }
 
     addPixelText(
       this,
@@ -335,6 +353,20 @@ export class MenuScene extends Phaser.Scene {
     this.scene.start('LobbyScene');
   }
 
+  private toggleSignalingBackend(): void {
+    if (this.joinModal.visible) return;
+    SoundSystem.playSwing();
+    const next = net.signalingBackend === 'nostr' ? 'mqtt' : 'nostr';
+    net.setSignalingBackend(next);
+    this.refreshNetToggle();
+  }
+
+  private refreshNetToggle(): void {
+    const isMqtt = net.signalingBackend === 'mqtt';
+    this.netToggleIcon.setText(isMqtt ? 'M' : 'N').setTint(isMqtt ? 0xffe066 : 0x66ffd9);
+    this.netToggleLabel.setText(isMqtt ? 'NET: MQTT' : 'NET: NOSTR');
+  }
+
   private saveUsername(): void {
     try {
       const trimmed = this.playerName.trim();
@@ -413,10 +445,14 @@ export class MenuScene extends Phaser.Scene {
 
     if (dir === 'up') {
       if (this.mobileFocusIndex === 3) this.mobileFocusIndex = 2;
-      else this.mobileFocusIndex = (this.mobileFocusIndex + 2) % 3;
+      else if (this.mobileFocusIndex === 4) this.mobileFocusIndex = 2;
+      else if (this.mobileFocusIndex === 0) this.mobileFocusIndex = 4;
+      else this.mobileFocusIndex = this.mobileFocusIndex - 1;
     } else if (dir === 'down') {
       if (this.mobileFocusIndex === 3) this.mobileFocusIndex = 0;
-      else this.mobileFocusIndex = (this.mobileFocusIndex + 1) % 3;
+      else if (this.mobileFocusIndex === 2) this.mobileFocusIndex = 4;
+      else if (this.mobileFocusIndex === 4) this.mobileFocusIndex = 0;
+      else this.mobileFocusIndex = this.mobileFocusIndex + 1;
     } else if (dir === 'left') {
       this.mobileFocusIndex = 3;
     } else if (dir === 'right') {
@@ -502,6 +538,11 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
 
+    if (this.mobileFocusIndex === 4) {
+      this.toggleSignalingBackend();
+      return;
+    }
+
     this.menuButtons[this.mobileFocusIndex]?.onClick();
   }
 
@@ -520,6 +561,12 @@ export class MenuScene extends Phaser.Scene {
     } else {
       this.nameBoxBg.setStrokeStyle(1, 0x6c5bb3);
       this.nameText.setTint(0xffffff);
+    }
+
+    if (!this.joinModal.visible && this.mobileFocusIndex === 4) {
+      this.netToggleBg.setStrokeStyle(2, 0xffe066);
+    } else {
+      this.netToggleBg.setStrokeStyle(1, 0x6c5bb3);
     }
 
     if (this.joinModal.visible) {

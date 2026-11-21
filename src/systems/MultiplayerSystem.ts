@@ -1,10 +1,22 @@
-import { joinRoom, Room } from 'trystero';
+import { joinRoom as joinNostrRoom, Room } from 'trystero';
+import { joinRoom as joinMqttRoom } from '@trystero-p2p/mqtt';
 import { pickRandomPaletteId } from '../data/palettes';
 import { GameMode, LobbyPlayerInfo, PlayerStateSnapshot } from '../types/game';
 
+export type SignalingBackend = 'nostr' | 'mqtt';
+
 const APP_ID = 'glimmerdeep-roguelike-v1';
+const SIGNALING_STORAGE_KEY = 'glimmerdeep_signaling';
 const HEARTBEAT_INTERVAL_MS = 3000;
 const PEER_STALE_TIMEOUT_MS = 12000;
+
+const MQTT_RELAY_URLS = [
+  'wss://broker.hivemq.com:8884/mqtt',
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.coreflux.cloud:8884/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt',
+  'wss://public:public@public.cloud.shiftr.io',
+];
 
 function buildIceServers(): RTCIceServer[] {
   const servers: RTCIceServer[] = [
@@ -153,6 +165,7 @@ export interface NetWorldSync {
 
 export class MultiplayerSystem {
   public mode: GameMode = 'solo';
+  public signalingBackend: SignalingBackend = 'nostr';
   public inviteCode = '';
   public localPeerId = 'local';
   public localName = 'Wanderer';
@@ -187,6 +200,26 @@ export class MultiplayerSystem {
   public onSelfIdResolved?: (peerId: string) => void;
   public onConnectionError?: (message: string) => void;
   public connectionError: string | null = null;
+
+  constructor() {
+    try {
+      const saved = localStorage.getItem(SIGNALING_STORAGE_KEY);
+      if (saved === 'mqtt' || saved === 'nostr') {
+        this.signalingBackend = saved;
+      }
+    } catch {
+      // ignore storage access errors
+    }
+  }
+
+  setSignalingBackend(backend: SignalingBackend): void {
+    this.signalingBackend = backend;
+    try {
+      localStorage.setItem(SIGNALING_STORAGE_KEY, backend);
+    } catch {
+      // ignore storage access errors
+    }
+  }
 
   static generateInviteCode(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -231,20 +264,36 @@ export class MultiplayerSystem {
     this.inviteCode = normalizedCode;
     this.connectionError = null;
 
-    const room = joinRoom(
-      {
-        appId: APP_ID,
-        trickleIce: true,
-        rtcConfig: {
-          iceServers: buildIceServers(),
-          iceCandidatePoolSize: 4,
-        },
-        relayConfig: {
-          redundancy: 12,
-        },
+    const baseConfig = {
+      appId: APP_ID,
+      trickleIce: true,
+      rtcConfig: {
+        iceServers: buildIceServers(),
+        iceCandidatePoolSize: 4,
       },
-      `gd-${normalizedCode}`
-    );
+    };
+
+    const room =
+      this.signalingBackend === 'mqtt'
+        ? joinMqttRoom(
+            {
+              ...baseConfig,
+              relayConfig: {
+                urls: MQTT_RELAY_URLS,
+                redundancy: MQTT_RELAY_URLS.length,
+              },
+            },
+            `gd-${normalizedCode}`
+          )
+        : joinNostrRoom(
+            {
+              ...baseConfig,
+              relayConfig: {
+                redundancy: 12,
+              },
+            },
+            `gd-${normalizedCode}`
+          );
     this.room = room;
     const rawSelfId = (room as unknown as { selfId?: string }).selfId;
     this.localPeerId =
