@@ -69,6 +69,7 @@ class SoundSystemImpl {
   }
 
   startMusic(): void {
+    return; //temporarily disable music
     if (typeof window === 'undefined') return;
     if (!this.bgm) {
       this.bgm = this.createLoopingAudio(bgmUrl, 'normal');

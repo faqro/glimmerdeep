@@ -59,8 +59,8 @@ const MOBILE_CSS = `
     width: 100%;
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    padding: 10px 10px 14px;
+    justify-content: flex-start;
+    padding: 18px 10px 14px;
     background: linear-gradient(180deg, #120f29 0%, #0b0917 100%);
     min-height: 0;
   }
@@ -78,6 +78,14 @@ const MOBILE_CSS = `
     flex-direction: column;
     align-items: center;
     gap: 14px;
+  }
+
+  .mc-col-left {
+    align-items: flex-start;
+  }
+
+  .mc-col-right {
+    align-items: flex-end;
   }
 
   .mc-btn-row {
