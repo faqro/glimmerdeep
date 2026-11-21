@@ -13,42 +13,79 @@ const DIRS_8: Array<{ dx: number; dy: number; nav: NavDir; label: string }> = [
 
 export function initMobileControls(root: HTMLElement): void {
   root.innerHTML = `
-    <div class="mc-top-row">
-      <div class="mc-left-util">
-        <button class="mc-btn mc-btn-sm" data-btn="esc">ESC</button>
-        <button class="mc-btn mc-btn-sm" data-btn="slot1">1</button>
-        <button class="mc-btn mc-btn-sm" data-btn="slot2">2</button>
-        <button class="mc-btn mc-btn-sm" data-btn="slot3">3</button>
-      </div>
-      <div class="mc-right-actions">
-        <button class="mc-btn mc-btn-act" data-btn="e">E</button>
-        <button class="mc-btn mc-btn-act" data-btn="space">SPC</button>
-        <button class="mc-btn mc-btn-act" data-btn="tab">TAB</button>
-        <button class="mc-btn mc-btn-act" data-btn="q">Q</button>
-      </div>
-    </div>
-
-    <div class="mc-main-row">
-      <div class="mc-stick-wrap">
-        <div class="mc-stick-base" id="mc-stick-base">
-          <div class="mc-stick-cross"></div>
-          <div class="mc-stick-knob" id="mc-stick-knob"></div>
+    <div class="mc-columns">
+      <div class="mc-col mc-col-left">
+        <div class="mc-btn-row mc-left-util">
+          <button class="mc-btn mc-btn-circle mc-btn-util" data-btn="esc" aria-label="Pause or Back" title="Pause / Back">
+            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
+              <rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/>
+              <rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/>
+            </svg>
+          </button>
+          <button class="mc-btn mc-btn-circle mc-btn-util" data-btn="prevSlot" aria-label="Previous Item" title="Previous Item">
+            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
+              <polygon points="15,5 7,12 15,19" fill="currentColor"/>
+            </svg>
+          </button>
+          <button class="mc-btn mc-btn-circle mc-btn-util" data-btn="nextSlot" aria-label="Next Item" title="Next Item">
+            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
+              <polygon points="9,5 17,12 9,19" fill="currentColor"/>
+            </svg>
+          </button>
         </div>
-        <div class="mc-pad-label">MOVE / NAV</div>
+
+        <div class="mc-stick-wrap">
+          <div class="mc-stick-base" id="mc-stick-base">
+            <div class="mc-stick-cross"></div>
+            <div class="mc-stick-knob" id="mc-stick-knob"></div>
+          </div>
+          <div class="mc-pad-label">MOVE / NAV</div>
+        </div>
       </div>
 
-      <div class="mc-dpad-wrap">
-        <div class="mc-dpad" id="mc-dpad">
-          <svg viewBox="0 0 160 160" class="mc-dpad-svg" aria-label="8-way attack D-pad">
-            <polygon points="48,4 112,4 156,48 156,112 112,156 48,156 4,112 4,48" fill="#171230" stroke="#6c5bb3" stroke-width="3"/>
-            <g id="mc-dpad-wedges">
-              ${buildOctagonWedgesSvg()}
-            </g>
-            <polygon points="66,54 94,54 106,66 106,94 94,106 66,106 54,94 54,66" fill="#100d24" stroke="#4a3b7d" stroke-width="2"/>
-            <circle cx="80" cy="80" r="6" fill="#f49ac1" opacity="0.65"/>
-          </svg>
+      <div class="mc-col mc-col-right">
+        <div class="mc-btn-row mc-right-actions">
+          <button class="mc-btn mc-btn-circle mc-btn-act" data-btn="e" aria-label="Interact or Select" title="Interact / Select">
+            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
+              <path d="M12 3l2.2 5.3L19.5 10l-5.3 2.2L12 17.5l-2.2-5.3L4.5 10l5.3-1.7z" fill="currentColor"/>
+              <circle cx="18" cy="18" r="2" fill="#66ffd9"/>
+            </svg>
+          </button>
+          <button class="mc-btn mc-btn-circle mc-btn-act" data-btn="space" aria-label="Dodge Dash" title="Dodge">
+            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
+              <path d="M4 8h8M3 12h11M5 16h7" stroke="#66ffd9" stroke-width="2.2" stroke-linecap="round"/>
+              <path d="M14 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button class="mc-btn mc-btn-circle mc-btn-act" data-btn="tab" aria-label="Toggle Map" title="Map">
+            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
+              <polygon points="3,6 9,4 15,6 21,4 21,18 15,20 9,18 3,20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+              <line x1="9" y1="4" x2="9" y2="18" stroke="currentColor" stroke-width="1.8"/>
+              <line x1="15" y1="6" x2="15" y2="20" stroke="currentColor" stroke-width="1.8"/>
+            </svg>
+          </button>
+          <button class="mc-btn mc-btn-circle mc-btn-act" data-btn="q" aria-label="Drop Item" title="Drop Item">
+            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
+              <path d="M12 4c1.2-1.2 2.8-1.4 3.5-1-.2 1.2-1.2 2.1-2.5 2.2" fill="none" stroke="#66ffd9" stroke-width="1.8" stroke-linecap="round"/>
+              <path d="M12 6.5c-2.8 0-4.8 1.9-4.8 4.6 0 2.7 1.9 5.2 4.8 5.2s4.8-2.5 4.8-5.2c0-2.7-2-4.6-4.8-4.6z" fill="#f49ac1" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M12 17v4m0 0l-2.5-2.2M12 21l2.5-2.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
-        <div class="mc-pad-label">8-WAY AIM / ATK</div>
+
+        <div class="mc-dpad-wrap">
+          <div class="mc-dpad" id="mc-dpad">
+            <svg viewBox="0 0 160 160" class="mc-dpad-svg" aria-label="8-way attack D-pad">
+              <polygon points="48,4 112,4 156,48 156,112 112,156 48,156 4,112 4,48" fill="#171230" stroke="#6c5bb3" stroke-width="3"/>
+              <g id="mc-dpad-wedges">
+                ${buildOctagonWedgesSvg()}
+              </g>
+              <polygon points="66,54 94,54 106,66 106,94 94,106 66,106 54,94 54,66" fill="#100d24" stroke="#4a3b7d" stroke-width="2"/>
+              <circle cx="80" cy="80" r="6" fill="#f49ac1" opacity="0.65"/>
+            </svg>
+          </div>
+          <div class="mc-pad-label">8-WAY AIM / ATK</div>
+        </div>
       </div>
     </div>
   `;

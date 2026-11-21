@@ -1,5 +1,5 @@
 export type NavDir = 'up' | 'down' | 'left' | 'right';
-export type VirtualButton = 'e' | 'space' | 'tab' | 'q' | 'esc' | 'slot1' | 'slot2' | 'slot3';
+export type VirtualButton = 'e' | 'space' | 'tab' | 'q' | 'esc' | 'prevSlot' | 'nextSlot';
 
 export function isMobileMode(): boolean {
   if (import.meta.env.VITE_MOBILE === 'true') return true;

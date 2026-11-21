@@ -403,12 +403,14 @@ export class GameScene extends Phaser.Scene {
           if (!this.paused && !this.ui.isOverlayOpen() && !this.playerState.downed) {
             this.dropActiveItem();
           }
-        } else if (btn === 'slot1') {
-          if (!this.paused && !this.ui.isOverlayOpen()) this.playerState.activeSlot = 0;
-        } else if (btn === 'slot2') {
-          if (!this.paused && !this.ui.isOverlayOpen()) this.playerState.activeSlot = 1;
-        } else if (btn === 'slot3') {
-          if (!this.paused && !this.ui.isOverlayOpen()) this.playerState.activeSlot = 2;
+        } else if (btn === 'prevSlot') {
+          if (!this.paused && !this.ui.isOverlayOpen()) {
+            this.playerState.activeSlot = (this.playerState.activeSlot + 2) % 3;
+          }
+        } else if (btn === 'nextSlot') {
+          if (!this.paused && !this.ui.isOverlayOpen()) {
+            this.playerState.activeSlot = (this.playerState.activeSlot + 1) % 3;
+          }
         } else if (btn === 'e') {
           if (!this.paused && !this.ui.isOverlayOpen()) {
             this.handleInteract();

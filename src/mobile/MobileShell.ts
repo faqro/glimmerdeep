@@ -37,15 +37,15 @@ const MOBILE_CSS = `
 
   #game-container {
     width: 100% !important;
-    height: auto !important;
-    aspect-ratio: 4 / 3;
-    flex-shrink: 0;
-    background: #0b0917;
+    height: 50% !important;
+    flex: 1 1 50%;
+    background: #000000;
     border-bottom: 2px solid #4a3b7d;
     display: flex;
     align-items: center;
     justify-content: center;
     overflow: hidden;
+    min-height: 0;
   }
 
   #game-container canvas {
@@ -54,74 +54,78 @@ const MOBILE_CSS = `
   }
 
   #mobile-controls {
-    flex: 1;
+    flex: 1 1 50%;
+    height: 50%;
     width: 100%;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    padding: 10px 12px 14px;
+    justify-content: center;
+    padding: 10px 10px 14px;
     background: linear-gradient(180deg, #120f29 0%, #0b0917 100%);
     min-height: 0;
   }
 
-  .mc-top-row {
+  .mc-columns {
+    width: 100%;
     display: flex;
+    align-items: flex-end;
     justify-content: space-between;
-    align-items: center;
     gap: 8px;
   }
 
-  .mc-left-util,
-  .mc-right-actions {
+  .mc-col {
     display: flex;
-    gap: 6px;
+    flex-direction: column;
     align-items: center;
+    gap: 14px;
+  }
+
+  .mc-btn-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
   }
 
   .mc-btn {
     background: #241c47;
     color: #ffffff;
     border: 2px solid #6c5bb3;
-    box-shadow: inset 0 -2px 0 #100d24;
-    font-family: monospace;
-    font-weight: bold;
-    letter-spacing: 0.5px;
+    box-shadow: inset 0 -2px 0 #100d24, 0 2px 6px rgba(0, 0, 0, 0.45);
     cursor: pointer;
-    border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 0;
   }
 
-  .mc-btn-sm {
-    min-width: 34px;
-    height: 28px;
-    font-size: 11px;
+  .mc-btn-circle {
+    border-radius: 50%;
+    width: clamp(38px, 10.5vw, 48px);
+    height: clamp(38px, 10.5vw, 48px);
+  }
+
+  .mc-btn-util {
     color: #b8a1ff;
   }
 
   .mc-btn-act {
-    min-width: 40px;
-    height: 32px;
-    font-size: 12px;
     color: #ffe066;
     border-color: #8a75d6;
+  }
+
+  .mc-icon {
+    width: 56%;
+    height: 56%;
+    display: block;
+    pointer-events: none;
   }
 
   .mc-btn.active {
     background: #6c5bb3;
     border-color: #ffe066;
     color: #ffffff;
-    transform: translateY(1px);
-  }
-
-  .mc-main-row {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    min-height: 0;
+    transform: translateY(1px) scale(0.96);
   }
 
   .mc-stick-wrap,
