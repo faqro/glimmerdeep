@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
 import { BIOMES, LEVEL_MODIFIERS } from '../data/biomes';
-import { ARTIFACTS, CONSUMABLES, STATUS_EFFECTS } from '../data/items';
+import { applyRarityTextStyle, ARTIFACTS, CONSUMABLES, STATUS_EFFECTS } from '../data/items';
 import { WEAPONS } from '../data/weapons';
 import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { PlayerStateSnapshot, RoomData, ShopStockItem } from '../types/game';
@@ -22,16 +22,20 @@ export interface UIStatePayload {
 export class UIScene extends Phaser.Scene {
   private heartSprites: Phaser.GameObjects.Image[] = [];
   private shieldContainer!: Phaser.GameObjects.Container;
+  private shieldSprites: Phaser.GameObjects.Image[] = [];
   private stamSprites: Phaser.GameObjects.Image[] = [];
   private shardText!: Phaser.GameObjects.BitmapText;
   private statusContainer!: Phaser.GameObjects.Container;
+  private statusBadges: Phaser.GameObjects.Rectangle[] = [];
   private allyContainer!: Phaser.GameObjects.Container;
+  private allyLabels: Phaser.GameObjects.BitmapText[] = [];
 
   private slotBgs: Phaser.GameObjects.Image[] = [];
   private slotIcons: Phaser.GameObjects.Image[] = [];
   private slotBars: Phaser.GameObjects.Graphics[] = [];
   private selectedLabel!: Phaser.GameObjects.BitmapText;
   private selectedDescLabel!: Phaser.GameObjects.BitmapText;
+  private lastSelectedRarityKey: string | null = null;
 
   private minimapGfx!: Phaser.GameObjects.Graphics;
   private roomCoordTxt!: Phaser.GameObjects.BitmapText;
@@ -95,7 +99,7 @@ export class UIScene extends Phaser.Scene {
       this.slotBars.push(bar);
     }
 
-    this.selectedLabel = addPixelText(this, 38, 138, '', 8, 0xffe066, 0.5, 0, 68);
+    this.selectedLabel = addPixelText(this, 38, 138, '', 8, 0xffffff, 0.5, 0, 68);
     this.selectedDescLabel = addPixelText(this, 38, 160, '', 8, 0xb8a1ff, 0.5, 0, 68);
 
     // Right margin: Compact 6x6 Minimap + Room Coordinate Label (A1..F6)
@@ -113,6 +117,12 @@ export class UIScene extends Phaser.Scene {
     }
 
     this.shieldContainer = this.add.container(294, 97);
+    this.shieldSprites = [];
+    for (let i = 0; i < 6; i++) {
+      const sh = this.add.image(i * 8, 0, 'ui_shield').setVisible(false);
+      this.shieldContainer.add(sh);
+      this.shieldSprites.push(sh);
+    }
 
     this.stamSprites = [];
     for (let i = 0; i < 4; i++) {
@@ -124,13 +134,26 @@ export class UIScene extends Phaser.Scene {
     this.shardText = addPixelText(this, 340, 104, '0', 8, 0x6ef3ff, 0, 0);
 
     this.statusContainer = this.add.container(292, 120);
+    this.statusBadges = [];
+    for (let i = 0; i < 4; i++) {
+      const badge = this.add.rectangle(i * 18 + 4, 3, 6, 6, 0xffffff).setStrokeStyle(1, 0x100d24).setVisible(false);
+      this.statusContainer.add(badge);
+      this.statusBadges.push(badge);
+    }
+
     this.allyContainer = this.add.container(292, 134);
+    this.allyLabels = [];
+    for (let i = 0; i < 3; i++) {
+      const txt = addPixelText(this, 0, i * 11, '', 8, 0xb8a1ff, 0, 0).setVisible(false);
+      this.allyContainer.add(txt);
+      this.allyLabels.push(txt);
+    }
 
     // Bottom center (below room) for prompts & toasts
     this.promptBg = this.add.rectangle(180, 254, 180, 12, 0x100d24, 0.85).setVisible(false);
     this.promptTxt = addPixelText(this, 180, 254, '', 8, 0xffffff, 0.5, 0.5, 220).setVisible(false);
 
-    this.toastTxt = addPixelText(this, 180, 16, '', 8, 0x66ffd9, 0.5, 0.5, 220).setVisible(false);
+    this.toastTxt = addPixelText(this, 180, 12, '', 8, 0x66ffd9, 0.5, 0, 220).setDepth(20).setVisible(false);
 
     // Top-center Boss HP Bar
     this.bossContainer = this.add.container(180, 14).setVisible(false);
@@ -317,8 +340,8 @@ export class UIScene extends Phaser.Scene {
       const icon = this.add.image(cx, cy - 44, this.textures.exists(itemIconKey) ? itemIconKey : 'item_shard').setScale(1.5);
       const def = WEAPONS[entry.itemId] ?? CONSUMABLES[entry.itemId] ?? ARTIFACTS[entry.itemId];
       const shortName = def ? def.name : entry.itemId.replace(/_/g, ' ').toUpperCase();
-      const nameColor = def?.rarity === 'super_rare' ? 0xffe066 : 0xffffff;
-      const nameTxt = addPixelText(this, cx, cy - 26, shortName, 8, nameColor, 0.5, 0, 92);
+      const nameTxt = addPixelText(this, cx, cy - 26, shortName, 8, 0xffffff, 0.5, 0, 92);
+      applyRarityTextStyle(this, nameTxt, def?.rarity);
       const descTxt = addPixelText(this, cx, cy + 4, def?.description ?? '', 8, 0xb8a1ff, 0.5, 0, 92);
       const priceColor = entry.sold ? 0x7e71b8 : shards >= entry.price ? 0x66ffd9 : 0xff5d8f;
       const priceTxt = addPixelText(this, cx, cy + 48, entry.sold ? 'SOLD' : `${entry.price} SHARDS`, 8, priceColor, 0.5, 0.5);
@@ -430,9 +453,10 @@ export class UIScene extends Phaser.Scene {
 
   showToast(message: string, color = '#66ffd9'): void {
     const tint = parseInt(color.replace('#', ''), 16) || 0x66ffd9;
+    this.toastTxt.setY(this.bossContainer?.visible ? 31 : 12);
     this.toastTxt.setText(message).setTint(tint).setVisible(true);
     this.toastTimer?.remove(false);
-    this.toastTimer = this.time.delayedCall(2200, () => {
+    this.toastTimer = this.time.delayedCall(2600, () => {
       if (this.toastTxt.active) this.toastTxt.setVisible(false);
     });
   }
@@ -459,9 +483,9 @@ export class UIScene extends Phaser.Scene {
       else this.heartSprites[i].setTexture('ui_heart_empty');
     }
 
-    this.shieldContainer.removeAll(true);
-    for (let i = 0; i < Math.min(p.shield, 6); i++) {
-      this.shieldContainer.add(this.add.image(i * 8, 0, 'ui_shield'));
+    const shieldCount = Math.min(p.shield, 6);
+    for (let i = 0; i < 6; i++) {
+      this.shieldSprites[i].setVisible(i < shieldCount);
     }
 
     const fullStam = Math.floor(p.stamina);
@@ -471,28 +495,29 @@ export class UIScene extends Phaser.Scene {
 
     this.shardText.setText(`${p.shards}`);
 
-    this.statusContainer.removeAll(true);
-    p.statusEffects.slice(0, 4).forEach((eff, idx) => {
-      const meta = STATUS_EFFECTS[eff.id];
-      const badge = this.add.rectangle(idx * 18 + 4, 3, 6, 6, meta.color).setStrokeStyle(1, 0x100d24);
-      this.statusContainer.add(badge);
-    });
+    const activeEffects = p.statusEffects.slice(0, 4);
+    for (let i = 0; i < 4; i++) {
+      const eff = activeEffects[i];
+      if (eff) {
+        this.statusBadges[i].setFillStyle(STATUS_EFFECTS[eff.id].color).setVisible(true);
+      } else {
+        this.statusBadges[i].setVisible(false);
+      }
+    }
 
-    this.allyContainer.removeAll(true);
-    payload.allies.slice(0, 3).forEach((ally, idx) => {
-      const ay = idx * 11;
-      const txt = addPixelText(
-        this,
-        0,
-        ay,
-        `${ally.name.slice(0, 6)} ${ally.downed ? 'DOWN' : `${ally.hp}/${ally.maxHp}`}`,
-        8,
-        ally.downed ? 0xff5d8f : 0xb8a1ff,
-        0,
-        0
-      );
-      this.allyContainer.add(txt);
-    });
+    const allies = payload.allies.slice(0, 3);
+    for (let i = 0; i < 3; i++) {
+      const ally = allies[i];
+      const lbl = this.allyLabels[i];
+      if (ally) {
+        lbl
+          .setText(`${ally.name.slice(0, 6)} ${ally.downed ? 'DOWN' : `${ally.hp}/${ally.maxHp}`}`)
+          .setTint(ally.downed ? 0xff5d8f : 0xb8a1ff)
+          .setVisible(true);
+      } else {
+        lbl.setVisible(false);
+      }
+    }
 
     for (let i = 0; i < 3; i++) {
       const isSelected = p.activeSlot === i;
@@ -517,6 +542,11 @@ export class UIScene extends Phaser.Scene {
 
     const activeItem = p.inventory[p.activeSlot];
     this.selectedLabel.setText(activeItem ? `${activeItem.name} (${activeItem.uses}/${activeItem.maxUses})` : 'Empty Hand');
+    const rarityKey = activeItem ? activeItem.rarity : 'empty';
+    if (rarityKey !== this.lastSelectedRarityKey) {
+      this.lastSelectedRarityKey = rarityKey;
+      applyRarityTextStyle(this, this.selectedLabel, activeItem?.rarity);
+    }
     this.selectedDescLabel.setText(activeItem ? activeItem.description : '');
     this.selectedDescLabel.setY(this.selectedLabel.y + this.selectedLabel.height + 3);
 
@@ -540,6 +570,7 @@ export class UIScene extends Phaser.Scene {
 
     if (payload.bossInfo && payload.bossInfo.hp > 0) {
       this.bossContainer.setVisible(true);
+      this.toastTxt.setY(31);
       this.bossNameTxt.setText(payload.bossInfo.name.toUpperCase());
       this.bossBarGfx.clear();
       const pct = Math.max(0, payload.bossInfo.hp / payload.bossInfo.maxHp);
@@ -549,6 +580,7 @@ export class UIScene extends Phaser.Scene {
       this.bossBarGfx.fillRect(-83, 6, Math.floor(166 * pct), 3);
     } else {
       this.bossContainer.setVisible(false);
+      this.toastTxt.setY(12);
     }
 
     this.renderMinimap(payload.rooms, payload.currentRoom);

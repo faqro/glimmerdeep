@@ -61,11 +61,52 @@ export const SUPER_RARE_MERCHANT_IDS: string[] = [
 
 export function rollRandomItemId(rng: SeededRandom, includeWeapons = true): string {
   const pool: string[] = [
-    ...CONSUMABLE_IDS.filter((id) => !CONSUMABLES[id].merchantOnly),
-    ...ARTIFACT_IDS.filter((id) => !ARTIFACTS[id].merchantOnly),
+    ...CONSUMABLE_IDS.filter((id) => !CONSUMABLES[id].merchantOnly && CONSUMABLES[id].rarity !== 'secret'),
+    ...ARTIFACT_IDS.filter((id) => !ARTIFACTS[id].merchantOnly && ARTIFACTS[id].rarity !== 'secret'),
   ];
   if (includeWeapons) {
-    pool.push(...WEAPON_IDS.filter((id) => id !== 'moonblade' && !WEAPONS[id].merchantOnly));
+    pool.push(
+      ...WEAPON_IDS.filter(
+        (id) => id !== 'moonblade' && !WEAPONS[id].merchantOnly && WEAPONS[id].rarity !== 'secret'
+      )
+    );
+  }
+  return rng.pick(pool);
+}
+
+const NON_COMBAT_BOSS_DROP_IDS = new Set(['wandering_eye', 'lucky_acorn', 'moth_crown', 'starseed']);
+const MELEE_WEAPON_STYLES = new Set([
+  'melee_arc',
+  'heavy_slam',
+  'heavy_sword',
+  'echo_blade',
+  'whip_pull',
+  'spin_flail',
+  'honey_slam',
+  'frost_blade',
+  'venom_blade',
+  'lightning_horn',
+]);
+
+export function rollBossCombatItemId(rng: SeededRandom): string {
+  const allowed = new Set(['common', 'uncommon', 'rare']);
+  const pool: string[] = [];
+
+  for (const id of CONSUMABLE_IDS) {
+    if (!CONSUMABLES[id].merchantOnly && allowed.has(CONSUMABLES[id].rarity) && !NON_COMBAT_BOSS_DROP_IDS.has(id)) {
+      for (let w = 0; w < 4; w++) pool.push(id);
+    }
+  }
+  for (const id of ARTIFACT_IDS) {
+    if (!ARTIFACTS[id].merchantOnly && allowed.has(ARTIFACTS[id].rarity) && !NON_COMBAT_BOSS_DROP_IDS.has(id)) {
+      for (let w = 0; w < 2; w++) pool.push(id);
+    }
+  }
+  for (const id of WEAPON_IDS) {
+    if (id !== 'moonblade' && !WEAPONS[id].merchantOnly && allowed.has(WEAPONS[id].rarity) && !NON_COMBAT_BOSS_DROP_IDS.has(id)) {
+      const weight = MELEE_WEAPON_STYLES.has(WEAPONS[id].style) ? 1 : 5;
+      for (let w = 0; w < weight; w++) pool.push(id);
+    }
   }
   return rng.pick(pool);
 }

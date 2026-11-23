@@ -2,10 +2,11 @@ import Phaser from 'phaser';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
 import { BOSSES, ENEMIES } from '../data/enemies';
-import { ARTIFACTS, CONSUMABLES } from '../data/items';
+import { applyRarityTextStyle, ARTIFACTS, CONSUMABLES, RARITY_ORDER, stopRarityGlow } from '../data/items';
 import { WEAPONS } from '../data/weapons';
 import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { JournalSystem } from '../systems/JournalSystem';
+import { ItemRarity } from '../types/game';
 
 type JournalCategory = 'enemies' | 'bosses' | 'items';
 
@@ -16,6 +17,7 @@ interface JournalEntry {
   detail: string;
   discovered: boolean;
   isBoss?: boolean;
+  rarity?: ItemRarity;
 }
 
 const ITEMS_PER_PAGE = 8; // 2 cols x 4 rows
@@ -198,6 +200,7 @@ export class JournalScene extends Phaser.Scene {
         spriteKey: w.iconKey,
         detail: `[WEAPON - ${w.rarity.toUpperCase()}] ${w.description}`,
         discovered: discoveredSet.has(w.id),
+        rarity: w.rarity,
       }));
       const consumableEntries: JournalEntry[] = Object.values(CONSUMABLES).map((c) => ({
         id: c.id,
@@ -205,6 +208,7 @@ export class JournalScene extends Phaser.Scene {
         spriteKey: c.iconKey,
         detail: `[ITEM - ${c.rarity.toUpperCase()}] ${c.description}`,
         discovered: discoveredSet.has(c.id),
+        rarity: c.rarity,
       }));
       const artifactEntries: JournalEntry[] = Object.values(ARTIFACTS).map((a) => ({
         id: a.id,
@@ -212,18 +216,33 @@ export class JournalScene extends Phaser.Scene {
         spriteKey: a.iconKey,
         detail: `[ARTIFACT - ${a.rarity.toUpperCase()}] ${a.description}`,
         discovered: discoveredSet.has(a.id),
+        rarity: a.rarity,
       }));
       all = [...weaponEntries, ...consumableEntries, ...artifactEntries];
     }
 
-    // Encountered entries first (in order encountered), then unencountered entries
+    // Encountered entries first, then unencountered entries.
+    // For items, sort by rarity (common -> rarer) within both encountered and unencountered groups.
     const orderMap = new Map<string, number>();
     discoveredOrder.forEach((id, idx) => orderMap.set(id, idx));
 
     const discovered = all
       .filter((e) => e.discovered)
-      .sort((a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0));
-    const undiscovered = all.filter((e) => !e.discovered);
+      .sort((a, b) => {
+        if (cat === 'items') {
+          const rarityDiff = RARITY_ORDER[a.rarity ?? 'common'] - RARITY_ORDER[b.rarity ?? 'common'];
+          if (rarityDiff !== 0) return rarityDiff;
+        }
+        return (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0);
+      });
+    const undiscovered = all
+      .filter((e) => !e.discovered)
+      .sort((a, b) => {
+        if (cat === 'items') {
+          return RARITY_ORDER[a.rarity ?? 'common'] - RARITY_ORDER[b.rarity ?? 'common'];
+        }
+        return 0;
+      });
 
     return [...discovered, ...undiscovered];
   }
@@ -273,6 +292,9 @@ export class JournalScene extends Phaser.Scene {
       const labelText = entry.discovered ? entry.name : '???';
       const labelColor = entry.discovered ? (isSelected ? 0xffe066 : 0xffffff) : 0x6c5bb3;
       const label = addPixelText(this, cx - 44, cy, labelText, 8, labelColor, 0, 0.5, 114);
+      if (entry.rarity) {
+        applyRarityTextStyle(this, label, entry.rarity);
+      }
 
       if (!isMobileMode()) {
         cardBg.setInteractive({ useHandCursor: true }).on('pointerdown', () => {
@@ -299,7 +321,8 @@ export class JournalScene extends Phaser.Scene {
 
     const entry = this.currentEntries[this.selectedIndex];
     if (!entry) {
-      this.detailTitle.setText('NO ENTRIES');
+      stopRarityGlow(this.detailTitle);
+      this.detailTitle.setText('NO ENTRIES').setTint(0xffffff);
       this.detailDesc.setText('');
       return;
     }
@@ -311,10 +334,22 @@ export class JournalScene extends Phaser.Scene {
     }
     if (!entry.discovered) {
       icon.setTint(0x0b0917).setAlpha(0.85);
-      this.detailTitle.setText('???').setTint(0x6c5bb3);
+      this.detailTitle.setText('???');
+      if (entry.rarity) {
+        applyRarityTextStyle(this, this.detailTitle, entry.rarity);
+      } else {
+        stopRarityGlow(this.detailTitle);
+        this.detailTitle.setTint(0x6c5bb3);
+      }
       this.detailDesc.setText('Not yet encountered.').setTint(0x7e71b8);
     } else {
-      this.detailTitle.setText(entry.name).setTint(0xffe066);
+      this.detailTitle.setText(entry.name);
+      if (entry.rarity) {
+        applyRarityTextStyle(this, this.detailTitle, entry.rarity);
+      } else {
+        stopRarityGlow(this.detailTitle);
+        this.detailTitle.setTint(0xffe066);
+      }
       this.detailDesc.setText(entry.detail).setTint(0xb8a1ff);
     }
     this.detailIcon = icon;

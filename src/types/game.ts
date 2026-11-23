@@ -19,7 +19,8 @@ export type BiomeId =
   | 'fungal_kingdom'
   | 'verdigris_depths'
   | 'forgotten_reliquary'
-  | 'the_evernight';
+  | 'the_evernight'
+  | 'the_crawling_chaos';
 
 export type LevelModifierId =
   | 'none'
@@ -32,7 +33,7 @@ export type LevelModifierId =
   | 'wild_magic';
 
 export type ItemCategory = 'weapon' | 'consumable' | 'artifact';
-export type ItemRarity = 'common' | 'uncommon' | 'rare' | 'super_rare';
+export type ItemRarity = 'common' | 'uncommon' | 'rare' | 'super_rare' | 'secret';
 
 export interface InventoryItem {
   instanceId: string;
@@ -67,7 +68,10 @@ export type WeaponStyle =
   | 'bounce_spore'
   | 'comet_shot'
   | 'fan_spread'
-  | 'flamethrower';
+  | 'flamethrower'
+  | 'lightning_horn'
+  | 'necromancy_staff'
+  | 'beam_prism';
 
 export interface WeaponDef {
   id: string;
@@ -276,6 +280,21 @@ export interface RoomData {
   puzzleBlock?: PuzzleBlockSetup;
   bossDefeated?: boolean;
   brokenCrates?: string[];
+  widthTiles?: number;
+  heightTiles?: number;
+  hallwayDoors?: Array<{
+    dir: Direction;
+    tx: number;
+    ty: number;
+    targetGx: number;
+    targetGy: number;
+    spawnX: number;
+    spawnY: number;
+    returnX: number;
+    returnY: number;
+    isBossGate?: boolean;
+  }>;
+  pillars?: Array<{ tx: number; ty: number; used?: boolean }>;
 }
 
 export interface PlayerPalette {

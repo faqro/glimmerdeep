@@ -92,6 +92,7 @@ export interface NetInteractEvent {
     | 'block_reset'
     | 'crate'
     | 'enemy_hit'
+    | 'pillar_use'
     | 'game_over';
   targetId?: string;
   lootKind?: 'shard' | 'item' | 'heart' | 'chest';

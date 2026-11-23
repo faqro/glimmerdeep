@@ -5,6 +5,7 @@ import { SoundSystem } from '../audio/SoundSystem';
 import { pickRandomPaletteId } from '../data/palettes';
 import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { VirtualKeyboard } from '../mobile/VirtualKeyboard';
+import { JournalSystem } from '../systems/JournalSystem';
 import { net } from '../systems/MultiplayerSystem';
 import { getDailySeed } from '../utils/SeededGenerator';
 
@@ -141,6 +142,9 @@ export class MenuScene extends Phaser.Scene {
     this.createPixelButton(256, 173, 'JOURNAL', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
+      if (this.playerName === 'ADMIN') {
+        JournalSystem.unlockAll();
+      }
       this.scene.start('JournalScene');
     });
 

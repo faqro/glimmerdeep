@@ -1029,6 +1029,48 @@ export class PixelArtGenerator {
         ],
         pal: { o: '#100d24', P: '#ff47b6', Y: '#ffe066' },
       },
+      item_shugorons_horn: {
+        rows: [
+          '.........oooo...',
+          '.......ooYYYYo..',
+          '.....ooYYCCYYo..',
+          '....oYYCCYYoo...',
+          '...oYYYYooo.....',
+          '..oYYCYYo.......',
+          '.oYYooYYo.......',
+          '.oYo..ooo.......',
+          '..o.............',
+        ],
+        pal: { o: '#100d24', Y: '#ffb326', C: '#6ef3ff' },
+      },
+      item_black_staff: {
+        rows: [
+          '.....oooo.......',
+          '....oPPPPo......',
+          '....oPwwPo......',
+          '.....oooo.......',
+          '......oBo.......',
+          '......oBo.......',
+          '......oBo.......',
+          '......oBo.......',
+          '......ooo.......',
+        ],
+        pal: { o: '#100d24', P: '#c084fc', w: '#ffffff', B: '#2a223d' },
+      },
+      item_haunters_eye: {
+        rows: [
+          '.....ooooo......',
+          '...ooYYYYYoo....',
+          '..oYYwwwwwYYo...',
+          '.oYYwOOOOOwYYo..',
+          '.oYYwOwwwOwYYo..',
+          '..oYYwwwwwYYo...',
+          '...ooYYYYYoo....',
+          '.....ooooo......',
+          '................',
+        ],
+        pal: { o: '#100d24', Y: '#ffe066', O: '#ff8c1a', w: '#ffffff' },
+      },
       item_starlight_flask: {
         rows: [
           '.....oooo.......',
@@ -1518,6 +1560,7 @@ export class PixelArtGenerator {
       { key: 'enemy_night_weaver', body: 0x1e1b4b, hi: 0xf472b6, eye: '#ff47b6', shape: 'spider' },
       { key: 'enemy_abyss_watcher', body: 0x4c1d95, hi: 0xe879f9, eye: '#ff47b6', shape: 'eye' },
       { key: 'enemy_dread_knight', body: 0x312e81, hi: 0xff47b6, eye: '#ff47b6', shape: 'armour' },
+      { key: 'enemy_eldritch_spawn', body: 0x090712, hi: 0x7e22ce, eye: '#ff8c1a', shape: 'void' },
     ];
 
     for (const e of enemies) {
@@ -1609,6 +1652,28 @@ export class PixelArtGenerator {
       tex.add(0, 0, 0, 0, 16, 16);
       tex.add(1, 0, 16, 0, 16, 16);
     }
+
+    // Summoned ally skeleton (2-frame 16x16 spritesheet)
+    const { ctx: skCtx, tex: skTex } = this.createCanvas('ally_skeleton', 32, 16);
+    for (let f = 0; f < 2; f++) {
+      const ox = f * 16;
+      const dy = f === 1 ? 1 : 0;
+      // Skull
+      this.px(skCtx, ox + 5, 2 + dy, '#100d24', 6, 6);
+      this.px(skCtx, ox + 6, 3 + dy, '#e2e8f0', 4, 4);
+      this.px(skCtx, ox + 6, 4 + dy, '#c084fc', 1, 1);
+      this.px(skCtx, ox + 9, 4 + dy, '#c084fc', 1, 1);
+      // Ribcage
+      this.px(skCtx, ox + 5, 8 + dy, '#100d24', 6, 4);
+      this.px(skCtx, ox + 6, 8 + dy, '#cbd5e1', 4, 1);
+      this.px(skCtx, ox + 6, 10 + dy, '#cbd5e1', 4, 1);
+      // Legs
+      this.px(skCtx, ox + 5, 12 + (f === 0 ? 0 : 1), '#e2e8f0', 2, 2);
+      this.px(skCtx, ox + 9, 12 + (f === 1 ? 0 : 1), '#e2e8f0', 2, 2);
+    }
+    skTex.refresh();
+    skTex.add(0, 0, 0, 0, 16, 16);
+    skTex.add(1, 0, 16, 0, 16, 16);
   }
 
   private generateBossSprites(): void {
@@ -1619,6 +1684,7 @@ export class PixelArtGenerator {
       { key: 'boss_sludge_empress', body: 0x365314, accent: 0xa6ff4d, eye: '#ff75c3' },
       { key: 'boss_clockwork_witch', body: 0x4a1d4a, accent: 0xffd275, eye: '#6ef3ff' },
       { key: 'boss_withered_everheart', body: 0x1e0933, accent: 0xff47b6, eye: '#ffffff' },
+      { key: 'boss_nyarlathotep', body: 0x07050d, accent: 0xff8c1a, eye: '#ffffff' },
     ];
 
     for (const boss of bosses) {
@@ -1730,6 +1796,33 @@ export class PixelArtGenerator {
           // Timepiece core
           this.px(ctx, ox + 14, 22 + dy, a, 4, 4);
           this.px(ctx, ox + 15, 23 + dy, '#100d24', 2, 2);
+        } else if (boss.key === 'boss_nyarlathotep') {
+          // Towering, broad-shouldered shadowy primordial horror with horned cowl & slit eyes
+          const tOff = f === 0 ? 0 : 1;
+          // Jagged sweeping horns & gaunt head
+          this.px(ctx, ox + 10, 1 + dy, '#4c1d95', 2, 5);
+          this.px(ctx, ox + 20, 1 + dy, '#4c1d95', 2, 5);
+          this.px(ctx, ox + 12, 3 + dy, '#3b0764', 8, 8);
+          this.px(ctx, ox + 13, 4 + dy, '#05030a', 6, 7);
+          // Piercing slit eyes on head
+          this.px(ctx, ox + 14, 6 + dy, '#ffe066', 1, 2);
+          this.px(ctx, ox + 17, 6 + dy, '#ffe066', 1, 2);
+          this.px(ctx, ox + 15, 8 + dy, '#ff6b1a', 2, 1);
+          // Broad hunched shoulders & gaunt torso tapering into shadow shroud
+          this.px(ctx, ox + 5, 10 + dy, '#3b0764', 22, 6);
+          this.px(ctx, ox + 6, 11 + dy, '#05030a', 20, 5);
+          this.px(ctx, ox + 9, 16 + dy, '#05030a', 14, 8);
+          this.px(ctx, ox + 11, 24 + dy, '#05030a', 10, 6);
+          // Long gaunt shadowy arms + tentacles
+          this.px(ctx, ox + 2, 11 + tOff, '#05030a', 4, 12);
+          this.px(ctx, ox + 1, 21 + tOff, '#4c1d95', 3, 4);
+          this.px(ctx, ox + 26, 11 - tOff, '#05030a', 4, 12);
+          this.px(ctx, ox + 28, 21 - tOff, '#4c1d95', 3, 4);
+          this.px(ctx, ox + 6, 23 - tOff, '#3b0764', 3, 7);
+          this.px(ctx, ox + 23, 23 + tOff, '#3b0764', 3, 7);
+          // Glowing orange heart in gaunt chest
+          this.px(ctx, ox + 14, 14 + dy, '#ff6b1a', 4, 5);
+          this.px(ctx, ox + 15, 15 + dy, '#ffe066', 2, 3);
         } else {
           // boss_withered_everheart: thorny fractured heart with 3 void eyes
           this.px(ctx, ox + 3, 4 + dy, '#100d24', 11, 10);

@@ -121,6 +121,23 @@ export const BIOMES: BiomeConfig[] = [
     hazardKind: 'void_rift',
     loreSnippet: 'At the bottom of the world, the Everheart waits—quiet, cold, and still dreaming.',
   },
+  {
+    id: 'the_crawling_chaos',
+    level: 7,
+    name: 'The Outer Threshold',
+    subtitle: 'Where ancient shadows breathe',
+    floorDark: 0x040308,
+    floorLight: 0x090612,
+    wallDark: 0x0e091b,
+    wallTop: 0x1c1236,
+    accent: 0xff6b1a,
+    ambientGlow: 0x0a0414,
+    enemyPool: ['voidling', 'shadow_mote', 'night_weaver', 'abyss_watcher', 'dread_knight'],
+    elitePool: ['dread_knight', 'abyss_watcher'],
+    bossId: 'nyarlathotep',
+    hazardKind: 'void_rift',
+    loreSnippet: 'Eight sealed chambers guard the threshold of the Crawling Chaos.',
+  },
 ];
 
 export interface LevelModifierDef {

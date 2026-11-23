@@ -1,4 +1,68 @@
-import { ArtifactDef, ConsumableDef, StatusEffectId } from '../types/game';
+import Phaser from 'phaser';
+import { ArtifactDef, ConsumableDef, ItemRarity, StatusEffectId } from '../types/game';
+
+export const RARITY_COLORS: Record<ItemRarity, number> = {
+  common: 0xffffff,
+  uncommon: 0x55ff88,
+  rare: 0x5eb8ff,
+  super_rare: 0xc084fc,
+  secret: 0xffb326,
+};
+
+export const RARITY_ORDER: Record<ItemRarity, number> = {
+  common: 0,
+  uncommon: 1,
+  rare: 2,
+  super_rare: 3,
+  secret: 4,
+};
+
+export function stopRarityGlow(textObj: Phaser.GameObjects.BitmapText): void {
+  const existing = textObj.getData('rarityGlowTween') as Phaser.Tweens.Tween | undefined;
+  if (existing) {
+    existing.stop();
+    textObj.setData('rarityGlowTween', undefined);
+  }
+  textObj.setAlpha(1);
+}
+
+export function applyRarityTextStyle(
+  scene: Phaser.Scene,
+  textObj: Phaser.GameObjects.BitmapText,
+  rarity?: ItemRarity
+): void {
+  stopRarityGlow(textObj);
+  if (!rarity) {
+    textObj.setTint(0xffffff);
+    return;
+  }
+
+  textObj.setTint(RARITY_COLORS[rarity]);
+
+  if (rarity === 'secret') {
+    const goldColor = Phaser.Display.Color.IntegerToColor(0xffe066);
+    const orangeColor = Phaser.Display.Color.IntegerToColor(0xff8c1a);
+    const tween = scene.tweens.addCounter({
+      from: 0,
+      to: 100,
+      duration: 750,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+      onUpdate: (tw) => {
+        if (!textObj.active) {
+          tw.stop();
+          return;
+        }
+        const value = tw.getValue() ?? 0;
+        const c = Phaser.Display.Color.Interpolate.ColorWithColor(goldColor, orangeColor, 100, value);
+        textObj.setTint(Phaser.Display.Color.GetColor(c.r, c.g, c.b));
+        textObj.setAlpha(0.86 + 0.14 * (1 - value / 100));
+      },
+    });
+    textObj.setData('rarityGlowTween', tween);
+  }
+}
 
 export const CONSUMABLES: Record<string, ConsumableDef> = {
   heartdew_potion: {

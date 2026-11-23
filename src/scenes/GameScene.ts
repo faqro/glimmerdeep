@@ -8,7 +8,7 @@ import { WEAPONS } from '../data/weapons';
 import { SoundSystem } from '../audio/SoundSystem';
 import { isMobileMode, mobileInput } from '../mobile/MobileInput';
 import { DungeonGenerator, GeneratedFloor } from '../systems/DungeonGenerator';
-import { addItemToSlots, consumeUse, createItemInstance, hasArtifact, rollRandomItemId } from '../systems/InventorySystem';
+import { addItemToSlots, consumeUse, createItemInstance, hasArtifact, rollBossCombatItemId, rollRandomItemId } from '../systems/InventorySystem';
 import { JournalSystem } from '../systems/JournalSystem';
 import { net, NetRoomSync, NetWorldSync, SyncedProjectile } from '../systems/MultiplayerSystem';
 import { StatusEffectManager } from '../systems/StatusEffectSystem';
@@ -75,6 +75,7 @@ interface ActiveProjectile {
   bubbles: boolean;
   burns: boolean;
   cometBoost?: boolean;
+  slimeSplatter?: boolean;
   startX?: number;
   startY?: number;
   hitUids: Set<string>;
@@ -114,6 +115,17 @@ interface ActiveLootObj {
   collected: boolean;
 }
 
+interface ActiveSkeleton {
+  uid: string;
+  staffInstanceId: string;
+  sprite: Phaser.Physics.Arcade.Sprite;
+  hp: number;
+  maxHp: number;
+  attackCooldownMs: number;
+  hitFlashMs: number;
+  formationIndex: number;
+}
+
 export class GameScene extends Phaser.Scene {
   private levelIndex = 0;
   private floorSeed = 123456;
@@ -129,15 +141,79 @@ export class GameScene extends Phaser.Scene {
 
   private wallGroup!: Phaser.Physics.Arcade.StaticGroup;
   private crateGroup!: Phaser.Physics.Arcade.StaticGroup;
-  private doorZones: Array<{ dir: Direction; rect: Phaser.Geom.Rectangle; gfx: Phaser.GameObjects.Rectangle }> = [];
+  private doorBlockGroup!: Phaser.Physics.Arcade.StaticGroup;
+  private enemyGroup!: Phaser.Physics.Arcade.Group;
+  private pushBlockGroup!: Phaser.Physics.Arcade.Group;
+  private skeletonGroup!: Phaser.Physics.Arcade.Group;
+  private doorZones: Array<{
+    dir: Direction;
+    rect: Phaser.Geom.Rectangle;
+    gfx: Phaser.GameObjects.Rectangle;
+    targetGx?: number;
+    targetGy?: number;
+    spawnX?: number;
+    spawnY?: number;
+    isBossGate?: boolean;
+  }> = [];
   private roomGroup!: Phaser.GameObjects.Group;
+  private roomWidthPx = 176;
+  private roomHeightPx = 176;
 
   private activeEnemies: ActiveEnemy[] = [];
+  private summonedSkeletons: ActiveSkeleton[] = [];
   private projectiles: ActiveProjectile[] = [];
   private hazards: ActiveHazard[] = [];
+  private slimeSplatters: Array<{ x: number; y: number; radius: number; gfx: Phaser.GameObjects.Graphics; lifeMs: number }> = [];
+  private pillarObjs: Array<{ idx: number; x: number; y: number; tx: number; ty: number; gfx: Phaser.GameObjects.Graphics }> = [];
   private spikeTraps: ActiveSpikeTrap[] = [];
   private lootObjs: ActiveLootObj[] = [];
   private fireflies: Array<{ sprite: Phaser.GameObjects.Image; vx: number; vy: number; phase: number }> = [];
+  private beamGfx!: Phaser.GameObjects.Graphics;
+  private beamDamageTickMs = 0;
+  private beamDrainAccumMs = 0;
+  private beamFxAccumMs = 0;
+
+  // Level 7 & Nyarlathotep Boss State
+  private l7WhisperStep = 0;
+  private l7BossGateUnlockedToastShown = false;
+  private nyarlathotepSummonPending = false;
+  private nyarlathotepSummoning = false;
+  private nyarGfx?: Phaser.GameObjects.Graphics;
+  private nyarArmState: 'idle' | 'extending' | 'holding' | 'recoiling' = 'idle';
+  private nyarArmAngle = 0;
+  private nyarArmLength = 0;
+  private nyarArmMaxLength = 126;
+  private nyarArmCooldownMs = 2600;
+  private nyarGrabbedMs = 0;
+  private nyarThrowMs = 0;
+  private nyarThrowVx = 0;
+  private nyarThrowVy = 0;
+  private nyarBeamState: 'idle' | 'telegraph' | 'sweeping' = 'idle';
+  private nyarBeamTimerMs = 0;
+  private nyarBeamAngle = 0;
+  private nyarBeamSweepDir = 1;
+  private nyarBeamCooldownMs = 4500;
+  private nyarBeamHitCooldownMs = 0;
+  private nyarSpawnTimerMs = 3500;
+  private nyarRainTimerMs = 7000;
+  private nyarRainHeartAlt = false;
+  private nyarDialogueTimerMs = 5500;
+  private nyarDialoguePool: string[] = [];
+  private nyarDialogueIdx = 0;
+
+  // Clockwork Witch Sweeping Laser State
+  private witchGfx?: Phaser.GameObjects.Graphics;
+  private witchLaserState: 'idle' | 'telegraph' | 'sweeping' = 'idle';
+  private witchLaserTimerMs = 0;
+  private witchLaserAngle = 0;
+  private witchLaserSweepDir = 1;
+  private witchLaserHitCooldownMs = 0;
+
+  // Withered Everheart Distinct Attacks State
+  private everheartGfx?: Phaser.GameObjects.Graphics;
+  private everheartThorns: Array<{ x: number; y: number; timerMs: number; erupted: boolean; hit: boolean }> = [];
+  private everheartPulses: Array<{ x: number; y: number; radius: number; maxRadius: number; hit: boolean }> = [];
+  private everheartTetherMs = 0;
 
   private keys!: {
     w: Phaser.Input.Keyboard.Key;
@@ -222,6 +298,7 @@ export class GameScene extends Phaser.Scene {
     if (data.resetRun || !data.carryPlayer) {
       this.totalShardsCollected = 0;
       this.totalEnemiesDefeated = 0;
+      const isSecretLoadout = net.localName === 'SECRET';
       this.playerState = {
         id: net.localPeerId,
         name: net.localName,
@@ -243,14 +320,26 @@ export class GameScene extends Phaser.Scene {
         downedTimerMs: 0,
         dodging: false,
         activeSlot: 0,
-        inventory: [createItemInstance('moonblade'), createItemInstance('heartdew_potion'), null],
+        inventory: isSecretLoadout
+          ? [
+              createItemInstance('shugorons_horn'),
+              createItemInstance('black_staff'),
+              createItemInstance('haunters_eye'),
+            ]
+          : [createItemInstance('moonblade'), createItemInstance('heartdew_potion'), null],
         statusEffects: [],
         inExitReady: false,
         animState: 'idle',
         flipX: false,
       };
-      JournalSystem.discoverItem('moonblade');
-      JournalSystem.discoverItem('heartdew_potion');
+      if (isSecretLoadout) {
+        JournalSystem.discoverItem('shugorons_horn');
+        JournalSystem.discoverItem('black_staff');
+        JournalSystem.discoverItem('haunters_eye');
+      } else {
+        JournalSystem.discoverItem('moonblade');
+        JournalSystem.discoverItem('heartdew_potion');
+      }
     } else if (data.restoreReconnect) {
       net.localPaletteId = data.carryPlayer.paletteId;
       this.playerState = {
@@ -262,10 +351,10 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.playerState = {
         ...data.carryPlayer,
-        gx: 0,
-        gy: 2,
-        x: 88,
-        y: 88,
+        gx: this.levelIndex === 6 ? 0 : 0,
+        gy: this.levelIndex === 6 ? 1 : 2,
+        x: this.levelIndex === 6 ? 36 : 88,
+        y: this.levelIndex === 6 ? 72 : 88,
         inExitReady: false,
       };
     }
@@ -276,14 +365,25 @@ export class GameScene extends Phaser.Scene {
     }
     this.floor = DungeonGenerator.generateFloor(this.levelIndex, this.floorSeed, playerCount);
     const spawnGx = data.restoreReconnect ? this.playerState.gx : 0;
-    const spawnGy = data.restoreReconnect ? this.playerState.gy : 2;
-    const spawnX = data.restoreReconnect ? this.playerState.x : 88;
-    const spawnY = data.restoreReconnect ? this.playerState.y : 88;
+    const spawnGy = data.restoreReconnect ? this.playerState.gy : this.levelIndex === 6 ? 1 : 2;
+    const spawnX = data.restoreReconnect ? this.playerState.x : this.levelIndex === 6 ? 36 : 88;
+    const spawnY = data.restoreReconnect ? this.playerState.y : this.levelIndex === 6 ? 72 : 88;
+    if (this.levelIndex === 6 && !data.restoreReconnect) {
+      this.playerState.gx = spawnGx;
+      this.playerState.gy = spawnGy;
+      this.playerState.x = spawnX;
+      this.playerState.y = spawnY;
+    }
     this.currentRoom = this.floor.rooms[spawnGy][spawnGx];
 
     this.roomGroup = this.add.group();
     this.wallGroup = this.physics.add.staticGroup();
     this.crateGroup = this.physics.add.staticGroup();
+    this.doorBlockGroup = this.physics.add.staticGroup();
+    this.enemyGroup = this.physics.add.group();
+    this.pushBlockGroup = this.physics.add.group({ immovable: true });
+    this.skeletonGroup = this.physics.add.group();
+    this.beamGfx = this.add.graphics().setDepth(12);
 
     this.physics.world.setBounds(0, 0, 176, 176);
     this.cameras.main.setZoom(1.18);
@@ -299,6 +399,14 @@ export class GameScene extends Phaser.Scene {
 
     this.physics.add.collider(this.playerSprite, this.wallGroup);
     this.physics.add.collider(this.playerSprite, this.crateGroup);
+    this.physics.add.collider(this.playerSprite, this.pushBlockGroup);
+    this.physics.add.collider(this.enemyGroup, this.wallGroup);
+    this.physics.add.collider(this.enemyGroup, this.crateGroup);
+    this.physics.add.collider(this.enemyGroup, this.doorBlockGroup);
+    this.physics.add.collider(this.skeletonGroup, this.wallGroup);
+    this.physics.add.collider(this.skeletonGroup, this.crateGroup);
+    this.physics.add.collider(this.skeletonGroup, this.doorBlockGroup);
+    this.physics.add.collider(this.skeletonGroup, this.skeletonGroup);
 
     this.setupInputs();
     this.setupNetworking();
@@ -382,11 +490,33 @@ export class GameScene extends Phaser.Scene {
       if (ev.key === 'Escape' && !ev.repeat) {
         ev.preventDefault();
         handleEscToggle();
+      } else if (
+        ev.key === 'Backspace' &&
+        !ev.repeat &&
+        (this.playerState.name === 'ADMIN' || this.playerState.name === 'ADMIN2')
+      ) {
+        ev.preventDefault();
+        if (!this.paused && !this.ui.isOverlayOpen() && !this.transitioningLevel) {
+          this.tryAdvanceLevel(true);
+        }
       }
     };
     window.addEventListener('keydown', onWindowKeyDown);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       window.removeEventListener('keydown', onWindowKeyDown);
+      this.nyarGfx = undefined;
+      this.witchGfx = undefined;
+      this.witchLaserState = 'idle';
+      this.everheartGfx = undefined;
+      this.everheartThorns = [];
+      this.everheartPulses = [];
+      this.everheartTetherMs = 0;
+      this.summonedSkeletons = [];
+      this.activeEnemies = [];
+      this.slimeSplatters = [];
+      this.pillarObjs = [];
+      this.projectiles = [];
+      this.remoteSprites.clear();
     });
 
     kb.on('keydown-Q', () => {
@@ -597,6 +727,19 @@ export class GameScene extends Phaser.Scene {
           vis.collected = true;
           if (vis.kind === 'chest') vis.sprite.setTexture('obj_chest_open');
           else vis.sprite.destroy();
+        }
+      } else if (ev.kind === 'pillar_use' && ev.uses !== undefined) {
+        const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
+        const pillarModel = targetRoom?.pillars?.[ev.uses];
+        if (pillarModel) {
+          pillarModel.used = true;
+        }
+        if (ev.gx === this.currentRoom.gx && ev.gy === this.currentRoom.gy) {
+          const pObj = this.pillarObjs.find((po) => po.idx === ev.uses);
+          if (pObj) {
+            this.drawPillarVisual(pObj.gfx, pObj.tx, pObj.ty, true);
+            this.spawnParticles(pObj.x, pObj.y, 0x94a3b8, 10);
+          }
         }
       } else if (ev.kind === 'buy' && ev.uses !== undefined) {
         const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
@@ -1023,15 +1166,23 @@ export class GameScene extends Phaser.Scene {
     this.roomGroup.clear(true, true);
     this.wallGroup.clear(true, true);
     this.crateGroup.clear(true, true);
+    this.doorBlockGroup.clear(true, true);
+    this.enemyGroup.clear(true, true);
+    this.pushBlockGroup.clear(true, true);
     this.doorZones = [];
     this.activeEnemies = [];
     this.projectiles.forEach((p) => p.sprite.destroy());
     this.projectiles = [];
     this.hazards = [];
+    this.slimeSplatters = [];
+    this.pillarObjs = [];
     this.spikeTraps = [];
     this.spikePinnedMs = 0;
     this.lootObjs = [];
     this.fireflies = [];
+    this.beamGfx?.clear();
+    this.beamDamageTickMs = 0;
+    this.beamDrainAccumMs = 0;
     this.blockPushCooldownMs = 0;
     this.respawnAnimMs = 0;
     this.remoteReviveAnimUntil.clear();
@@ -1040,6 +1191,50 @@ export class GameScene extends Phaser.Scene {
     const room = this.floor.rooms[gy][gx];
     this.currentRoom = room;
     room.visited = true;
+
+    const wTiles = room.widthTiles ?? 11;
+    const hTiles = room.heightTiles ?? 11;
+    this.roomWidthPx = wTiles * 16;
+    this.roomHeightPx = hTiles * 16;
+    this.physics.world.setBounds(0, 0, this.roomWidthPx, this.roomHeightPx);
+
+    this.nyarGfx?.destroy();
+    this.nyarGfx = undefined;
+    this.witchGfx?.destroy();
+    this.witchGfx = undefined;
+    this.witchLaserState = 'idle';
+    this.everheartGfx?.destroy();
+    this.everheartGfx = undefined;
+    this.everheartThorns = [];
+    this.everheartPulses = [];
+    this.everheartTetherMs = 0;
+    this.nyarArmState = 'idle';
+    this.nyarArmLength = 0;
+    this.nyarGrabbedMs = 0;
+    this.nyarThrowMs = 0;
+    this.nyarBeamState = 'idle';
+    this.nyarSpawnTimerMs = 7000;
+    this.nyarRainTimerMs = 7000;
+    this.nyarRainHeartAlt = false;
+    this.nyarlathotepSummonPending = false;
+    this.nyarlathotepSummoning = false;
+
+    if (wTiles > 11 || hTiles > 11) {
+      const cam = this.cameras.main;
+      const viewW = cam.width / cam.zoom;
+      const viewH = cam.height / cam.zoom;
+      const hudPadX = 64;
+      const bx = this.roomWidthPx < viewW ? -(viewW - this.roomWidthPx) / 2 : -hudPadX;
+      const by = this.roomHeightPx < viewH ? -(viewH - this.roomHeightPx) / 2 : -18;
+      const bw = Math.max(this.roomWidthPx + hudPadX * 2, viewW);
+      const bh = Math.max(this.roomHeightPx + 36, viewH);
+      cam.setBounds(bx, by, bw, bh);
+      cam.startFollow(this.playerSprite, true, 0.16, 0.16);
+    } else {
+      this.cameras.main.stopFollow();
+      this.cameras.main.removeBounds();
+      this.cameras.main.centerOn(88, 88);
+    }
 
     // Wandering Eye artifact reveals adjacent secret rooms
     if (hasArtifact(this.playerState.inventory, 'wandering_eye') !== -1) {
@@ -1055,8 +1250,29 @@ export class GameScene extends Phaser.Scene {
       this.playerState.gx = gx;
       this.playerState.gy = gy;
       this.playerSprite.setPosition(spawnX, spawnY).setVisible(true);
+      const skOffsets = [
+        { dx: -12, dy: -8 },
+        { dx: 12, dy: -8 },
+        { dx: -12, dy: 8 },
+        { dx: 12, dy: 8 },
+      ];
+      for (const sk of this.summonedSkeletons) {
+        if (!sk.sprite.active) continue;
+        const off = skOffsets[sk.formationIndex % skOffsets.length];
+        sk.sprite
+          .setPosition(
+            Phaser.Math.Clamp(spawnX + off.dx, 24, 152),
+            Phaser.Math.Clamp(spawnY + off.dy, 24, 152)
+          )
+          .setVelocity(0, 0)
+          .setVisible(true);
+      }
     } else {
-      this.playerSprite.setVisible(gx === this.playerState.gx && gy === this.playerState.gy);
+      const inPlayerRoom = gx === this.playerState.gx && gy === this.playerState.gy;
+      this.playerSprite.setVisible(inPlayerRoom);
+      for (const sk of this.summonedSkeletons) {
+        if (sk.sprite.active) sk.sprite.setVisible(inPlayerRoom);
+      }
     }
     this.doorCooldownMs = 350;
 
@@ -1065,18 +1281,29 @@ export class GameScene extends Phaser.Scene {
     const gfx = this.add.graphics().setDepth(0);
     this.roomGroup.add(gfx);
 
-    // Draw 11 x 11 square tile room (9 x 9 walkable interior, 16x16 per tile = 176x176)
-    for (let ty = 0; ty < 11; ty++) {
-      for (let tx = 0; tx < 11; tx++) {
-        const isBorder = tx === 0 || tx === 10 || ty === 0 || ty === 10;
-        if (isBorder) {
-          const isDoorTile =
-            (ty === 0 && tx === 5 && (room.connections.north || (room.connections.secretNorth && room.secretRevealed))) ||
-            (ty === 10 && tx === 5 && (room.connections.south || (room.connections.secretSouth && room.secretRevealed))) ||
-            (tx === 0 && ty === 5 && (room.connections.west || (room.connections.secretWest && room.secretRevealed))) ||
-            (tx === 10 && ty === 5 && (room.connections.east || (room.connections.secretEast && room.secretRevealed)));
+    const l7BossGateOpen = this.levelIndex === 6 && this.areAllLevel7ChambersCleared();
+    const hallwayDoorMap = new Map<string, NonNullable<RoomData['hallwayDoors']>[number]>();
+    if (room.hallwayDoors) {
+      for (const hd of room.hallwayDoors) {
+        hallwayDoorMap.set(`${hd.tx},${hd.ty}`, hd);
+      }
+    }
 
-          if (isDoorTile) {
+    // Draw room tiles (11x11 by default, or larger scrollable rooms for Level 7)
+    for (let ty = 0; ty < hTiles; ty++) {
+      for (let tx = 0; tx < wTiles; tx++) {
+        const isBorder = tx === 0 || tx === wTiles - 1 || ty === 0 || ty === hTiles - 1;
+        if (isBorder) {
+          const hd = hallwayDoorMap.get(`${tx},${ty}`);
+          const isHallwayDoorOpen = hd ? (!hd.isBossGate || l7BossGateOpen) : false;
+          const isStandardDoorTile =
+            !room.hallwayDoors &&
+            ((ty === 0 && tx === 5 && (room.connections.north || (room.connections.secretNorth && room.secretRevealed))) ||
+              (ty === hTiles - 1 && tx === 5 && (room.connections.south || (room.connections.secretSouth && room.secretRevealed))) ||
+              (tx === 0 && ty === 5 && (room.connections.west || (room.connections.secretWest && room.secretRevealed))) ||
+              (tx === wTiles - 1 && ty === 5 && (room.connections.east || (room.connections.secretEast && room.secretRevealed))));
+
+          if (isHallwayDoorOpen || isStandardDoorTile) {
             gfx.fillStyle(biome.floorLight, 1);
             gfx.fillRect(tx * 16, ty * 16, 16, 16);
           } else {
@@ -1085,12 +1312,21 @@ export class GameScene extends Phaser.Scene {
             gfx.fillStyle(biome.wallTop, 1);
             gfx.fillRect(tx * 16 + 1, ty * 16 + 1, 14, 10);
 
+            if (hd?.isBossGate && !l7BossGateOpen) {
+              // Sealed eldritch boss gate at the end of the Level 7 hallway
+              gfx.fillStyle(0xff8c1a, 0.75);
+              gfx.fillRect(tx * 16 + 4, ty * 16 + 3, 8, 10);
+              gfx.fillStyle(0x0b0917, 0.9);
+              gfx.fillRect(tx * 16 + 6, ty * 16 + 5, 4, 6);
+            }
+
             // Secret wall crack hint
             const isSecretHint =
-              (ty === 0 && tx === 5 && room.connections.secretNorth && !room.secretRevealed) ||
-              (ty === 10 && tx === 5 && room.connections.secretSouth && !room.secretRevealed) ||
-              (tx === 0 && ty === 5 && room.connections.secretWest && !room.secretRevealed) ||
-              (tx === 10 && ty === 5 && room.connections.secretEast && !room.secretRevealed);
+              !room.hallwayDoors &&
+              ((ty === 0 && tx === 5 && room.connections.secretNorth && !room.secretRevealed) ||
+                (ty === hTiles - 1 && tx === 5 && room.connections.secretSouth && !room.secretRevealed) ||
+                (tx === 0 && ty === 5 && room.connections.secretWest && !room.secretRevealed) ||
+                (tx === wTiles - 1 && ty === 5 && room.connections.secretEast && !room.secretRevealed));
             if (isSecretHint) {
               gfx.fillStyle(biome.accent, 0.7);
               gfx.fillRect(tx * 16 + 6, ty * 16 + 4, 2, 8);
@@ -1105,23 +1341,107 @@ export class GameScene extends Phaser.Scene {
           const checker = (tx + ty) % 2 === 0;
           gfx.fillStyle(checker ? biome.floorDark : biome.floorLight, 1);
           gfx.fillRect(tx * 16, ty * 16, 16, 16);
+          if (this.levelIndex === 6 && ((tx * 37 + ty * 19) % 7 === 0)) {
+            // Corrupted void veins on Level 7 floors
+            gfx.fillStyle(0x140a26, 0.85);
+            gfx.fillRect(tx * 16 + 3, ty * 16 + 5, 6, 1);
+            gfx.fillRect(tx * 16 + 7, ty * 16 + 6, 1, 5);
+            gfx.fillStyle(0x020105, 0.9);
+            gfx.fillRect(tx * 16 + 4, ty * 16 + 6, 3, 1);
+          }
         }
       }
     }
 
     // Add Door Trigger Zones
-    const addDoor = (dir: Direction, x: number, y: number, w: number, h: number) => {
-      const dg = this.add.rectangle(x, y, w, h, biome.accent, 0.25).setDepth(2);
+    const addDoor = (
+      dir: Direction,
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      extra?: { targetGx?: number; targetGy?: number; spawnX?: number; spawnY?: number; isBossGate?: boolean; tint?: number }
+    ) => {
+      const dg = this.add.rectangle(x, y, w, h, extra?.tint ?? biome.accent, 0.28).setDepth(2);
       this.roomGroup.add(dg);
-      this.doorZones.push({ dir, rect: new Phaser.Geom.Rectangle(x - w / 2, y - h / 2, w, h), gfx: dg });
+      // Invisible blocker so enemies/skeletons cannot walk out through doorways
+      const blocker = this.add.rectangle(x, y, w, h, 0x000000, 0);
+      this.doorBlockGroup.add(blocker);
+      this.roomGroup.add(blocker);
+      this.doorZones.push({
+        dir,
+        rect: new Phaser.Geom.Rectangle(x - w / 2, y - h / 2, w, h),
+        gfx: dg,
+        targetGx: extra?.targetGx,
+        targetGy: extra?.targetGy,
+        spawnX: extra?.spawnX,
+        spawnY: extra?.spawnY,
+        isBossGate: extra?.isBossGate,
+      });
     };
-    if (room.connections.north || (room.connections.secretNorth && room.secretRevealed)) addDoor('north', 88, 8, 18, 16);
-    if (room.connections.south || (room.connections.secretSouth && room.secretRevealed)) addDoor('south', 88, 168, 18, 16);
-    if (room.connections.west || (room.connections.secretWest && room.secretRevealed)) addDoor('west', 8, 88, 16, 18);
-    if (room.connections.east || (room.connections.secretEast && room.secretRevealed)) addDoor('east', 168, 88, 16, 18);
 
-    // Pillars & Props (skip pillars in boss/merchant/healing/puzzle rooms for clean layout)
-    if (room.type !== 'boss' && room.type !== 'merchant' && room.type !== 'healing' && room.type !== 'puzzle') {
+    if (room.hallwayDoors) {
+      for (const hd of room.hallwayDoors) {
+        if (hd.isBossGate && !l7BossGateOpen) continue;
+        const dx = hd.tx * 16 + 8;
+        const dy = hd.ty * 16 + 8;
+        const isVert = hd.dir === 'north' || hd.dir === 'south';
+        addDoor(hd.dir, dx, dy, isVert ? 18 : 16, isVert ? 16 : 18, {
+          targetGx: hd.targetGx,
+          targetGy: hd.targetGy,
+          spawnX: hd.spawnX,
+          spawnY: hd.spawnY,
+          isBossGate: hd.isBossGate,
+          tint: hd.isBossGate ? 0xff8c1a : undefined,
+        });
+      }
+    } else {
+      if (room.connections.north || (room.connections.secretNorth && room.secretRevealed)) addDoor('north', 88, 8, 18, 16);
+      if (room.connections.south || (room.connections.secretSouth && room.secretRevealed)) addDoor('south', 88, 168, 18, 16);
+      if (room.connections.west || (room.connections.secretWest && room.secretRevealed)) addDoor('west', 8, 88, 16, 18);
+      if (room.connections.east || (room.connections.secretEast && room.secretRevealed)) addDoor('east', 168, 88, 16, 18);
+    }
+
+    // Level 7 Hallway sconces & suspense feedback
+    if (this.levelIndex === 6 && gx === 0 && gy === 1) {
+      for (const stx of [4, 11, 18, 25, 32]) {
+        const sx = stx * 16 + 8;
+        gfx.fillStyle(0xff8c1a, 0.85);
+        gfx.fillRect(sx - 2, 12, 4, 4);
+        gfx.fillRect(sx - 2, this.roomHeightPx - 16, 4, 4);
+        const topGlow = this.add.image(sx, 14, 'glow_soft').setScale(0.9).setTint(0xff8c1a).setAlpha(0.24).setBlendMode(Phaser.BlendModes.ADD).setDepth(3);
+        const botGlow = this.add.image(sx, this.roomHeightPx - 14, 'glow_soft').setScale(0.9).setTint(0xff8c1a).setAlpha(0.24).setBlendMode(Phaser.BlendModes.ADD).setDepth(3);
+        this.roomGroup.add(topGlow);
+        this.roomGroup.add(botGlow);
+      }
+      const clearedCount = this.countClearedLevel7Chambers();
+      if (clearedCount < 8) {
+        this.ui.showToast(`Sealed Chambers Cleared: ${clearedCount} / 8`, '#ff8c1a');
+      } else if (!this.l7BossGateUnlockedToastShown) {
+        this.l7BossGateUnlockedToastShown = true;
+        SoundSystem.playUnlock();
+        this.ui.showToast('The sealed gate at the end of the hall opens...', '#ffe066');
+      }
+    }
+
+    // Greek / Roman Pillars in Level 7 Boss Room (act as 1-use revive totems / solo 2-heart heal)
+    if (room.pillars && room.pillars.length > 0) {
+      room.pillars.forEach((p, idx) => {
+        const px = p.tx * 16;
+        const py = p.ty * 16;
+        const pGfx = this.add.graphics().setDepth(3);
+        this.drawPillarVisual(pGfx, p.tx, p.ty, !!p.used);
+        this.roomGroup.add(pGfx);
+        this.pillarObjs.push({ idx, x: px + 16, y: py + 16, tx: p.tx, ty: p.ty, gfx: pGfx });
+
+        const wall = this.add.rectangle(px + 16, py + 16, 28, 28, 0x000000, 0);
+        this.wallGroup.add(wall);
+        this.roomGroup.add(wall);
+      });
+    }
+
+    // Pillars & Props (skip pillars in boss/merchant/healing/puzzle rooms and hallway)
+    if (!room.hallwayDoors && room.type !== 'boss' && room.type !== 'merchant' && room.type !== 'healing' && room.type !== 'puzzle') {
       for (const p of template.pillars) {
         const px = p.tx * 16 + 8;
         const py = p.ty * 16 + 8;
@@ -1145,7 +1465,10 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Props + Additive Colored Lights
+    // Decorative floor props (no mushrooms on Level 7)
     for (const pr of template.props) {
+      if (this.levelIndex === 6 && pr.kind === 'mushroom') continue;
+      if (room.hallwayDoors) continue;
       const px = pr.tx * 16 + 8;
       const py = pr.ty * 16 + 8;
       const tex = pr.kind === 'mushroom' ? 'prop_mushroom' : 'prop_lantern';
@@ -1153,8 +1476,8 @@ export class GameScene extends Phaser.Scene {
       const glow = this.add
         .image(px, py, 'glow_soft')
         .setScale(1.1)
-        .setTint(pr.kind === 'mushroom' ? biome.accent : 0xffd275)
-        .setAlpha(0.28)
+        .setTint(this.levelIndex === 6 ? 0x4c1d95 : pr.kind === 'mushroom' ? biome.accent : 0xffd275)
+        .setAlpha(this.levelIndex === 6 ? 0.16 : 0.28)
         .setBlendMode(Phaser.BlendModes.ADD)
         .setDepth(15);
       this.roomGroup.add(sp);
@@ -1211,12 +1534,19 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // Ambient Fireflies
-    for (let i = 0; i < 5; i++) {
+    // Ambient Fireflies (black void ash particles on Level 7)
+    const ffCount = wTiles > 11 || hTiles > 11 ? 18 : 6;
+    const isLevel7 = this.levelIndex === 6;
+    for (let i = 0; i < ffCount; i++) {
       const ff = this.add
-        .image(Phaser.Math.Between(24, 152), Phaser.Math.Between(24, 152), 'particle_spark')
-        .setTint(biome.accent)
-        .setAlpha(0.6)
+        .image(
+          Phaser.Math.Between(24, Math.max(28, this.roomWidthPx - 24)),
+          Phaser.Math.Between(24, Math.max(28, this.roomHeightPx - 24)),
+          'particle_spark'
+        )
+        .setTint(isLevel7 ? 0x05030a : biome.accent)
+        .setScale(isLevel7 ? 1.5 : 1)
+        .setAlpha(isLevel7 ? 0.85 : 0.6)
         .setDepth(16);
       this.roomGroup.add(ff);
       this.fireflies.push({
@@ -1244,13 +1574,20 @@ export class GameScene extends Phaser.Scene {
     // Boss Room
     if (room.type === 'boss') {
       if (!room.bossDefeated) {
-        room.doorsLocked = true;
-        const bossDef = BOSSES[biome.bossId];
-        const playerScale = 1 + Math.max(0, net.players.size - 1) * 0.45;
-        const bHp = Math.round(bossDef.hp * playerScale);
-        this.spawnEnemyEntity('boss', bossDef.id, 128, 88, bHp, bHp, false, true);
-        this.ui.showToast(`${bossDef.name}: ${bossDef.subtitle}`, '#ff75c3');
-        SoundSystem.setMusicTrack('boss');
+        if (this.levelIndex === 6) {
+          // Level 7 boss room starts eerily empty until the player steps inward
+          this.nyarlathotepSummonPending = true;
+          this.nyarlathotepSummoning = false;
+          SoundSystem.setMusicTrack('normal');
+        } else {
+          room.doorsLocked = true;
+          const bossDef = BOSSES[biome.bossId];
+          const playerScale = 1 + Math.max(0, net.players.size - 1) * 0.45;
+          const bHp = Math.round(bossDef.hp * playerScale);
+          this.spawnEnemyEntity('boss', bossDef.id, 128, 88, bHp, bHp, false, true);
+          this.ui.showToast(`${bossDef.name}: ${bossDef.subtitle}`, '#ff75c3');
+          SoundSystem.setMusicTrack('boss');
+        }
       } else {
         this.spawnExitPortal();
         SoundSystem.setMusicTrack('normal');
@@ -1337,7 +1674,7 @@ export class GameScene extends Phaser.Scene {
           const bsp = this.physics.add.sprite(bx, by, 'obj_push_block').setDepth(6);
           bsp.setImmovable(true);
           bsp.setSize(14, 14);
-          this.physics.add.collider(this.playerSprite, bsp);
+          this.pushBlockGroup.add(bsp);
           this.roomGroup.add(bsp);
           this.specialObjs.blocks.push({ id: b.id, sprite: bsp });
         }
@@ -1361,10 +1698,68 @@ export class GameScene extends Phaser.Scene {
     this.updateDoorVisuals();
   }
 
+  private drawPillarVisual(gfx: Phaser.GameObjects.Graphics, tx: number, ty: number, used: boolean): void {
+    gfx.clear();
+    const px = tx * 16;
+    const py = ty * 16;
+    // Shadow
+    gfx.fillStyle(0x040308, 0.55);
+    gfx.fillRect(px + 3, py + 4, 30, 30);
+
+    if (!used) {
+      // Intact Greek/Roman marble pillar with glowing revive rune
+      gfx.fillStyle(0x94a3b8, 1);
+      gfx.fillRect(px + 2, py + 24, 28, 7);
+      gfx.fillStyle(0xcbd5e1, 1);
+      gfx.fillRect(px + 4, py + 22, 24, 3);
+      gfx.fillStyle(0xdbeafe, 1);
+      gfx.fillRect(px + 6, py + 8, 20, 15);
+      gfx.fillStyle(0x94a3b8, 1);
+      gfx.fillRect(px + 9, py + 9, 2, 13);
+      gfx.fillRect(px + 15, py + 9, 2, 13);
+      gfx.fillRect(px + 21, py + 9, 2, 13);
+      gfx.fillStyle(0xf8fafc, 1);
+      gfx.fillRect(px + 2, py + 2, 28, 6);
+      gfx.fillStyle(0x64748b, 1);
+      gfx.fillRect(px + 3, py + 6, 4, 3);
+      gfx.fillRect(px + 25, py + 6, 4, 3);
+      // Glowing revive rune on shaft
+      gfx.fillStyle(0x66ffd9, 0.9);
+      gfx.fillRect(px + 14, py + 13, 4, 6);
+      gfx.fillStyle(0xffe066, 0.95);
+      gfx.fillRect(px + 15, py + 14, 2, 4);
+    } else {
+      // Crumbling/destroyed Greek/Roman pillar
+      gfx.fillStyle(0x64748b, 1);
+      gfx.fillRect(px + 2, py + 24, 28, 7);
+      gfx.fillStyle(0x94a3b8, 1);
+      gfx.fillRect(px + 4, py + 22, 24, 3);
+      // Shorter, jagged broken shaft
+      gfx.fillStyle(0x94a3b8, 1);
+      gfx.fillRect(px + 6, py + 14, 19, 9);
+      gfx.fillRect(px + 7, py + 11, 7, 4);
+      gfx.fillRect(px + 18, py + 12, 6, 3);
+      // Deep dark cracks
+      gfx.fillStyle(0x1e293b, 1);
+      gfx.fillRect(px + 10, py + 15, 2, 7);
+      gfx.fillRect(px + 16, py + 14, 2, 8);
+      gfx.fillRect(px + 12, py + 18, 4, 1);
+      // Scattered marble rubble around base
+      gfx.fillStyle(0xcbd5e1, 1);
+      gfx.fillRect(px + 1, py + 28, 4, 3);
+      gfx.fillRect(px + 26, py + 27, 5, 4);
+      gfx.fillRect(px + 13, py + 29, 4, 2);
+      gfx.fillStyle(0x64748b, 1);
+      gfx.fillRect(px + 4, py + 19, 3, 3);
+    }
+  }
+
   private spawnExitPortal(): void {
     if (this.specialObjs.portal) return;
-    const portal = this.add.image(88, 88, 'obj_portal').setDepth(5);
-    const glow = this.add.image(88, 88, 'glow_soft').setScale(1.8).setTint(0x66ffd9).setAlpha(0.4).setBlendMode(Phaser.BlendModes.ADD).setDepth(4);
+    const cx = Math.round(this.roomWidthPx / 2);
+    const cy = Math.round(this.roomHeightPx / 2);
+    const portal = this.add.image(cx, cy, 'obj_portal').setDepth(5);
+    const glow = this.add.image(cx, cy, 'glow_soft').setScale(1.8).setTint(0x66ffd9).setAlpha(0.4).setBlendMode(Phaser.BlendModes.ADD).setDepth(4);
     this.tweens.add({ targets: portal, angle: 360, duration: 4000, repeat: -1 });
     this.specialObjs.portal = portal;
     this.roomGroup.add(portal);
@@ -1401,8 +1796,8 @@ export class GameScene extends Phaser.Scene {
     uses?: number,
     broadcast = true
   ): void {
-    const cx = Phaser.Math.Clamp(Math.round(x), 24, 152);
-    const cy = Phaser.Math.Clamp(Math.round(y), 24, 152);
+    const cx = Phaser.Math.Clamp(Math.round(x), 24, Math.max(24, this.roomWidthPx - 24));
+    const cy = Phaser.Math.Clamp(Math.round(y), 24, Math.max(24, this.roomHeightPx - 24));
     if (!this.currentRoom.loot.some((l) => l.uid === uid)) {
       this.currentRoom.loot.push({
         uid,
@@ -1470,8 +1865,7 @@ export class GameScene extends Phaser.Scene {
       sprite.setTint(0xffd275);
     }
     sprite.setCollideWorldBounds(true);
-    this.physics.add.collider(sprite, this.wallGroup);
-    this.physics.add.collider(sprite, this.crateGroup);
+    this.enemyGroup.add(sprite);
     this.roomGroup.add(sprite);
 
     const mod = this.floor.modifier;
@@ -1548,6 +1942,10 @@ export class GameScene extends Phaser.Scene {
 
     if (item && item.category === 'weapon') {
       const w = WEAPONS[item.id];
+      if (w.style === 'beam_prism') {
+        // Continuous beam is handled while holding the shoot button in updateBeamWeapon()
+        return;
+      }
       if (w.staminaCost > 0) {
         if (this.playerState.stamina < w.staminaCost) {
           this.ui.showToast('Not enough stamina!', '#ff5d8f');
@@ -1567,7 +1965,7 @@ export class GameScene extends Phaser.Scene {
         weaponId: w.id,
       });
 
-      // Ranged / magic weapons consume 1 charge on fire
+      // Ranged / magic weapons consume 1 charge on fire (necromancy_staff consumes only when summoning)
       const isMeleeStyle = [
         'melee_arc',
         'heavy_slam',
@@ -1578,8 +1976,9 @@ export class GameScene extends Phaser.Scene {
         'honey_slam',
         'frost_blade',
         'venom_blade',
+        'lightning_horn',
       ].includes(w.style);
-      if (!isMeleeStyle) {
+      if (!isMeleeStyle && w.style !== 'necromancy_staff') {
         const broke = consumeUse(this.playerState.inventory, this.playerState.activeSlot, 1);
         if (broke) {
           SoundSystem.playBreak();
@@ -2051,6 +2450,7 @@ export class GameScene extends Phaser.Scene {
           'honey_slam',
           'frost_blade',
           'venom_blade',
+          'lightning_horn',
         ].includes(w.style));
 
     if (isMeleeStyle) {
@@ -2083,9 +2483,16 @@ export class GameScene extends Phaser.Scene {
 
       if (isLocal) {
         let hitAny = false;
+        const chainedSet = new Set<ActiveEnemy>();
+        let firstHit: ActiveEnemy | null = null;
         for (const e of [...this.activeEnemies]) {
           const dist = Phaser.Math.Distance.Between(sx, sy, e.sprite.x, e.sprite.y);
           if (dist <= range) {
+            if (w?.style === 'lightning_horn') {
+              if (!firstHit) firstHit = e;
+              hitAny = true;
+              continue;
+            }
             if (w?.style === 'frost_blade' || w?.style === 'honey_slam') {
               e.slowedMs = 3000;
             }
@@ -2101,6 +2508,35 @@ export class GameScene extends Phaser.Scene {
             this.damageEnemy(e, dmg, isHeavy ? angle : undefined);
             hitAny = true;
           }
+        }
+        if (this.hitNyarlathotepArm(sx, sy, range, dmg)) {
+          hitAny = true;
+        }
+        if (w?.style === 'lightning_horn' && firstHit) {
+          let curr: ActiveEnemy | null = firstHit;
+          while (curr) {
+            chainedSet.add(curr);
+            const cx = curr.sprite.x;
+            const cy = curr.sprite.y;
+            this.spawnParticles(cx, cy, 0x6ef3ff, 6);
+            this.damageEnemy(curr, dmg, curr === firstHit ? angle : undefined);
+
+            let nextEnemy: ActiveEnemy | null = null;
+            let bestDist = Infinity;
+            for (const cand of this.activeEnemies) {
+              if (!cand.sprite.active || chainedSet.has(cand)) continue;
+              const d = Phaser.Math.Distance.Between(cx, cy, cand.sprite.x, cand.sprite.y);
+              if (d < bestDist) {
+                bestDist = d;
+                nextEnemy = cand;
+              }
+            }
+            if (nextEnemy) {
+              this.drawLightningBolt(cx, cy, nextEnemy.sprite.x, nextEnemy.sprite.y);
+            }
+            curr = nextEnemy;
+          }
+          this.cameras.main.shake(100, 0.008);
         }
         if (hitAny && w) {
           const broke = consumeUse(this.playerState.inventory, this.playerState.activeSlot, 1);
@@ -2172,6 +2608,70 @@ export class GameScene extends Phaser.Scene {
       for (const offset of offsets) {
         this.createPlayerProjectile(x, y, angle + offset, spd, w.damage, w.color, false, false, 0, false, false, ownerId);
       }
+    } else if (w.style === 'necromancy_staff') {
+      if (!isLocal) {
+        this.spawnParticles(x, y, 0xc084fc, 8);
+        return;
+      }
+      const activeItem = this.playerState.inventory[this.playerState.activeSlot];
+      const staffId = activeItem?.instanceId ?? 'black_staff';
+      this.summonedSkeletons = this.summonedSkeletons.filter((s) => s.sprite.active);
+      const aliveForStaff = this.summonedSkeletons.filter((s) => s.staffInstanceId === staffId);
+      const usedSlots = new Set(aliveForStaff.map((s) => s.formationIndex));
+      const missingIndices: number[] = [];
+      for (let idx = 0; idx < 4; idx++) {
+        if (!usedSlots.has(idx)) missingIndices.push(idx);
+      }
+      if (missingIndices.length === 0) {
+        this.ui.showToast('All 4 skeletons are already active!', '#c084fc');
+        return;
+      }
+
+      const spawnOffsets = [
+        { dx: -16, dy: -12 },
+        { dx: 16, dy: -12 },
+        { dx: -16, dy: 12 },
+        { dx: 16, dy: 12 },
+      ];
+      for (const idx of missingIndices) {
+        const off = spawnOffsets[idx];
+        const sx = Phaser.Math.Clamp(x + off.dx, 24, 152);
+        const sy = Phaser.Math.Clamp(y + off.dy, 24, 152);
+        const skSprite = this.physics.add.sprite(sx, sy + 6, 'ally_skeleton', 0).setDepth(9);
+        skSprite.setSize(10, 12);
+        skSprite.setOffset(3, 4);
+        skSprite.setCollideWorldBounds(true);
+        skSprite.setScale(1, 0.2);
+        this.skeletonGroup.add(skSprite);
+        this.tweens.add({
+          targets: skSprite,
+          y: sy,
+          scaleY: 1,
+          duration: 240,
+          ease: 'Back.easeOut',
+        });
+        this.spawnParticles(sx, sy, 0xc084fc, 5);
+        this.summonedSkeletons.push({
+          uid: `sk_${Date.now()}_${idx}_${Math.floor(Math.random() * 9999)}`,
+          staffInstanceId: staffId,
+          sprite: skSprite,
+          hp: 10,
+          maxHp: 10,
+          attackCooldownMs: 0,
+          hitFlashMs: 0,
+          formationIndex: idx,
+        });
+      }
+      SoundSystem.playHeal();
+      this.ui.showToast(
+        missingIndices.length === 4 ? 'Raised 4 skeletons!' : `Raised ${missingIndices.length} skeleton${missingIndices.length > 1 ? 's' : ''}!`,
+        '#c084fc'
+      );
+      const broke = consumeUse(this.playerState.inventory, this.playerState.activeSlot, 1);
+      if (broke) {
+        SoundSystem.playBreak();
+        this.ui.showToast(`${w.name} broke!`, '#ffe066');
+      }
     } else if (w.style === 'flamethrower') {
       const flameColors = [0xff4500, 0xff6b35, 0xff9f1c, 0xffe066];
       const offsets = [-0.24, -0.08, 0.08, 0.24];
@@ -2210,7 +2710,9 @@ export class GameScene extends Phaser.Scene {
         w.style === 'bubble',
         ownerId,
         w.style === 'fireball',
-        w.style === 'comet_shot'
+        w.style === 'comet_shot',
+        undefined,
+        w.id === 'slime_launcher'
       );
     }
   }
@@ -2230,7 +2732,8 @@ export class GameScene extends Phaser.Scene {
     ownerId = this.playerState.id,
     burns = false,
     cometBoost = false,
-    customLifeMs?: number
+    customLifeMs?: number,
+    slimeSplatter = false
   ): void {
     const sp = this.physics.add.sprite(x, y, 'proj_orb').setDepth(11).setTint(color);
     this.projectiles.push({
@@ -2251,6 +2754,7 @@ export class GameScene extends Phaser.Scene {
       bubbles,
       burns,
       cometBoost,
+      slimeSplatter,
       startX: x,
       startY: y,
       hitUids: new Set(),
@@ -2316,8 +2820,16 @@ export class GameScene extends Phaser.Scene {
 
     enemy.hp -= dmg;
     if (knockbackAngle !== undefined && !enemy.isBoss) {
-      enemy.sprite.x += Math.cos(knockbackAngle) * 14;
-      enemy.sprite.y += Math.sin(knockbackAngle) * 14;
+      enemy.sprite.x = Phaser.Math.Clamp(
+        enemy.sprite.x + Math.cos(knockbackAngle) * 14,
+        22,
+        Math.max(22, this.roomWidthPx - 22)
+      );
+      enemy.sprite.y = Phaser.Math.Clamp(
+        enemy.sprite.y + Math.sin(knockbackAngle) * 14,
+        22,
+        Math.max(22, this.roomHeightPx - 22)
+      );
     }
 
     if (enemy.hp <= 0) {
@@ -2344,6 +2856,39 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (enemy.isBoss) {
+      if (enemy.defId === 'clockwork_witch') {
+        this.witchGfx?.destroy();
+        this.witchGfx = undefined;
+        this.witchLaserState = 'idle';
+      }
+      if (enemy.defId === 'withered_everheart') {
+        this.everheartGfx?.destroy();
+        this.everheartGfx = undefined;
+        this.everheartThorns = [];
+        this.everheartPulses = [];
+        this.everheartTetherMs = 0;
+      }
+      if (enemy.defId === 'nyarlathotep') {
+        this.nyarGfx?.destroy();
+        this.nyarGfx = undefined;
+        this.nyarArmState = 'idle';
+        this.nyarBeamState = 'idle';
+        this.nyarGrabbedMs = 0;
+        this.nyarThrowMs = 0;
+        // Clear remaining chaos spawns on boss defeat
+        for (const minion of [...this.activeEnemies]) {
+          if (minion !== enemy && minion.sprite.active) {
+            this.spawnParticles(minion.sprite.x, minion.sprite.y, 0xff8c1a, 5);
+            minion.sprite.destroy();
+          }
+        }
+        this.activeEnemies = [];
+        this.recordNyarVictory();
+        this.ui.showToast(
+          `A vessel shatters... and yet, ${this.playerState.name}, I am still behind your eyes.`,
+          '#ffe066'
+        );
+      }
       this.currentRoom.bossDefeated = true;
       this.currentRoom.cleared = true;
       this.currentRoom.doorsLocked = false;
@@ -2444,7 +2989,7 @@ export class GameScene extends Phaser.Scene {
           });
           SoundSystem.playUnlock();
           const rng = new SeededRandom((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0);
-          const itemId = rollRandomItemId(rng);
+          const itemId = l.itemId ?? rollRandomItemId(rng);
           this.spawnRoomLoot(`ch_itm_${Date.now()}`, 'item', l.sprite.x, l.sprite.y + 14, itemId);
           const extra = this.floor.modifier === 'starfall' ? 6 : 3;
           this.spawnRoomLoot(`ch_sh_${Date.now()}`, 'shard', l.sprite.x - 14, l.sprite.y + 8, undefined, extra);
@@ -2503,10 +3048,70 @@ export class GameScene extends Phaser.Scene {
     }
 
     // 6. Exit Portal
-    if (this.specialObjs.portal && Phaser.Math.Distance.Between(px, py, 88, 88) < 32) {
+    if (
+      this.specialObjs.portal &&
+      Phaser.Math.Distance.Between(px, py, this.specialObjs.portal.x, this.specialObjs.portal.y) < 32
+    ) {
       this.playerState.inExitReady = true;
       this.tryAdvanceLevel();
       return;
+    }
+
+    // 6a. Level 7 Boss Room Pillars (one-time revive totem / solo 2-heart heal)
+    if (this.currentRoom.pillars && this.pillarObjs.length > 0) {
+      for (const pObj of this.pillarObjs) {
+        const model = this.currentRoom.pillars[pObj.idx];
+        if (!model || model.used) continue;
+        if (Phaser.Math.Distance.Between(px, py, pObj.x, pObj.y) < 32) {
+          if (net.mode === 'solo') {
+            if (this.playerState.hp >= this.playerState.maxHp) {
+              this.ui.showToast('Already at full HP!', '#ffe066');
+              return;
+            }
+            model.used = true;
+            this.drawPillarVisual(pObj.gfx, pObj.tx, pObj.ty, true);
+            this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 4);
+            SoundSystem.playHeal();
+            this.spawnParticles(pObj.x, pObj.y, 0x66ffd9, 10);
+            this.spawnParticles(pObj.x, pObj.y, 0x94a3b8, 8);
+            this.ui.showToast('Pillar restored 2 Hearts!', '#66ffd9');
+          } else {
+            const downedAllies = Array.from(this.remotePlayers.values())
+              .filter((p) => p.downed)
+              .sort((a, b) => a.downedTimerMs - b.downedTimerMs);
+            if (downedAllies.length === 0) {
+              this.ui.showToast('No downed allies to revive!', '#ffe066');
+              return;
+            }
+            const longestDowned = downedAllies[0];
+            model.used = true;
+            this.drawPillarVisual(pObj.gfx, pObj.tx, pObj.ty, true);
+            net.broadcastInteract({
+              peerId: this.playerState.id,
+              gx: this.currentRoom.gx,
+              gy: this.currentRoom.gy,
+              kind: 'pillar_use',
+              uses: pObj.idx,
+            });
+            net.broadcastInteract({
+              peerId: this.playerState.id,
+              gx: longestDowned.gx,
+              gy: longestDowned.gy,
+              kind: 'revive',
+              targetId: longestDowned.id,
+              itemId: 'revive_totem',
+            });
+            if (longestDowned.gx === this.currentRoom.gx && longestDowned.gy === this.currentRoom.gy) {
+              this.playRipOutAnimationForRemote(longestDowned.id, 0xffe066);
+            }
+            SoundSystem.playHeal();
+            this.spawnParticles(pObj.x, pObj.y, 0xffe066, 12);
+            this.spawnParticles(pObj.x, pObj.y, 0x94a3b8, 8);
+            this.ui.showToast(`Pillar revived ${longestDowned.name}!`, '#ffe066');
+          }
+          return;
+        }
+      }
     }
 
     // 6b. Mirror Rotation (Mirror/Beam Puzzle)
@@ -2643,13 +3248,13 @@ export class GameScene extends Phaser.Scene {
     this.ui.showToast(`Dropped ${item.name}`, '#b8a1ff');
   }
 
-  private tryAdvanceLevel(): void {
+  private tryAdvanceLevel(forceAdminSkip = false): void {
     if (this.transitioningLevel) return;
-    if (net.mode === 'client') {
+    if (net.mode === 'client' && !forceAdminSkip) {
       this.ui.showToast('Waiting for host at portal...', '#66ffd9');
       return;
     }
-    if (net.mode === 'host') {
+    if (net.mode === 'host' && !forceAdminSkip) {
       const allInBoss = Array.from(this.remotePlayers.values())
         .filter((p) => !p.downed)
         .every((p) => p.gx === 5 && p.gy === 2);
@@ -2662,11 +3267,11 @@ export class GameScene extends Phaser.Scene {
     this.transitioningLevel = true;
     SoundSystem.playUnlock();
 
-    if (this.levelIndex >= 5) {
+    if (this.levelIndex >= 6) {
       this.scene.stop('UIScene');
       this.scene.start('GameOverScene', {
         victory: true,
-        levelReached: 6,
+        levelReached: 7,
         shardsCollected: this.totalShardsCollected,
         enemiesDefeated: this.totalEnemiesDefeated,
       });
@@ -2734,6 +3339,33 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private dropAllHeldItems(): void {
+    const offsets = [
+      { dx: -14, dy: 6 },
+      { dx: 14, dy: 6 },
+      { dx: 0, dy: -12 },
+    ];
+    let droppedCount = 0;
+    for (let i = 0; i < this.playerState.inventory.length; i++) {
+      const item = this.playerState.inventory[i];
+      if (!item) continue;
+      this.playerState.inventory[i] = null;
+      const offset = offsets[droppedCount % offsets.length];
+      const uid = `drop_${this.playerState.id}_${Date.now()}_${i}_${Math.floor(Math.random() * 9999)}`;
+      this.spawnRoomLoot(
+        uid,
+        'item',
+        this.playerSprite.x + offset.dx,
+        this.playerSprite.y + offset.dy,
+        item.id,
+        undefined,
+        item.uses,
+        true
+      );
+      droppedCount++;
+    }
+  }
+
   private onPlayerZeroHp(): void {
     const totemIdx = this.playerState.inventory.findIndex(
       (i) => i?.id === 'revive_totem' || i?.id === 'necromancy_altar'
@@ -2760,9 +3392,9 @@ export class GameScene extends Phaser.Scene {
       this.playerState.downed = true;
       this.playerState.downedTimerMs = 20000;
       this.playerSprite.setFrame(5).setDepth(7);
-      net.broadcastPlayerState(this.playerState);
       const anyAlive = Array.from(this.remotePlayers.values()).some((p) => !p.downed);
       if (!anyAlive) {
+        net.broadcastPlayerState(this.playerState);
         net.broadcastInteract({
           peerId: this.playerState.id,
           gx: this.currentRoom.gx,
@@ -2772,6 +3404,8 @@ export class GameScene extends Phaser.Scene {
         this.triggerGameOver(false);
         return;
       }
+      this.dropAllHeldItems();
+      net.broadcastPlayerState(this.playerState);
       this.ui.showToast('You are downed! Ally can revive [E]', '#ff5d8f');
     }
   }
@@ -2782,7 +3416,7 @@ export class GameScene extends Phaser.Scene {
     this.scene.stop('UIScene');
     this.scene.start('GameOverScene', {
       victory,
-      levelReached: victory ? 6 : this.levelIndex + 1,
+      levelReached: victory ? 7 : this.levelIndex + 1,
       shardsCollected: this.totalShardsCollected,
       enemiesDefeated: this.totalEnemiesDefeated,
     });
@@ -3111,8 +3745,12 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.updatePlayerMovement(time, delta);
+    this.updateLevel7Events(delta);
+    this.updateBeamWeapon(delta);
+    this.updateSummonedSkeletons(time, delta);
     this.updateEnemies(time, delta);
     this.updateProjectiles(delta);
+    this.updateSlimeSplatters(delta);
     this.updateHazardsAndLoot(delta);
     this.updatePuzzlePlates();
     this.updatePuzzleBlocks();
@@ -3136,18 +3774,34 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (this.respawnAnimMs > 0) {
+    if (this.nyarGrabbedMs > 0) {
+      this.nyarGrabbedMs = Math.max(0, this.nyarGrabbedMs - delta);
+      const boss = this.activeEnemies.find((e) => e.sprite.active && e.defId === 'nyarlathotep');
+      if (boss) {
+        const tipX = boss.sprite.x + Math.cos(this.nyarArmAngle) * this.nyarArmLength;
+        const tipY = boss.sprite.y + Math.sin(this.nyarArmAngle) * this.nyarArmLength;
+        this.playerSprite.setPosition(
+          Phaser.Math.Clamp(tipX, 22, this.roomWidthPx - 22),
+          Phaser.Math.Clamp(tipY, 22, this.roomHeightPx - 22)
+        );
+      }
       this.playerSprite.setVelocity(0, 0);
-      this.playerState.dodging = false;
+      this.playerState.x = this.playerSprite.x;
+      this.playerState.y = this.playerSprite.y;
       return;
     }
 
-    if (this.spikePinnedMs > 0) {
-      this.spikePinnedMs = Math.max(0, this.spikePinnedMs - delta);
-      this.playerSprite.setVelocity(0, 0);
-      this.playerState.dodging = false;
+    if (this.nyarThrowMs > 0) {
+      this.nyarThrowMs = Math.max(0, this.nyarThrowMs - delta);
+      this.playerSprite.setVelocity(this.nyarThrowVx, this.nyarThrowVy);
       this.playerState.x = this.playerSprite.x;
       this.playerState.y = this.playerSprite.y;
+      return;
+    }
+
+    if (this.respawnAnimMs > 0) {
+      this.playerSprite.setVelocity(0, 0);
+      this.playerState.dodging = false;
       return;
     }
 
@@ -3179,11 +3833,24 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // Dodge input
+    // Dodge input (also allows escaping when pinned by a spike trap)
     const wantDodge =
       Phaser.Input.Keyboard.JustDown(this.keys.space) ||
       Phaser.Input.Keyboard.JustDown(this.keys.shift) ||
       (isMobileMode() && mobileInput.consumeDodge());
+
+    if (this.spikePinnedMs > 0) {
+      if (wantDodge && this.dodgeMs <= 0 && this.playerState.stamina >= 1) {
+        this.spikePinnedMs = 0;
+      } else {
+        this.spikePinnedMs = Math.max(0, this.spikePinnedMs - delta);
+        this.playerSprite.setVelocity(0, 0);
+        this.playerState.dodging = false;
+        this.playerState.x = this.playerSprite.x;
+        this.playerState.y = this.playerSprite.y;
+        return;
+      }
+    }
     if (wantDodge && this.dodgeMs <= 0) {
       if (this.playerState.stamina >= 1) {
         this.playerState.stamina -= 1;
@@ -3243,6 +3910,390 @@ export class GameScene extends Phaser.Scene {
     this.wardRing.setPosition(this.playerSprite.x, this.playerSprite.y).setVisible(hasWard);
   }
 
+  private drawLightningBolt(x1: number, y1: number, x2: number, y2: number): void {
+    const gfx = this.add.graphics().setDepth(14);
+    const segments = 5;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+
+    const points: Array<{ x: number; y: number }> = [{ x: x1, y: y1 }];
+    for (let i = 1; i < segments; i++) {
+      const t = i / segments;
+      const jitter = (Math.random() - 0.5) * 10;
+      points.push({
+        x: x1 + dx * t + nx * jitter,
+        y: y1 + dy * t + ny * jitter,
+      });
+    }
+    points.push({ x: x2, y: y2 });
+
+    gfx.lineStyle(3, 0x6ef3ff, 0.45);
+    gfx.beginPath();
+    gfx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) gfx.lineTo(points[i].x, points[i].y);
+    gfx.strokePath();
+
+    gfx.lineStyle(1.4, 0xffffff, 0.95);
+    gfx.beginPath();
+    gfx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) gfx.lineTo(points[i].x, points[i].y);
+    gfx.strokePath();
+
+    this.tweens.add({
+      targets: gfx,
+      alpha: 0,
+      duration: 240,
+      onComplete: () => gfx.destroy(),
+    });
+  }
+
+  private updateBeamWeapon(delta: number): void {
+    this.beamGfx.clear();
+    if (this.playerState.downed || this.dodgeMs > 0 || this.ui.isOverlayOpen()) {
+      this.beamDamageTickMs = 0;
+      return;
+    }
+
+    const activeItem = this.playerState.inventory[this.playerState.activeSlot];
+    const w = activeItem?.category === 'weapon' ? WEAPONS[activeItem.id] : undefined;
+    if (!activeItem || !w || w.style !== 'beam_prism') {
+      this.beamDamageTickMs = 0;
+      return;
+    }
+
+    const holdingShoot = isMobileMode()
+      ? mobileInput.dpadActive
+      : this.input.activePointer.leftButtonDown();
+
+    if (!holdingShoot) {
+      this.beamDamageTickMs = 0;
+      return;
+    }
+
+    const angle = isMobileMode()
+      ? mobileInput.dpadDirX !== 0 || mobileInput.dpadDirY !== 0
+        ? mobileInput.dpadAngle
+        : this.playerState.aimAngle
+      : this.getAimAngle();
+    this.playerState.aimAngle = angle;
+
+    const startX = this.playerSprite.x;
+    const startY = this.playerSprite.y;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const step = 3;
+    let endX = startX + cos * w.range;
+    let endY = startY + sin * w.range;
+    let hitEnemy: ActiveEnemy | null = null;
+
+    const walls = this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[];
+    const crates = this.crateGroup.getChildren() as Phaser.Physics.Arcade.Sprite[];
+
+    for (let dist = 8; dist <= w.range; dist += step) {
+      const px = startX + cos * dist;
+      const py = startY + sin * dist;
+
+      if (px < 17 || px > this.roomWidthPx - 17 || py < 17 || py > this.roomHeightPx - 17) {
+        endX = px;
+        endY = py;
+        break;
+      }
+
+      let hitWall = false;
+      for (const wall of walls) {
+        if (!wall.active) continue;
+        if (Math.abs(px - wall.x) < 8.5 && Math.abs(py - wall.y) < 8.5) {
+          hitWall = true;
+          break;
+        }
+      }
+      if (!hitWall) {
+        for (const crate of crates) {
+          if (!crate.active) continue;
+          if (Math.abs(px - crate.x) < 8.5 && Math.abs(py - crate.y) < 8.5) {
+            hitWall = true;
+            break;
+          }
+        }
+      }
+      if (hitWall) {
+        endX = px;
+        endY = py;
+        break;
+      }
+
+      for (const e of this.activeEnemies) {
+        if (!e.sprite.active) continue;
+        if (Phaser.Math.Distance.Between(px, py, e.sprite.x, e.sprite.y) < (e.isBoss ? 14 : 9)) {
+          hitEnemy = e;
+          endX = px;
+          endY = py;
+          break;
+        }
+      }
+      if (hitEnemy) break;
+    }
+
+    // Draw continuous solid glowing beam
+    this.beamGfx.lineStyle(6, 0xff8c1a, 0.32);
+    this.beamGfx.lineBetween(startX, startY, endX, endY);
+    this.beamGfx.lineStyle(3.2, 0xffe066, 0.85);
+    this.beamGfx.lineBetween(startX, startY, endX, endY);
+    this.beamGfx.lineStyle(1.4, 0xffffff, 1);
+    this.beamGfx.lineBetween(startX, startY, endX, endY);
+    this.beamGfx.fillStyle(0xffe066, 0.8);
+    this.beamGfx.fillCircle(endX, endY, 3.5);
+    this.beamGfx.fillStyle(0xffffff, 1);
+    this.beamGfx.fillCircle(endX, endY, 1.8);
+
+    this.beamFxAccumMs += delta;
+    if (this.beamFxAccumMs >= 95) {
+      this.beamFxAccumMs = 0;
+      this.spawnFireParticles(endX, endY, 1);
+    }
+
+    if (hitEnemy) {
+      hitEnemy.burningMs = 3000;
+      this.beamDamageTickMs += delta;
+      if (this.beamDamageTickMs >= 180) {
+        this.beamDamageTickMs -= 180;
+        this.damageEnemy(hitEnemy, w.damage);
+      }
+    } else {
+      this.beamDamageTickMs = 120;
+    }
+
+    this.beamDrainAccumMs += delta;
+    while (this.beamDrainAccumMs >= 100) {
+      this.beamDrainAccumMs -= 100;
+      const broke = consumeUse(this.playerState.inventory, this.playerState.activeSlot, 1);
+      if (broke) {
+        this.beamGfx.clear();
+        SoundSystem.playBreak();
+        this.ui.showToast(`${w.name} broke!`, '#ffe066');
+        break;
+      }
+    }
+  }
+
+  private damageSkeleton(sk: ActiveSkeleton, dmg: number): void {
+    if (!sk.sprite.active) return;
+    sk.hp -= dmg;
+    sk.hitFlashMs = 140;
+    sk.sprite.setTint(0xff5d8f);
+    this.spawnParticles(sk.sprite.x, sk.sprite.y, 0xe2e8f0, 4);
+    if (sk.hp <= 0) {
+      this.spawnParticles(sk.sprite.x, sk.sprite.y, 0xc084fc, 8);
+      sk.sprite.destroy();
+      this.summonedSkeletons = this.summonedSkeletons.filter((s) => s !== sk);
+    }
+  }
+
+  private hasClearSkeletonLine(x1: number, y1: number, x2: number, y2: number): boolean {
+    const dist = Phaser.Math.Distance.Between(x1, y1, x2, y2);
+    if (dist <= 6) return true;
+    const steps = Math.ceil(dist / 6);
+    const walls = this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[];
+    const crates = this.crateGroup.getChildren() as Phaser.Physics.Arcade.Sprite[];
+    for (let s = 1; s < steps; s++) {
+      const t = s / steps;
+      const px = x1 + (x2 - x1) * t;
+      const py = y1 + (y2 - y1) * t;
+      if (px < 20 || px > 156 || py < 20 || py > 156) return false;
+      for (const w of walls) {
+        if (w.active && Math.abs(px - w.x) < 11 && Math.abs(py - w.y) < 11) return false;
+      }
+      for (const c of crates) {
+        if (c.active && Math.abs(px - c.x) < 11 && Math.abs(py - c.y) < 11) return false;
+      }
+      for (const b of this.specialObjs.blocks) {
+        if (b.sprite.active && Math.abs(px - b.sprite.x) < 11 && Math.abs(py - b.sprite.y) < 11) return false;
+      }
+    }
+    return true;
+  }
+
+  private getSkeletonPathWaypoint(fromX: number, fromY: number, toX: number, toY: number): { x: number; y: number } {
+    if (this.hasClearSkeletonLine(fromX, fromY, toX, toY)) {
+      return { x: toX, y: toY };
+    }
+
+    const blocked: boolean[][] = Array.from({ length: 11 }, (_, ty) =>
+      Array.from({ length: 11 }, (__, tx) => tx === 0 || tx === 10 || ty === 0 || ty === 10)
+    );
+    const markBlocked = (wx: number, wy: number) => {
+      const tx = Phaser.Math.Clamp(Math.floor(wx / 16), 0, 10);
+      const ty = Phaser.Math.Clamp(Math.floor(wy / 16), 0, 10);
+      blocked[ty][tx] = true;
+    };
+    for (const w of this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[]) {
+      if (w.active) markBlocked(w.x, w.y);
+    }
+    for (const c of this.crateGroup.getChildren() as Phaser.Physics.Arcade.Sprite[]) {
+      if (c.active) markBlocked(c.x, c.y);
+    }
+    for (const b of this.specialObjs.blocks) {
+      if (b.sprite.active) markBlocked(b.sprite.x, b.sprite.y);
+    }
+
+    const sx = Phaser.Math.Clamp(Math.floor(fromX / 16), 1, 9);
+    const sy = Phaser.Math.Clamp(Math.floor(fromY / 16), 1, 9);
+    const gx = Phaser.Math.Clamp(Math.floor(toX / 16), 1, 9);
+    const gy = Phaser.Math.Clamp(Math.floor(toY / 16), 1, 9);
+    if (sx === gx && sy === gy) {
+      return { x: toX, y: toY };
+    }
+
+    const parent = new Int16Array(121).fill(-1);
+    const startIdx = sy * 11 + sx;
+    const goalIdx = gy * 11 + gx;
+    parent[startIdx] = startIdx;
+    const queue: number[] = [startIdx];
+    let head = 0;
+    let bestFallbackIdx = startIdx;
+    let bestFallbackDist = Math.abs(sx - gx) + Math.abs(sy - gy);
+
+    const dirs = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+      [1, 1],
+      [1, -1],
+      [-1, 1],
+      [-1, -1],
+    ];
+
+    let found = false;
+    while (head < queue.length) {
+      const cur = queue[head++];
+      if (cur === goalIdx) {
+        found = true;
+        break;
+      }
+      const cx = cur % 11;
+      const cy = Math.floor(cur / 11);
+      for (const [dx, dy] of dirs) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx < 1 || nx > 9 || ny < 1 || ny > 9) continue;
+        // Allow stepping into the goal cell even if an obstacle/enemy overlaps its tile,
+        // otherwise require unblocked tiles (and both cardinal neighbors for diagonals).
+        const nIdx = ny * 11 + nx;
+        if (nIdx !== goalIdx && blocked[ny][nx]) continue;
+        if (dx !== 0 && dy !== 0 && (blocked[cy][nx] || blocked[ny][cx])) continue;
+        if (parent[nIdx] !== -1) continue;
+        parent[nIdx] = cur;
+        queue.push(nIdx);
+        const h = Math.abs(nx - gx) + Math.abs(ny - gy);
+        if (h < bestFallbackDist) {
+          bestFallbackDist = h;
+          bestFallbackIdx = nIdx;
+        }
+      }
+    }
+
+    let trace = found ? goalIdx : bestFallbackIdx;
+    if (trace === startIdx) {
+      return { x: toX, y: toY };
+    }
+    while (parent[trace] !== startIdx && parent[trace] !== -1) {
+      trace = parent[trace];
+    }
+    const nextX = (trace % 11) * 16 + 8;
+    const nextY = Math.floor(trace / 11) * 16 + 8;
+    return { x: nextX, y: nextY };
+  }
+
+  private updateSummonedSkeletons(time: number, delta: number): void {
+    this.summonedSkeletons = this.summonedSkeletons.filter((s) => s.sprite.active);
+    if (this.summonedSkeletons.length === 0) return;
+
+    const frame = Math.floor(time / 240) % 2;
+    const liveEnemies = this.activeEnemies.filter((e) => e.sprite.active);
+
+    for (const sk of this.summonedSkeletons) {
+      sk.attackCooldownMs = Math.max(0, sk.attackCooldownMs - delta);
+      if (sk.hitFlashMs > 0) {
+        sk.hitFlashMs -= delta;
+        if (sk.hitFlashMs <= 0) sk.sprite.clearTint();
+      }
+      sk.sprite.setFrame(frame);
+
+      if (this.playerState.downed) {
+        sk.sprite.setVelocity(0, 0);
+        continue;
+      }
+
+      let moveVx = 0;
+      let moveVy = 0;
+
+      if (liveEnemies.length > 0) {
+        let nearest = liveEnemies[0];
+        let bestDist = Phaser.Math.Distance.Between(sk.sprite.x, sk.sprite.y, nearest.sprite.x, nearest.sprite.y);
+        for (let i = 1; i < liveEnemies.length; i++) {
+          const cand = liveEnemies[i];
+          const d = Phaser.Math.Distance.Between(sk.sprite.x, sk.sprite.y, cand.sprite.x, cand.sprite.y);
+          if (d < bestDist) {
+            bestDist = d;
+            nearest = cand;
+          }
+        }
+
+        const flankAngle = (sk.formationIndex * Math.PI) / 2;
+        const desiredX = Phaser.Math.Clamp(nearest.sprite.x + Math.cos(flankAngle) * 11, 22, 154);
+        const desiredY = Phaser.Math.Clamp(nearest.sprite.y + Math.sin(flankAngle) * 11, 22, 154);
+        const waypoint = this.getSkeletonPathWaypoint(sk.sprite.x, sk.sprite.y, desiredX, desiredY);
+        const moveAngle = Phaser.Math.Angle.Between(sk.sprite.x, sk.sprite.y, waypoint.x, waypoint.y);
+        const attackAngle = Phaser.Math.Angle.Between(sk.sprite.x, sk.sprite.y, nearest.sprite.x, nearest.sprite.y);
+        sk.sprite.setFlipX(Math.cos(attackAngle) < 0);
+
+        if (bestDist > 12) {
+          moveVx = Math.cos(moveAngle) * 72;
+          moveVy = Math.sin(moveAngle) * 72;
+        }
+
+        if (bestDist <= (nearest.isBoss ? 22 : 17) && sk.attackCooldownMs <= 0) {
+          sk.attackCooldownMs = 650;
+          this.damageEnemy(nearest, 2, attackAngle);
+          this.spawnParticles(nearest.sprite.x, nearest.sprite.y, 0xc084fc, 3);
+        }
+      } else {
+        const orbitAngle = (sk.formationIndex * Math.PI) / 2;
+        const targetX = Phaser.Math.Clamp(this.playerSprite.x + Math.cos(orbitAngle) * 18, 22, 154);
+        const targetY = Phaser.Math.Clamp(this.playerSprite.y + Math.sin(orbitAngle) * 18, 22, 154);
+        const dist = Phaser.Math.Distance.Between(sk.sprite.x, sk.sprite.y, targetX, targetY);
+        if (dist > 6) {
+          const waypoint = this.getSkeletonPathWaypoint(sk.sprite.x, sk.sprite.y, targetX, targetY);
+          const angle = Phaser.Math.Angle.Between(sk.sprite.x, sk.sprite.y, waypoint.x, waypoint.y);
+          sk.sprite.setFlipX(Math.cos(angle) < 0);
+          const spd = Math.min(86, 38 + dist * 1.4);
+          moveVx = Math.cos(angle) * spd;
+          moveVy = Math.sin(angle) * spd;
+        }
+      }
+
+      // Separation force so skeletons never overlap into a single sprite
+      for (const other of this.summonedSkeletons) {
+        if (other === sk || !other.sprite.active) continue;
+        const dx = sk.sprite.x - other.sprite.x;
+        const dy = sk.sprite.y - other.sprite.y;
+        const d = Math.hypot(dx, dy);
+        if (d < 14) {
+          const pushAngle = d > 0.01 ? Math.atan2(dy, dx) : (sk.formationIndex * Math.PI) / 2;
+          const strength = ((14 - d) / 14) * 58;
+          moveVx += Math.cos(pushAngle) * strength;
+          moveVy += Math.sin(pushAngle) * strength;
+        }
+      }
+
+      sk.sprite.setVelocity(moveVx, moveVy);
+    }
+  }
+
   private updateEnemies(time: number, delta: number): void {
     if (!this.isRoomAuthority()) {
       const lerpFactor = 1 - Math.exp(-delta * 0.018);
@@ -3264,6 +4315,12 @@ export class GameScene extends Phaser.Scene {
         const playerDist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, this.playerSprite.x, this.playerSprite.y);
         if (playerDist < (e.isBoss ? 20 : 12)) {
           this.damagePlayer(e.damage);
+        }
+        for (const sk of [...this.summonedSkeletons]) {
+          if (!sk.sprite.active || sk.hitFlashMs > 0) continue;
+          if (Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, sk.sprite.x, sk.sprite.y) < (e.isBoss ? 18 : 11)) {
+            this.damageSkeleton(sk, e.damage);
+          }
         }
       }
       return;
@@ -3329,6 +4386,15 @@ export class GameScene extends Phaser.Scene {
       const hostDist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, hostX, hostY);
       if (hostDist < (e.isBoss ? 20 : 12) && !StatusEffectManager.has(this.playerState.statusEffects, 'giant')) {
         this.damagePlayer(e.damage);
+      }
+
+      // Contact damage against summoned skeletons
+      for (const sk of [...this.summonedSkeletons]) {
+        if (!sk.sprite.active || sk.hitFlashMs > 0) continue;
+        const skDist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, sk.sprite.x, sk.sprite.y);
+        if (skDist < (e.isBoss ? 18 : 11)) {
+          this.damageSkeleton(sk, e.damage);
+        }
       }
 
       // Windup / Charge telegraph
@@ -3441,11 +4507,658 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private countClearedLevel7Chambers(): number {
+    if (this.levelIndex !== 6) return 0;
+    let count = 0;
+    for (const gx of [1, 2, 3, 4]) {
+      for (const gy of [0, 2]) {
+        const r = this.floor.rooms[gy]?.[gx];
+        if (r && r.visited && r.cleared) count++;
+      }
+    }
+    return count;
+  }
+
+  private areAllLevel7ChambersCleared(): boolean {
+    if (this.levelIndex !== 6) return false;
+    if (this.playerState.name === 'ADMIN' || this.playerState.name === 'ADMIN2') return true;
+    return this.countClearedLevel7Chambers() >= 8;
+  }
+
+  private updateLevel7Events(_delta: number): void {
+    if (this.levelIndex !== 6) return;
+
+    // Hallway mystery whispers as the player walks further right
+    if (this.currentRoom.gx === 0 && this.currentRoom.gy === 1) {
+      const px = this.playerSprite.x;
+      if (px > 140 && this.l7WhisperStep < 1) {
+        this.l7WhisperStep = 1;
+        this.ui.showToast('Something ancient shifts behind the far gate...', '#b8a1ff');
+      } else if (px > 290 && this.l7WhisperStep < 2) {
+        this.l7WhisperStep = 2;
+        this.ui.showToast('Hundreds of unseen eyes follow your steps...', '#ff8c1a');
+      } else if (px > 440 && this.l7WhisperStep < 3) {
+        this.l7WhisperStep = 3;
+        this.ui.showToast('The Crawling Chaos waits in the dark...', '#ff47b6');
+      }
+      return;
+    }
+
+    // Trigger Nyarlathotep summoning when entering the empty boss arena
+    if (
+      this.currentRoom.type === 'boss' &&
+      this.nyarlathotepSummonPending &&
+      !this.nyarlathotepSummoning &&
+      !this.currentRoom.bossDefeated &&
+      this.playerSprite.x >= 68
+    ) {
+      this.startNyarlathotepSummon();
+    }
+  }
+
+  private getNyarHistory(): { fought: number; beaten: number } {
+    try {
+      const raw = localStorage.getItem('glimmerdeep_nyar_history_v1');
+      if (!raw) return { fought: 0, beaten: 0 };
+      const parsed = JSON.parse(raw) as { fought?: number; beaten?: number };
+      return {
+        fought: typeof parsed.fought === 'number' ? parsed.fought : 0,
+        beaten: typeof parsed.beaten === 'number' ? parsed.beaten : 0,
+      };
+    } catch {
+      return { fought: 0, beaten: 0 };
+    }
+  }
+
+  private saveNyarHistory(history: { fought: number; beaten: number }): void {
+    try {
+      localStorage.setItem('glimmerdeep_nyar_history_v1', JSON.stringify(history));
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  private recordNyarVictory(): void {
+    const cur = this.getNyarHistory();
+    this.saveNyarHistory({ fought: Math.max(1, cur.fought), beaten: cur.beaten + 1 });
+  }
+
+  private buildNyarDialogue(prev: { fought: number; beaten: number }): { opening: string; taunts: string[] } {
+    const name = this.playerState.name || 'Wanderer';
+    const playerCount = net.mode === 'solo' ? 1 : Math.max(1, net.players.size);
+    const isSolo = playerCount === 1;
+
+    let opening = isSolo
+      ? `You walked so far into the dark, ${name}, only to find me waiting.`
+      : `How comforting it must feel to bring others into the dark with you.`;
+    if (prev.beaten > 0) {
+      opening =
+        prev.beaten === 1
+          ? `You thought ending a shadow meant you were free of me, ${name}?`
+          : `You keep tearing open the same wound, expecting the dark to let you go.`;
+    } else if (prev.fought > 0) {
+      opening =
+        prev.fought === 1
+          ? `I still remember the way you broke the last time you stood here, ${name}.`
+          : `The enjoyment of seeing you die so many times never truly dulls, ${name}.`;
+    }
+
+    const taunts = [
+      `I have no reason to hate you, ${name}. Watching you suffer is simply amusing.`,
+      `Every time you flinch, every time you hesitate... I taste it.`,
+      `Do you feel how small you are against something older than light?`,
+      `You believe you are the one choosing to be here. How adorable.`,
+      `There is no grand purpose to your pain. Only my amusement.`,
+      `Struggle harder, ${name}. Hope makes the breaking so much sweeter.`,
+      `Let the light rain down for all the good it will do you.`,
+    ];
+
+    if (isSolo) {
+      taunts.push(
+        `No one else is here to hear you scream, ${name}.`,
+        `You came alone into a place that devours light.`
+      );
+    } else {
+      taunts.push(
+        `Tell me, ${name}... which of your companions will you let die first?`,
+        `Huddled together in the dark, pretending numbers mean safety.`
+      );
+    }
+
+    if (prev.beaten > 0) {
+      taunts.push(`That hollow triumph you felt before... it was mine to give, and mine to take.`);
+    } else if (prev.fought > 0) {
+      taunts.push(`You already know how this ends, ${name}. Why return to be broken again?`);
+    }
+    return { opening, taunts };
+  }
+
+  private startNyarlathotepSummon(): void {
+    this.nyarlathotepSummonPending = false;
+    this.nyarlathotepSummoning = true;
+    this.currentRoom.doorsLocked = true;
+    this.updateDoorVisuals();
+    SoundSystem.setMusicTrack('boss');
+    this.cameras.main.shake(1100, 0.01);
+
+    const prevHistory = this.getNyarHistory();
+    this.saveNyarHistory({ fought: prevHistory.fought + 1, beaten: prevHistory.beaten });
+    const dialogue = this.buildNyarDialogue(prevHistory);
+    this.nyarDialoguePool = dialogue.taunts;
+    this.nyarDialogueIdx = 0;
+    this.nyarDialogueTimerMs = 6500;
+
+    const cx = Math.round(this.roomWidthPx / 2);
+    const cy = Math.round(this.roomHeightPx / 2);
+    const circleGfx = this.add.graphics().setDepth(7);
+    this.roomGroup.add(circleGfx);
+
+    let elapsed = 0;
+    const timer = this.time.addEvent({
+      delay: 50,
+      repeat: 27,
+      callback: () => {
+        elapsed += 50;
+        if (!circleGfx.active || this.currentRoom.type !== 'boss') {
+          timer.remove();
+          return;
+        }
+        const t = Math.min(1, elapsed / 1400);
+        circleGfx.clear();
+        circleGfx.lineStyle(2.5, 0x7e22ce, 0.8 * t);
+        circleGfx.strokeCircle(cx, cy, 42 * t);
+        circleGfx.lineStyle(1.8, 0xff8c1a, 0.9 * t);
+        circleGfx.strokeCircle(cx, cy, 26 * (1 - t * 0.35));
+        for (let i = 0; i < 6; i++) {
+          const a = t * Math.PI * 3 + (Math.PI * 2 * i) / 6;
+          circleGfx.fillStyle(0xff8c1a, 0.9);
+          circleGfx.fillCircle(cx + Math.cos(a) * 34 * t, cy + Math.sin(a) * 34 * t, 2.5);
+        }
+        this.spawnParticles(cx + Phaser.Math.Between(-24, 24), cy + Phaser.Math.Between(-24, 24), 0x7e22ce, 1);
+
+        if (elapsed >= 1400) {
+          circleGfx.destroy();
+          this.nyarlathotepSummoning = false;
+          const bossDef = BOSSES.nyarlathotep;
+          const playerScale = 1 + Math.max(0, net.players.size - 1) * 0.45;
+          const bHp = Math.round(bossDef.hp * playerScale);
+          this.spawnEnemyEntity('boss', 'nyarlathotep', cx, cy, bHp, bHp, false, true);
+          const spawned = this.activeEnemies.find((e) => e.defId === 'nyarlathotep');
+          if (spawned) {
+            spawned.sprite.setScale(2.1);
+            spawned.sprite.setDepth(9);
+          }
+          this.cameras.main.shake(450, 0.018);
+          this.spawnParticles(cx, cy, 0xff8c1a, 24);
+          this.spawnParticles(cx, cy, 0x7e22ce, 20);
+          SoundSystem.playExplosion();
+          this.ui.showToast(dialogue.opening, '#ff8c1a');
+        }
+      },
+    });
+  }
+
+  private hitNyarlathotepArm(x: number, y: number, radius: number, dmg: number): boolean {
+    if (this.nyarArmState !== 'extending' && this.nyarArmState !== 'holding') return false;
+    const boss = this.activeEnemies.find((e) => e.sprite.active && e.defId === 'nyarlathotep');
+    if (!boss) return false;
+    const tipX = boss.sprite.x + Math.cos(this.nyarArmAngle) * this.nyarArmLength;
+    const tipY = boss.sprite.y + Math.sin(this.nyarArmAngle) * this.nyarArmLength;
+    const midX = boss.sprite.x + Math.cos(this.nyarArmAngle) * (this.nyarArmLength * 0.65);
+    const midY = boss.sprite.y + Math.sin(this.nyarArmAngle) * (this.nyarArmLength * 0.65);
+    if (
+      Phaser.Math.Distance.Between(x, y, tipX, tipY) <= radius + 12 ||
+      Phaser.Math.Distance.Between(x, y, midX, midY) <= radius + 10
+    ) {
+      this.damageEnemy(boss, dmg);
+      if (this.nyarArmState === 'extending') {
+        this.nyarArmState = 'recoiling';
+        this.spawnParticles(tipX, tipY, 0xff8c1a, 8);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  private updateNyarlathotepBoss(
+    e: ActiveEnemy,
+    angle: number,
+    _dist: number,
+    delta: number,
+    slowFactor: number
+  ): void {
+    e.sprite.setScale(2.3);
+    e.sprite.setAlpha(0.01); // Use procedural organic eldritch graphics instead of square sprite
+    if (!this.nyarGfx || !this.nyarGfx.active) {
+      this.nyarGfx = this.add.graphics().setDepth(9);
+    }
+    const gfx = this.nyarGfx;
+    gfx.clear();
+
+    const bx = e.sprite.x;
+    const by = e.sprite.y;
+    const now = this.time.now;
+    const spd = e.speed * slowFactor * (e.phase === 2 ? 1.25 : 1);
+    const isHit = e.hitFlashMs > 0;
+
+    // Drift menacingly toward the player while staying near the center arena
+    if (this.nyarBeamState === 'idle' && this.nyarArmState === 'idle') {
+      e.sprite.setVelocity(Math.cos(angle) * spd, Math.sin(angle) * spd);
+    } else {
+      e.sprite.setVelocity(0, 0);
+    }
+
+    // 1. Draw 12 whip-like undulating black tentacles radiating in every direction
+    for (let t = 0; t < 12; t++) {
+      const baseA = (Math.PI * 2 * t) / 12 + Math.sin(now * 0.0011 + t * 0.7) * 0.22;
+      const totalLen = 44 + Math.sin(now * 0.0026 + t * 1.4) * 12;
+      let prevX = bx + Math.cos(baseA) * 16;
+      let prevY = by + Math.sin(baseA) * 14;
+      const segs = 6;
+      for (let s = 1; s <= segs; s++) {
+        const frac = s / segs;
+        const wave = Math.sin(now * 0.0042 + t * 1.3 - s * 0.9) * (0.45 * frac);
+        const segA = baseA + wave;
+        const r = 16 + totalLen * frac;
+        const nx = bx + Math.cos(segA) * r;
+        const ny = by + Math.sin(segA) * r;
+        const thick = Math.max(1.5, (1 - frac * 0.78) * 7.5);
+        gfx.lineStyle(thick + 2.5, isHit ? 0xffffff : 0x3b0764, 0.5);
+        gfx.lineBetween(prevX, prevY, nx, ny);
+        gfx.lineStyle(thick, isHit ? 0xffffff : 0x030206, 0.98);
+        gfx.lineBetween(prevX, prevY, nx, ny);
+        prevX = nx;
+        prevY = ny;
+      }
+    }
+
+    // 2. Wide, somewhat-humanoid gaunt shadowy arms (2 pairs) extending from broad hunched shoulders
+    const shoulderY = by - 12;
+    for (const side of [-1, 1]) {
+      for (let armIdx = 0; armIdx < 2; armIdx++) {
+        const shX = bx + side * (16 + armIdx * 4);
+        const shY = shoulderY + armIdx * 9;
+        const sway = Math.sin(now * 0.0025 + armIdx * 1.4 + side) * 6;
+        const elbowX = shX + side * (16 + armIdx * 4);
+        const elbowY = shY - 4 + sway * 0.5;
+        const handX = elbowX + side * (13 + armIdx * 3);
+        const handY = elbowY + 12 + sway;
+
+        gfx.lineStyle(6.5, isHit ? 0xffffff : 0x3b0764, 0.55);
+        gfx.lineBetween(shX, shY, elbowX, elbowY);
+        gfx.lineBetween(elbowX, elbowY, handX, handY);
+        gfx.lineStyle(4, isHit ? 0xffffff : 0x030206, 0.98);
+        gfx.lineBetween(shX, shY, elbowX, elbowY);
+        gfx.lineBetween(elbowX, elbowY, handX, handY);
+        // Elongated shadow claws
+        for (let c = -1; c <= 1; c++) {
+          gfx.lineStyle(1.4, isHit ? 0xffffff : 0x6b21a8, 0.85);
+          gfx.lineBetween(handX, handY, handX + side * 6 + c * 2, handY + 7 + Math.abs(c) * 2);
+        }
+      }
+    }
+
+    // 3. Towering broad-shouldered gaunt torso tapering into shredded void-cloak tendrils
+    const col = isHit ? 0xffffff : 0x030206;
+    const rim = isHit ? 0xffffff : 0x4c1d95;
+    // Outer violet nightmare rim
+    gfx.fillStyle(rim, 0.55);
+    gfx.fillTriangle(bx - 27, shoulderY - 3, bx + 27, shoulderY - 3, bx, by + 30);
+    gfx.fillEllipse(bx, shoulderY, 52, 20);
+    // Inner pitch-black torso & broad shoulders
+    gfx.fillStyle(col, 0.99);
+    gfx.fillTriangle(bx - 24, shoulderY - 2, bx + 24, shoulderY - 2, bx, by + 27);
+    gfx.fillEllipse(bx, shoulderY, 46, 17);
+    // Shredded lower void-cloak tendrils
+    for (let k = -3; k <= 3; k++) {
+      const tx = bx + k * 5;
+      const sway = Math.sin(now * 0.004 + k) * 4;
+      gfx.fillStyle(col, 0.95);
+      gfx.fillTriangle(tx - 3, by + 12, tx + 3, by + 12, tx + sway, by + 32 + (k % 2) * 5);
+    }
+
+    // 4. Menacing elongated eldritch head, jagged crown-horns & piercing slit eyes (no cartoon face!)
+    const headX = bx + Math.sin(now * 0.0018) * 1.5;
+    const headY = by - 28 + Math.cos(now * 0.0022) * 1.2;
+    // Tall jagged backward-sweeping horns
+    gfx.lineStyle(4, rim, 0.85);
+    gfx.lineBetween(headX - 6, headY - 7, headX - 15, headY - 23);
+    gfx.lineBetween(headX + 6, headY - 7, headX + 15, headY - 23);
+    gfx.lineBetween(headX - 3, headY - 9, headX - 6, headY - 20);
+    gfx.lineBetween(headX + 3, headY - 9, headX + 6, headY - 20);
+    gfx.lineStyle(2, col, 1);
+    gfx.lineBetween(headX - 6, headY - 7, headX - 15, headY - 23);
+    gfx.lineBetween(headX + 6, headY - 7, headX + 15, headY - 23);
+
+    // Narrow, tall faceless/cowl silhouette
+    gfx.fillStyle(rim, 0.65);
+    gfx.fillTriangle(headX - 10, headY - 6, headX + 10, headY - 6, headX, headY + 14);
+    gfx.fillEllipse(headX, headY - 4, 20, 16);
+    gfx.fillStyle(col, 1);
+    gfx.fillTriangle(headX - 8, headY - 5, headX + 8, headY - 5, headX, headY + 12);
+    gfx.fillEllipse(headX, headY - 4, 16, 13);
+
+    // Piercing narrow slit eyes inside the cowl (no round cartoon eyes or pink mouth)
+    const eyeGlow = Math.sin(now * 0.006) > -0.7 ? 0.95 : 0.35;
+    gfx.fillStyle(0xff8c1a, eyeGlow);
+    gfx.fillRect(headX - 5, headY - 5, 3, 1.4);
+    gfx.fillRect(headX + 2, headY - 5, 3, 1.4);
+    gfx.fillStyle(0xffe066, eyeGlow);
+    gfx.fillRect(headX - 4, headY - 5, 1.5, 1.4);
+    gfx.fillRect(headX + 2.5, headY - 5, 1.5, 1.4);
+    // Third vertical fissure eye in forehead
+    gfx.fillStyle(0xff47b6, 0.9);
+    gfx.fillRect(headX - 0.7, headY - 9, 1.4, 3);
+
+    // 5. Pinprick slit-eyes opening/closing across the dark shoulders & shroud
+    for (let i = 0; i < 16; i++) {
+      const ea = (Math.PI * 2 * i) / 16 + 0.15;
+      const ex = bx + Math.cos(ea) * (10 + (i % 3) * 4);
+      const ey = shoulderY + 4 + Math.sin(ea) * (6 + (i % 2) * 5);
+      const open = Math.sin(now * 0.004 + i * 2.1);
+      if (open > -0.45) {
+        gfx.fillStyle(i % 3 === 0 ? 0xff8c1a : 0xe9d5ff, 0.85);
+        gfx.fillRect(ex - 1.5, ey, 3, 1);
+      }
+    }
+
+    // Searing cracked glowing orange heart in the center of the gaunt chest
+    const heartPulse = 5.5 + Math.sin(now * 0.008) * 1.4;
+    gfx.fillStyle(0xff6b1a, 0.35);
+    gfx.fillCircle(bx, by - 2, heartPulse + 5);
+    gfx.fillStyle(0xff8c1a, 0.95);
+    gfx.fillCircle(bx, by - 2, heartPulse);
+    gfx.fillStyle(0xffe066, 0.95);
+    gfx.fillCircle(bx, by - 2, heartPulse * 0.45);
+
+    // 5. Enormous Curving Grabbing Tentacle-Arm attack
+    this.nyarArmCooldownMs = Math.max(0, this.nyarArmCooldownMs - delta);
+    if (this.nyarArmState === 'idle' && this.nyarArmCooldownMs <= 0 && this.nyarBeamState === 'idle') {
+      this.nyarArmState = 'extending';
+      this.nyarArmAngle = angle;
+      this.nyarArmLength = 24;
+    } else if (this.nyarArmState === 'extending') {
+      this.nyarArmAngle = Phaser.Math.Angle.RotateTo(this.nyarArmAngle, angle, 0.9 * (delta / 1000));
+      this.nyarArmLength += (e.phase === 2 ? 185 : 150) * (delta / 1000);
+      const tipX = bx + Math.cos(this.nyarArmAngle) * this.nyarArmLength;
+      const tipY = by + Math.sin(this.nyarArmAngle) * this.nyarArmLength;
+      if (
+        !this.playerState.downed &&
+        Phaser.Math.Distance.Between(tipX, tipY, this.playerSprite.x, this.playerSprite.y) < 15
+      ) {
+        this.nyarArmState = 'holding';
+        this.nyarGrabbedMs = 1500;
+        this.damagePlayer(1);
+      } else if (this.nyarArmLength >= this.nyarArmMaxLength) {
+        this.nyarArmState = 'recoiling';
+      }
+    } else if (this.nyarArmState === 'holding') {
+      if (this.nyarGrabbedMs <= 0 || this.playerState.downed) {
+        // Throw the player away
+        const throwA = this.nyarArmAngle;
+        this.nyarThrowVx = Math.cos(throwA) * 230;
+        this.nyarThrowVy = Math.sin(throwA) * 230;
+        this.nyarThrowMs = 360;
+        this.damagePlayer(2);
+        this.cameras.main.shake(180, 0.012);
+        this.nyarArmState = 'recoiling';
+      }
+    } else if (this.nyarArmState === 'recoiling') {
+      this.nyarArmLength -= 220 * (delta / 1000);
+      if (this.nyarArmLength <= 20) {
+        this.nyarArmLength = 0;
+        this.nyarArmState = 'idle';
+        this.nyarArmCooldownMs = e.phase === 2 ? 1750 : 2400;
+      }
+    }
+
+    if (this.nyarArmState !== 'idle' && this.nyarArmLength > 0) {
+      const armSegs = 6;
+      const perpA = this.nyarArmAngle + Math.PI / 2;
+      let prevX = bx;
+      let prevY = by;
+      for (let s = 1; s <= armSegs; s++) {
+        const frac = s / armSegs;
+        const curve = Math.sin(frac * Math.PI + now * 0.01) * 10 * (1 - frac * 0.4);
+        const ax = bx + Math.cos(this.nyarArmAngle) * (this.nyarArmLength * frac) + Math.cos(perpA) * curve;
+        const ay = by + Math.sin(this.nyarArmAngle) * (this.nyarArmLength * frac) + Math.sin(perpA) * curve;
+        const thick = Math.max(4, (1 - frac * 0.5) * 11);
+        gfx.lineStyle(thick + 3, 0x7e22ce, 0.6);
+        gfx.lineBetween(prevX, prevY, ax, ay);
+        gfx.lineStyle(thick, 0x05030a, 0.98);
+        gfx.lineBetween(prevX, prevY, ax, ay);
+        prevX = ax;
+        prevY = ay;
+      }
+      // Grasping claw / tentacle tip
+      gfx.fillStyle(0xff8c1a, 0.9);
+      gfx.fillCircle(prevX, prevY, 6.5);
+      gfx.fillStyle(0x05030a, 1);
+      gfx.fillCircle(prevX, prevY, 3.5);
+    }
+
+    // 4. Sweeping Orange Heart Beam (blocked by the 4 Greek/Roman pillars & deflectable!)
+    this.nyarBeamCooldownMs = Math.max(0, this.nyarBeamCooldownMs - delta);
+    this.nyarBeamHitCooldownMs = Math.max(0, this.nyarBeamHitCooldownMs - delta);
+
+    if (this.nyarBeamState === 'idle' && this.nyarBeamCooldownMs <= 0 && this.nyarArmState === 'idle') {
+      this.nyarBeamState = 'telegraph';
+      this.nyarBeamTimerMs = 580;
+      this.nyarBeamSweepDir = Math.random() < 0.5 ? 1 : -1;
+      this.nyarBeamAngle = angle - this.nyarBeamSweepDir * 0.68;
+    } else if (this.nyarBeamState === 'telegraph') {
+      this.nyarBeamTimerMs -= delta;
+      const warnX = bx + Math.cos(this.nyarBeamAngle) * 260;
+      const warnY = by + Math.sin(this.nyarBeamAngle) * 260;
+      gfx.lineStyle(2, 0xff8c1a, 0.45);
+      gfx.lineBetween(bx, by, warnX, warnY);
+      if (this.nyarBeamTimerMs <= 0) {
+        this.nyarBeamState = 'sweeping';
+        this.nyarBeamTimerMs = 1950;
+      }
+    } else if (this.nyarBeamState === 'sweeping') {
+      this.nyarBeamTimerMs -= delta;
+      this.nyarBeamAngle += this.nyarBeamSweepDir * (e.phase === 2 ? 1.15 : 0.95) * (delta / 1000);
+
+      // Raycast beam against walls and the 4 Greek/Roman pillars
+      const cos = Math.cos(this.nyarBeamAngle);
+      const sin = Math.sin(this.nyarBeamAngle);
+      const maxLen = 320;
+      let endX = bx + cos * maxLen;
+      let endY = by + sin * maxLen;
+      const walls = this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[];
+
+      for (let d = 16; d <= maxLen; d += 4) {
+        const rx = bx + cos * d;
+        const ry = by + sin * d;
+        if (rx < 16 || rx > this.roomWidthPx - 16 || ry < 16 || ry > this.roomHeightPx - 16) {
+          endX = rx;
+          endY = ry;
+          break;
+        }
+        let blocked = false;
+        for (const w of walls) {
+          if (!w.active) continue;
+          const hw = (w.width || 16) * 0.5;
+          const hh = (w.height || 16) * 0.5;
+          if (Math.abs(rx - w.x) < hw && Math.abs(ry - w.y) < hh) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) {
+          endX = rx;
+          endY = ry;
+          break;
+        }
+
+        if (
+          !this.playerState.downed &&
+          this.nyarBeamHitCooldownMs <= 0 &&
+          Phaser.Math.Distance.Between(rx, ry, this.playerSprite.x, this.playerSprite.y) < 9
+        ) {
+          const activeItem = this.playerState.inventory[this.playerState.activeSlot];
+          const canDeflect =
+            StatusEffectManager.has(this.playerState.statusEffects, 'starward') ||
+            activeItem?.id === 'starcleaver' ||
+            activeItem?.id === 'astral_greatsword' ||
+            hasArtifact(this.playerState.inventory, 'disco_prism') !== -1;
+          this.nyarBeamHitCooldownMs = 450;
+          if (canDeflect) {
+            SoundSystem.playSwing();
+            this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x6ef3ff, 8);
+          } else {
+            this.damagePlayer(2);
+          }
+          endX = rx;
+          endY = ry;
+          break;
+        }
+      }
+
+      gfx.lineStyle(8, 0xff8c1a, 0.35);
+      gfx.lineBetween(bx, by, endX, endY);
+      gfx.lineStyle(4, 0xffe066, 0.9);
+      gfx.lineBetween(bx, by, endX, endY);
+      gfx.lineStyle(1.8, 0xffffff, 1);
+      gfx.lineBetween(bx, by, endX, endY);
+      gfx.fillStyle(0xff8c1a, 0.9);
+      gfx.fillCircle(endX, endY, 4.5);
+
+      if (this.nyarBeamTimerMs <= 0) {
+        this.nyarBeamState = 'idle';
+        this.nyarBeamCooldownMs = e.phase === 2 ? 2900 : 3900;
+      }
+    }
+
+    // 6. Tear off dark chunks from its body to create eldritch spawns
+    this.nyarSpawnTimerMs -= delta;
+    if (this.nyarSpawnTimerMs <= 0) {
+      this.nyarSpawnTimerMs = e.phase === 2 ? 7200 : 9600;
+      const minionCount = this.activeEnemies.filter((m) => !m.isBoss && m.sprite.active).length;
+      if (minionCount < 6) {
+        const count = e.phase === 2 ? 3 : 2;
+        const spawnDef = ENEMIES.eldritch_spawn;
+        this.cameras.main.shake(120, 0.006);
+        for (let i = 0; i < count; i++) {
+          const sa = angle + (i - 0.5) * 1.1;
+          const sx = Phaser.Math.Clamp(bx + Math.cos(sa) * 34, 28, this.roomWidthPx - 28);
+          const sy = Phaser.Math.Clamp(by + Math.sin(sa) * 34, 28, this.roomHeightPx - 28);
+          const chunk = this.add.circle(bx, by, 6, 0x05030a, 0.95).setStrokeStyle(1.5, 0x7e22ce, 0.9).setDepth(10);
+          this.tweens.add({
+            targets: chunk,
+            x: sx,
+            y: sy,
+            scale: 0.7,
+            duration: 240,
+            ease: 'Quad.easeOut',
+            onComplete: () => {
+              chunk.destroy();
+              if (!this.currentRoom || this.currentRoom.type !== 'boss') return;
+              this.spawnEnemyEntity(
+                `nyar_sp_${Date.now()}_${i}`,
+                'eldritch_spawn',
+                sx,
+                sy,
+                spawnDef.hp,
+                spawnDef.hp,
+                false,
+                false
+              );
+              this.spawnParticles(sx, sy, 0x7e22ce, 8);
+              this.spawnParticles(sx, sy, 0xff8c1a, 4);
+            },
+          });
+        }
+      }
+    }
+
+    // 7. Rain Common-to-Rare combat items from the sky every 7s (X = player count, max 10 uncollected items on floor)
+    if (this.isRoomAuthority()) {
+      this.nyarRainTimerMs -= delta;
+      if (this.nyarRainTimerMs <= 0) {
+        this.nyarRainTimerMs = 7000;
+        let floorItemCount = this.currentRoom.loot.filter((l) => !l.collected && l.kind === 'item').length;
+        const playerCount = net.mode === 'solo' ? 1 : Math.max(1, net.players.size);
+        const anyLowHp =
+          (!this.playerState.downed && this.playerState.hp < 8) ||
+          Array.from(this.remotePlayers.values()).some((p) => !p.downed && p.hp < 8);
+        const heartdewOnFloor = this.currentRoom.loot.some(
+          (l) => !l.collected && l.kind === 'item' && l.itemId === 'heartdew_potion'
+        );
+        const heartdewHeld =
+          this.playerState.inventory.some((it) => it && it.id === 'heartdew_potion' && it.uses > 0) ||
+          Array.from(this.remotePlayers.values()).some((p) =>
+            p.inventory.some((it) => it && it.id === 'heartdew_potion' && it.uses > 0)
+          );
+        let forceHeartdew = false;
+        if (anyLowHp && !heartdewOnFloor && !heartdewHeld) {
+          if (playerCount >= 2) {
+            forceHeartdew = true;
+          } else {
+            this.nyarRainHeartAlt = !this.nyarRainHeartAlt;
+            forceHeartdew = this.nyarRainHeartAlt;
+          }
+        } else {
+          this.nyarRainHeartAlt = false;
+        }
+
+        const rng = new SeededRandom((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0);
+        for (let i = 0; i < playerCount && floorItemCount < 10; i++) {
+          let tx = Phaser.Math.Between(36, Math.max(40, this.roomWidthPx - 36));
+          let ty = Phaser.Math.Between(36, Math.max(40, this.roomHeightPx - 36));
+          for (let tries = 0; tries < 8; tries++) {
+            const cx = Phaser.Math.Between(36, Math.max(40, this.roomWidthPx - 36));
+            const cy = Phaser.Math.Between(36, Math.max(40, this.roomHeightPx - 36));
+            if (!this.isPointInSolidWall(cx, cy)) {
+              tx = cx;
+              ty = cy;
+              break;
+            }
+          }
+          const itemId = i === 0 && forceHeartdew ? 'heartdew_potion' : rollBossCombatItemId(rng);
+          const uid = `nyar_rain_${Date.now()}_${i}_${Math.floor(Math.random() * 9999)}`;
+          floorItemCount++;
+
+          const shadow = this.add.ellipse(tx, ty + 4, 10, 4, 0x05030a, 0.7).setDepth(5);
+          const falling = this.add
+            .image(tx, ty - 54, this.textures.exists(`item_${itemId}`) ? `item_${itemId}` : 'item_shard')
+            .setDepth(14);
+          this.tweens.add({
+            targets: falling,
+            y: ty,
+            duration: 360,
+            ease: 'Quad.easeIn',
+            onComplete: () => {
+              shadow.destroy();
+              falling.destroy();
+              if (!this.currentRoom || this.currentRoom.type !== 'boss' || this.currentRoom.bossDefeated) return;
+              this.spawnParticles(tx, ty, 0x6ef3ff, 5);
+              this.spawnRoomLoot(uid, 'item', tx, ty, itemId, undefined, undefined, true);
+            },
+          });
+        }
+      }
+    }
+
+    // 8. Eerie 4th-wall-breaking taunts from Nyarlathotep
+    this.nyarDialogueTimerMs -= delta;
+    if (this.nyarDialogueTimerMs <= 0 && this.nyarDialoguePool.length > 0) {
+      this.nyarDialogueTimerMs = 8500;
+      const line = this.nyarDialoguePool[this.nyarDialogueIdx % this.nyarDialoguePool.length];
+      this.nyarDialogueIdx++;
+      this.ui.showToast(line, '#ff47b6');
+    }
+  }
+
   private updateBossAI(e: ActiveEnemy, angle: number, dist: number, delta: number, slowFactor: number): void {
+    if (e.defId === 'nyarlathotep') {
+      this.updateNyarlathotepBoss(e, angle, dist, delta, slowFactor);
+      return;
+    }
     const bossDef = BOSSES[e.defId];
     if (e.hp < e.maxHp * 0.5 && e.phase === 1) {
       e.phase = 2;
-      this.ui.showToast(`${bossDef.name} enters Phase 2!`, '#ff47b6');
       this.spawnParticles(e.sprite.x, e.sprite.y, bossDef.accentColor, 14);
     }
 
@@ -3494,7 +5207,7 @@ export class GameScene extends Phaser.Scene {
       e.sprite.setVelocity(Math.cos(moveAngle) * spd, Math.sin(moveAngle) * spd);
       if (e.aiTimerMs <= 0) {
         e.bossStep = step + 1;
-        e.aiTimerMs = e.phase === 2 ? 1000 : 1350;
+        e.aiTimerMs = e.phase === 2 ? 3250 : 4250;
         if (step % 3 === 0) {
           // Rotating crystal ring
           const bolts = e.phase === 2 ? 10 : 6;
@@ -3508,8 +5221,8 @@ export class GameScene extends Phaser.Scene {
             this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 175, e.damage, 0xffffff, false);
           }
         } else {
-          // 4-way diamond burst aimed at player
-          for (const off of [-0.45, -0.15, 0.15, 0.45]) {
+          // 2-way burst aimed at player
+          for (const off of [-0.2, 0.2]) {
             this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 140, e.damage, bossDef.accentColor, false);
           }
         }
@@ -3522,7 +5235,7 @@ export class GameScene extends Phaser.Scene {
       e.sprite.setVelocity(Math.cos(angle) * spd * 0.55, Math.sin(angle) * spd * 0.55);
       if (e.aiTimerMs <= 0) {
         e.bossStep = step + 1;
-        e.aiTimerMs = e.phase === 2 ? 1300 : 1750;
+        e.aiTimerMs = e.phase === 2 ? 2600 : 3500;
         const minionCount = this.activeEnemies.filter((m) => !m.isBoss && m.hp > 0).length;
         if (step % 3 === 0 && minionCount < 3) {
           const sx = Phaser.Math.Clamp(e.sprite.x + (Math.random() < 0.5 ? -26 : 26), 28, 148);
@@ -3541,36 +5254,123 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    // Floor 4: The Sludge Empress — frequent dash-charges & 5-way acid shotguns
+    // Floor 4: The Sludge Empress — slow crawl, lunging jumps & mini slime swarms (no shooting)
     if (e.defId === 'sludge_empress') {
-      e.sprite.setVelocity(Math.cos(angle) * spd * 0.9, Math.sin(angle) * spd * 0.9);
+      e.sprite.setVelocity(Math.cos(angle) * spd * 0.3, Math.sin(angle) * spd * 0.3);
       if (e.aiTimerMs <= 0) {
         e.bossStep = step + 1;
-        e.aiTimerMs = e.phase === 2 ? 950 : 1300;
-        if (step % 2 === 0) {
-          // Fast dash charge + acid splash
-          e.windupMs = 260;
-          e.sprite.setTint(0xa6ff4d);
-          const splash = e.phase === 2 ? 6 : 4;
-          for (let i = 0; i < splash; i++) {
-            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + (Math.PI * 2 * i) / splash, 105, e.damage, bossDef.accentColor, false);
+        e.aiTimerMs = e.phase === 2 ? 1400 : 1850;
+        const minionCount = this.activeEnemies.filter((m) => !m.isBoss && m.sprite.active).length;
+        if (step % 3 === 1 && minionCount < 5) {
+          const count = e.phase === 2 ? 2 : 1;
+          const addDef = ENEMIES.ooze_ling;
+          for (let i = 0; i < count; i++) {
+            const sa = angle + (i === 0 ? -0.6 : 0.6);
+            const sx = Phaser.Math.Clamp(e.sprite.x + Math.cos(sa) * 22, 26, this.roomWidthPx - 26);
+            const sy = Phaser.Math.Clamp(e.sprite.y + Math.sin(sa) * 22, 26, this.roomHeightPx - 26);
+            this.spawnEnemyEntity(`boss_add_${Date.now()}_${step}_${i}`, 'ooze_ling', sx, sy, addDef.hp, addDef.hp, false, false);
+            this.spawnParticles(sx, sy, bossDef.accentColor, 6);
           }
         } else {
-          // 5-way wide acid shotgun
-          for (const off of [-0.5, -0.25, 0, 0.25, 0.5]) {
-            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 145, e.damage, bossDef.accentColor, false);
-          }
+          // Jump / lunge attack at the player
+          e.windupMs = 260;
+          e.sprite.setTint(0xa6ff4d);
         }
       }
       return;
     }
 
-    // Floor 5: The Clockwork Witch — teleports across quadrants & fires alternating + / x / sweeping arcs
+    // Floor 5: The Clockwork Witch — very slow movement, corner teleports & 45-degree sweeping laser
     if (e.defId === 'clockwork_witch') {
-      e.sprite.setVelocity(Math.cos(angle) * spd * 0.65, Math.sin(angle) * spd * 0.65);
+      if (!this.witchGfx || !this.witchGfx.active) {
+        this.witchGfx = this.add.graphics().setDepth(11);
+      }
+      this.witchGfx.clear();
+      this.witchLaserHitCooldownMs = Math.max(0, this.witchLaserHitCooldownMs - delta);
+
+      const bx = e.sprite.x;
+      const by = e.sprite.y;
+
+      if (this.witchLaserState === 'telegraph') {
+        e.sprite.setVelocity(0, 0);
+        this.witchLaserTimerMs -= delta;
+        const wx = bx + Math.cos(this.witchLaserAngle) * 200;
+        const wy = by + Math.sin(this.witchLaserAngle) * 200;
+        this.witchGfx.lineStyle(1.5, 0xffd275, 0.55);
+        this.witchGfx.lineBetween(bx, by, wx, wy);
+        if (this.witchLaserTimerMs <= 0) {
+          this.witchLaserState = 'sweeping';
+          this.witchLaserTimerMs = e.phase === 2 ? 1900 : 2300;
+        }
+        return;
+      }
+
+      if (this.witchLaserState === 'sweeping') {
+        e.sprite.setVelocity(0, 0);
+        this.witchLaserTimerMs -= delta;
+        const totalDuration = e.phase === 2 ? 1900 : 2300;
+        const angularSpeed = (Math.PI / 4) / (totalDuration / 1000); // 45-degree arc
+        this.witchLaserAngle += this.witchLaserSweepDir * angularSpeed * (delta / 1000);
+
+        const cos = Math.cos(this.witchLaserAngle);
+        const sin = Math.sin(this.witchLaserAngle);
+        let endX = bx + cos * 220;
+        let endY = by + sin * 220;
+        const walls = this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[];
+
+        for (let d = 10; d <= 220; d += 3) {
+          const rx = bx + cos * d;
+          const ry = by + sin * d;
+          if (rx < 16 || rx > this.roomWidthPx - 16 || ry < 16 || ry > this.roomHeightPx - 16) {
+            endX = rx;
+            endY = ry;
+            break;
+          }
+          let hitWall = false;
+          for (const w of walls) {
+            if (!w.active) continue;
+            if (Math.abs(rx - w.x) < 8 && Math.abs(ry - w.y) < 8) {
+              hitWall = true;
+              break;
+            }
+          }
+          if (hitWall) {
+            endX = rx;
+            endY = ry;
+            break;
+          }
+          if (
+            !this.playerState.downed &&
+            this.witchLaserHitCooldownMs <= 0 &&
+            Phaser.Math.Distance.Between(rx, ry, this.playerSprite.x, this.playerSprite.y) < 9
+          ) {
+            this.witchLaserHitCooldownMs = 450;
+            this.damagePlayer(e.damage);
+            endX = rx;
+            endY = ry;
+            break;
+          }
+        }
+
+        this.witchGfx.lineStyle(6, 0xffd275, 0.35);
+        this.witchGfx.lineBetween(bx, by, endX, endY);
+        this.witchGfx.lineStyle(3, 0xffe066, 0.9);
+        this.witchGfx.lineBetween(bx, by, endX, endY);
+        this.witchGfx.lineStyle(1.3, 0xffffff, 1);
+        this.witchGfx.lineBetween(bx, by, endX, endY);
+        this.witchGfx.fillStyle(0xffe066, 0.9);
+        this.witchGfx.fillCircle(endX, endY, 3);
+
+        if (this.witchLaserTimerMs <= 0) {
+          this.witchLaserState = 'idle';
+          e.aiTimerMs = e.phase === 2 ? 1500 : 2100;
+        }
+        return;
+      }
+
+      e.sprite.setVelocity(Math.cos(angle) * spd * 0.22, Math.sin(angle) * spd * 0.22);
       if (e.aiTimerMs <= 0) {
         e.bossStep = step + 1;
-        e.aiTimerMs = e.phase === 2 ? 1050 : 1400;
         if (step % 3 === 0) {
           // Blink to another corner away from the player
           this.spawnParticles(e.sprite.x, e.sprite.y, bossDef.accentColor, 10);
@@ -3578,58 +5378,153 @@ export class GameScene extends Phaser.Scene {
           const ny = this.playerSprite.y < 88 ? Phaser.Math.Between(108, 144) : Phaser.Math.Between(32, 68);
           e.sprite.setPosition(nx, ny);
           this.spawnParticles(nx, ny, bossDef.accentColor, 10);
-          const sweepAngle = Phaser.Math.Angle.Between(nx, ny, this.playerSprite.x, this.playerSprite.y);
-          for (const off of [-0.4, -0.2, 0, 0.2, 0.4]) {
-            this.createEnemyProjectile(nx, ny, sweepAngle + off, 150, e.damage, bossDef.accentColor, false);
-          }
-        } else {
-          // Alternating + and x clockwork cross volleys
-          const base = (step % 2) * (Math.PI / 4);
-          const spokes = e.phase === 2 ? 8 : 4;
-          for (let i = 0; i < spokes; i++) {
-            this.createEnemyProjectile(e.sprite.x, e.sprite.y, base + (Math.PI * 2 * i) / spokes, 135, e.damage, bossDef.accentColor, false);
-          }
         }
+        const aimToPlayer = Phaser.Math.Angle.Between(e.sprite.x, e.sprite.y, this.playerSprite.x, this.playerSprite.y);
+        this.witchLaserSweepDir = Math.random() < 0.5 ? 1 : -1;
+        this.witchLaserAngle = aimToPlayer - this.witchLaserSweepDir * (Math.PI / 8); // Start -22.5 deg for a 45-deg sweep
+        this.witchLaserState = 'telegraph';
+        this.witchLaserTimerMs = 450;
       }
       return;
     }
 
-    // Floor 6: The Withered Everheart — burning spiral barrages, shadow summons, teleports & dashes
-    e.sprite.setVelocity(Math.cos(angle) * spd, Math.sin(angle) * spd);
-    if (e.aiTimerMs <= 0) {
-      e.bossStep = step + 1;
-      e.aiTimerMs = e.phase === 2 ? 900 : 1250;
-      const mode = step % 4;
-      if (mode === 0) {
-        const bolts = e.phase === 2 ? 12 : 8;
-        const rot = step * 0.35;
-        for (let i = 0; i < bolts; i++) {
-          this.createEnemyProjectile(e.sprite.x, e.sprite.y, rot + (Math.PI * 2 * i) / bolts, 125, e.damage, bossDef.accentColor, true);
+    // Floor 6: The Withered Everheart — slow pulsing heart with thorn eruptions, heartbeat shockwaves & life-drain tether
+    if (e.defId === 'withered_everheart') {
+      if (!this.everheartGfx || !this.everheartGfx.active) {
+        this.everheartGfx = this.add.graphics().setDepth(8);
+      }
+      const gfx = this.everheartGfx;
+      gfx.clear();
+
+      const bx = e.sprite.x;
+      const by = e.sprite.y;
+      e.sprite.setVelocity(Math.cos(angle) * spd * 0.65, Math.sin(angle) * spd * 0.65);
+
+      // Update & draw thorn eruptions underfoot
+      for (let i = this.everheartThorns.length - 1; i >= 0; i--) {
+        const th = this.everheartThorns[i];
+        th.timerMs -= delta;
+        if (!th.erupted) {
+          gfx.lineStyle(1.5, 0xff47b6, 0.75);
+          gfx.strokeCircle(th.x, th.y, 14);
+          gfx.fillStyle(0xff47b6, 0.18);
+          gfx.fillCircle(th.x, th.y, 14 * (1 - Math.max(0, th.timerMs) / 700));
+          if (th.timerMs <= 0) {
+            th.erupted = true;
+            th.timerMs = 450;
+            this.spawnParticles(th.x, th.y, 0xff47b6, 8);
+            SoundSystem.playHit();
+          }
+        } else {
+          const fade = Math.max(0, th.timerMs / 450);
+          gfx.fillStyle(0x4c1d95, 0.75 * fade);
+          gfx.fillCircle(th.x, th.y, 14);
+          gfx.lineStyle(2, 0xff47b6, 0.9 * fade);
+          gfx.strokeCircle(th.x, th.y, 14);
+          if (!th.hit && !this.playerState.downed && Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, th.x, th.y) <= 14) {
+            th.hit = true;
+            this.damagePlayer(e.damage);
+          }
+          if (th.timerMs <= 0) {
+            this.everheartThorns.splice(i, 1);
+          }
         }
-      } else if (mode === 1) {
-        e.windupMs = 300;
-        e.sprite.setTint(0xff47b6);
-      } else if (mode === 2) {
-        const minionCount = this.activeEnemies.filter((m) => !m.isBoss && m.hp > 0).length;
-        if (e.phase === 2 && minionCount < 2) {
-          const sx = Phaser.Math.Clamp(e.sprite.x + (Math.random() < 0.5 ? -24 : 24), 28, 148);
-          const sy = Phaser.Math.Clamp(e.sprite.y + (Math.random() < 0.5 ? -20 : 20), 28, 148);
-          const addDef = ENEMIES.shadow_mote;
-          this.spawnEnemyEntity(`boss_add_${Date.now()}_${step}`, 'shadow_mote', sx, sy, addDef.hp, addDef.hp, false, false);
+      }
+
+      // Update & draw expanding heartbeat shockwave rings
+      for (let i = this.everheartPulses.length - 1; i >= 0; i--) {
+        const pulse = this.everheartPulses[i];
+        pulse.radius += (e.phase === 2 ? 86 : 72) * (delta / 1000);
+        const alpha = Math.max(0, 1 - pulse.radius / pulse.maxRadius);
+        gfx.lineStyle(3, 0xff47b6, alpha * 0.85);
+        gfx.strokeCircle(pulse.x, pulse.y, pulse.radius);
+        gfx.lineStyle(1.2, 0xffffff, alpha * 0.7);
+        gfx.strokeCircle(pulse.x, pulse.y, pulse.radius);
+
+        if (!pulse.hit && !this.playerState.downed && this.dodgeMs <= 0) {
+          const pd = Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, pulse.x, pulse.y);
+          if (Math.abs(pd - pulse.radius) < 6) {
+            pulse.hit = true;
+            this.damagePlayer(Math.max(1, e.damage - 1));
+          }
         }
-        for (const off of [-0.45, -0.22, 0, 0.22, 0.45]) {
-          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 155, e.damage, bossDef.accentColor, true);
+        if (pulse.radius >= pulse.maxRadius) {
+          this.everheartPulses.splice(i, 1);
         }
-      } else {
-        if (e.phase === 2) {
-          this.spawnParticles(e.sprite.x, e.sprite.y, bossDef.accentColor, 10);
-          const nx = this.playerSprite.x < 88 ? Phaser.Math.Between(104, 142) : Phaser.Math.Between(34, 72);
-          const ny = this.playerSprite.y < 88 ? Phaser.Math.Between(104, 142) : Phaser.Math.Between(34, 72);
-          e.sprite.setPosition(nx, ny);
-          this.spawnParticles(nx, ny, bossDef.accentColor, 10);
+      }
+
+      // Update & draw life-drain tether (breakable by moving > 82px away)
+      if (this.everheartTetherMs > 0) {
+        this.everheartTetherMs -= delta;
+        const tetherDist = Phaser.Math.Distance.Between(bx, by, this.playerSprite.x, this.playerSprite.y);
+        if (this.playerState.downed || tetherDist > 82) {
+          this.everheartTetherMs = 0;
+          if (tetherDist > 82) {
+            this.ui.showToast('Snapped the Everheart tether!', '#66ffd9');
+          }
+        } else {
+          gfx.lineStyle(3, 0x7e22ce, 0.55);
+          gfx.lineBetween(bx, by, this.playerSprite.x, this.playerSprite.y);
+          gfx.lineStyle(1.5, 0xff47b6, 0.95);
+          gfx.lineBetween(bx, by, this.playerSprite.x, this.playerSprite.y);
+          if (this.everheartTetherMs <= 0) {
+            this.damagePlayer(2);
+            e.hp = Math.min(e.maxHp, e.hp + 4);
+            this.spawnParticles(bx, by, 0xff47b6, 10);
+            this.ui.showToast('Everheart drained your vitality!', '#ff47b6');
+          }
         }
-        for (const off of [-0.2, 0, 0.2]) {
-          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 165, e.damage, 0xffffff, true);
+      }
+
+      if (e.aiTimerMs <= 0) {
+        e.bossStep = step + 1;
+        e.aiTimerMs = e.phase === 2 ? 5000 : 5800;
+        const mode = step % 3;
+        if (mode === 0) {
+          // Corrupted root eruptions beneath the player + flanking spots
+          this.everheartThorns.push({
+            x: Phaser.Math.Clamp(this.playerSprite.x, 26, 150),
+            y: Phaser.Math.Clamp(this.playerSprite.y, 26, 150),
+            timerMs: 850,
+            erupted: false,
+            hit: false,
+          });
+          const extra = e.phase === 2 ? 3 : 2;
+          for (let k = 0; k < extra; k++) {
+            const ta = (Math.PI * 2 * k) / extra + Math.random() * 0.8;
+            this.everheartThorns.push({
+              x: Phaser.Math.Clamp(this.playerSprite.x + Math.cos(ta) * 34, 26, 150),
+              y: Phaser.Math.Clamp(this.playerSprite.y + Math.sin(ta) * 34, 26, 150),
+              timerMs: 850,
+              erupted: false,
+              hit: false,
+            });
+          }
+        } else if (mode === 1) {
+          // Lub-dub heartbeat shockwave pulse (2 spaced rings, dodgeable or outrangeable)
+          this.everheartPulses.push({ x: bx, y: by, radius: 14, maxRadius: 96, hit: false });
+          this.time.delayedCall(520, () => {
+            if (e.sprite.active && this.currentRoom.type === 'boss') {
+              this.everheartPulses.push({ x: e.sprite.x, y: e.sprite.y, radius: 14, maxRadius: 96, hit: false });
+            }
+          });
+        } else {
+          // Withering life-drain tether (if in range) or shadow mote summon
+          if (dist <= 76 && !this.playerState.downed) {
+            this.everheartTetherMs = 1800;
+            this.ui.showToast('Everheart tether! Move away to break!', '#ff47b6');
+          } else {
+            const minionCount = this.activeEnemies.filter((m) => !m.isBoss && m.sprite.active).length;
+            if (minionCount < 2) {
+              const sx = Phaser.Math.Clamp(bx + (Math.random() < 0.5 ? -24 : 24), 28, 148);
+              const sy = Phaser.Math.Clamp(by + (Math.random() < 0.5 ? -20 : 20), 28, 148);
+              const addDef = ENEMIES.shadow_mote;
+              this.spawnEnemyEntity(`boss_add_${Date.now()}_${step}`, 'shadow_mote', sx, sy, addDef.hp, addDef.hp, false, false);
+              this.spawnParticles(sx, sy, bossDef.accentColor, 8);
+            } else {
+              this.everheartPulses.push({ x: bx, y: by, radius: 14, maxRadius: 96, hit: false });
+            }
+          }
         }
       }
     }
@@ -3707,32 +5602,36 @@ export class GameScene extends Phaser.Scene {
 
       // Wall & solid block bounce or destroy
       let hitSolid = false;
-      if (p.sprite.x < 16 || p.sprite.x > 160 || p.sprite.y < 16 || p.sprite.y > 160) {
+      const maxBoundX = Math.max(16, this.roomWidthPx - 16);
+      const maxBoundY = Math.max(16, this.roomHeightPx - 16);
+      if (p.sprite.x < 16 || p.sprite.x > maxBoundX || p.sprite.y < 16 || p.sprite.y > maxBoundY) {
         if (p.bouncesLeft > 0) {
           p.bouncesLeft--;
-          if (p.sprite.x < 16 || p.sprite.x > 160) p.vx *= -1;
-          if (p.sprite.y < 16 || p.sprite.y > 160) p.vy *= -1;
+          if (p.sprite.x < 16 || p.sprite.x > maxBoundX) p.vx *= -1;
+          if (p.sprite.y < 16 || p.sprite.y > maxBoundY) p.vy *= -1;
         } else {
           hitSolid = true;
         }
       } else if (!p.boomerang) {
         for (const obj of this.wallGroup.getChildren()) {
           const w = obj as Phaser.GameObjects.Rectangle;
+          const hw = (w.width || 16) * 0.5 + 1;
+          const hh = (w.height || 16) * 0.5 + 1;
           const dx = p.sprite.x - w.x;
           const dy = p.sprite.y - w.y;
-          if (Math.abs(dx) < 9 && Math.abs(dy) < 9) {
+          if (Math.abs(dx) < hw && Math.abs(dy) < hh) {
             if (p.bouncesLeft > 0) {
               p.bouncesLeft--;
               if (Math.abs(dx) > Math.abs(dy)) {
                 p.vx *= -1;
-                p.sprite.x = w.x + Math.sign(dx || 1) * 9.5;
+                p.sprite.x = w.x + Math.sign(dx || 1) * (hw + 0.5);
               } else {
                 p.vy *= -1;
-                p.sprite.y = w.y + Math.sign(dy || 1) * 9.5;
+                p.sprite.y = w.y + Math.sign(dy || 1) * (hh + 0.5);
               }
             } else {
               hitSolid = true;
-              if (!p.fromPlayer && p.shooterUid && w.x >= 16 && w.x <= 160 && w.y >= 16 && w.y <= 160) {
+              if (!p.fromPlayer && p.shooterUid && w.x >= 16 && w.x <= maxBoundX && w.y >= 16 && w.y <= maxBoundY) {
                 const shooter = this.activeEnemies.find((e) => e.uid === p.shooterUid && e.sprite.active);
                 if (shooter && !shooter.isBoss) {
                   shooter.blockedShots = (shooter.blockedShots ?? 0) + 1;
@@ -3805,6 +5704,9 @@ export class GameScene extends Phaser.Scene {
               e.burnTickMs = 0;
               this.spawnParticles(e.sprite.x, e.sprite.y, 0xff6b35, 5);
             }
+            if (p.slimeSplatter) {
+              this.spawnSlimeSplatter(e.sprite.x, e.sprite.y);
+            }
             let finalDmg = p.damage;
             if (p.cometBoost && p.startX !== undefined && p.startY !== undefined) {
               const traveled = Phaser.Math.Distance.Between(p.startX, p.startY, p.sprite.x, p.sprite.y);
@@ -3816,6 +5718,13 @@ export class GameScene extends Phaser.Scene {
               this.projectiles.splice(i, 1);
               break;
             }
+          }
+        }
+        if (p.sprite.active && this.hitNyarlathotepArm(p.sprite.x, p.sprite.y, 10, p.damage)) {
+          if (!p.boomerang) {
+            p.sprite.destroy();
+            this.projectiles.splice(i, 1);
+            continue;
           }
         }
       } else if (!p.fromPlayer) {
@@ -3841,6 +5750,53 @@ export class GameScene extends Phaser.Scene {
           this.damagePlayer(p.damage);
           p.sprite.destroy();
           this.projectiles.splice(i, 1);
+        } else {
+          for (const sk of [...this.summonedSkeletons]) {
+            if (!sk.sprite.active) continue;
+            if (Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, sk.sprite.x, sk.sprite.y) < 9) {
+              this.damageSkeleton(sk, p.damage);
+              p.sprite.destroy();
+              this.projectiles.splice(i, 1);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private spawnSlimeSplatter(x: number, y: number): void {
+    const sx = Phaser.Math.Clamp(x, 24, Math.max(24, this.roomWidthPx - 24));
+    const sy = Phaser.Math.Clamp(y, 24, Math.max(24, this.roomHeightPx - 24));
+    const gfx = this.add.graphics().setDepth(2);
+    gfx.fillStyle(0x65a30d, 0.72);
+    gfx.fillCircle(sx, sy, 13);
+    gfx.fillCircle(sx - 7, sy + 4, 7);
+    gfx.fillCircle(sx + 8, sy - 3, 6);
+    gfx.fillCircle(sx + 3, sy + 8, 5);
+    gfx.fillStyle(0xa6ff4d, 0.55);
+    gfx.fillCircle(sx - 3, sy - 3, 6);
+    gfx.fillCircle(sx + 5, sy + 2, 4);
+    this.roomGroup.add(gfx);
+    this.slimeSplatters.push({ x: sx, y: sy, radius: 17, gfx, lifeMs: 5000 });
+  }
+
+  private updateSlimeSplatters(delta: number): void {
+    for (let i = this.slimeSplatters.length - 1; i >= 0; i--) {
+      const s = this.slimeSplatters[i];
+      s.lifeMs -= delta;
+      if (s.lifeMs <= 0) {
+        s.gfx.destroy();
+        this.slimeSplatters.splice(i, 1);
+        continue;
+      }
+      if (s.lifeMs < 1000) {
+        s.gfx.setAlpha(s.lifeMs / 1000);
+      }
+      for (const e of this.activeEnemies) {
+        if (!e.sprite.active) continue;
+        if (Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, s.x, s.y) <= s.radius) {
+          e.slowedMs = Math.max(e.slowedMs, 600);
         }
       }
     }
@@ -3872,7 +5828,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     for (const s of this.spikeTraps) {
-      const onGrate = !this.playerState.downed && Phaser.Math.Distance.Between(px, py, s.x, s.y) < 10;
+      const onGrate = !this.playerState.downed && this.dodgeMs <= 0 && Phaser.Math.Distance.Between(px, py, s.x, s.y) < 10;
       if (s.state === 'idle') {
         if (onGrate) {
           s.state = 'armed';
@@ -4199,6 +6155,12 @@ export class GameScene extends Phaser.Scene {
 
     for (const d of this.doorZones) {
       if (Phaser.Geom.Rectangle.Contains(d.rect, px, py)) {
+        if (d.targetGx !== undefined && d.targetGy !== undefined && d.spawnX !== undefined && d.spawnY !== undefined) {
+          if (this.floor.rooms[d.targetGy]?.[d.targetGx]) {
+            this.loadRoom(d.targetGx, d.targetGy, d.spawnX, d.spawnY);
+          }
+          return;
+        }
         let nx = this.currentRoom.gx;
         let ny = this.currentRoom.gy;
         let sx = px;
@@ -4230,15 +6192,18 @@ export class GameScene extends Phaser.Scene {
 
   private updateFireflies(delta: number): void {
     const dt = delta / 1000;
+    const maxX = Math.max(24, this.roomWidthPx - 20);
+    const maxY = Math.max(24, this.roomHeightPx - 20);
     for (const f of this.fireflies) {
       f.phase += dt * 3;
       f.sprite.x += f.vx * dt;
       f.sprite.y += f.vy * dt;
-      f.sprite.setAlpha(0.3 + 0.4 * Math.abs(Math.sin(f.phase)));
-      if (f.sprite.x < 20) f.sprite.x = 156;
-      if (f.sprite.x > 156) f.sprite.x = 20;
-      if (f.sprite.y < 20) f.sprite.y = 156;
-      if (f.sprite.y > 156) f.sprite.y = 20;
+      const baseAlpha = this.levelIndex === 6 ? 0.55 : 0.3;
+      f.sprite.setAlpha(baseAlpha + 0.4 * Math.abs(Math.sin(f.phase)));
+      if (f.sprite.x < 20) f.sprite.x = maxX;
+      if (f.sprite.x > maxX) f.sprite.x = 20;
+      if (f.sprite.y < 20) f.sprite.y = maxY;
+      if (f.sprite.y > maxY) f.sprite.y = 20;
     }
   }
 
@@ -4478,8 +6443,19 @@ export class GameScene extends Phaser.Scene {
       promptText = '[E] Drink from Healing Shrine';
     } else if (this.specialObjs.altar && !this.currentRoom.eventUsed && Phaser.Math.Distance.Between(px, py, 88, 84) < 32) {
       promptText = '[E] Inspect Altar';
-    } else if (this.specialObjs.portal && Phaser.Math.Distance.Between(px, py, 88, 88) < 32) {
+    } else if (
+      this.specialObjs.portal &&
+      Phaser.Math.Distance.Between(px, py, this.specialObjs.portal.x, this.specialObjs.portal.y) < 32
+    ) {
       promptText = '[E] Enter Portal';
+    } else if (
+      this.currentRoom.pillars &&
+      this.pillarObjs.some(
+        (po) => !this.currentRoom.pillars![po.idx]?.used && Phaser.Math.Distance.Between(px, py, po.x, po.y) < 32
+      )
+    ) {
+      promptText =
+        net.mode === 'solo' ? '[E] Pillar Blessing (+2 Hearts)' : '[E] Pillar Revive';
     } else if (
       this.currentRoom.type === 'puzzle' &&
       !this.currentRoom.puzzleSolved &&

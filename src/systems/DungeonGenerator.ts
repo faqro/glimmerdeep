@@ -23,6 +23,10 @@ export class DungeonGenerator {
     const modifier: LevelModifierId =
       levelIndex === 0 && rng.chance(0.5) ? 'none' : rng.pick(modPool);
 
+    if (levelIndex === 6) {
+      return this.generateLevel7Floor(levelIndex, floorSeed, playerCount, rng, biome);
+    }
+
     const grid: (RoomData | null)[][] = Array.from({ length: 6 }, () =>
       Array.from({ length: 6 }, () => null)
     );
@@ -325,11 +329,17 @@ export class DungeonGenerator {
 
     if (room.type === 'treasure' || room.type === 'secret') {
       room.cleared = true;
+      const secretWeapons = WEAPON_IDS.filter((id) => WEAPONS[id].rarity === 'secret');
+      const secretChestItemId =
+        room.type === 'secret' && secretWeapons.length > 0 && rng.chance(1 / 7)
+          ? rng.pick(secretWeapons)
+          : undefined;
       room.loot.push({
         uid: `chest_${room.gx}_${room.gy}`,
         kind: 'chest',
         x: 88,
         y: 88,
+        itemId: secretChestItemId,
         collected: false,
       });
       if (room.type === 'secret') {
@@ -356,9 +366,15 @@ export class DungeonGenerator {
     if (room.type === 'merchant') {
       room.cleared = true;
       const stock: ShopStockItem[] = [];
-      const normalWeapons = WEAPON_IDS.filter((id) => id !== 'moonblade' && !WEAPONS[id].merchantOnly);
-      const normalConsumables = CONSUMABLE_IDS.filter((id) => !CONSUMABLES[id].merchantOnly);
-      const normalArtifacts = ARTIFACT_IDS.filter((id) => !ARTIFACTS[id].merchantOnly);
+      const normalWeapons = WEAPON_IDS.filter(
+        (id) => id !== 'moonblade' && !WEAPONS[id].merchantOnly && WEAPONS[id].rarity !== 'secret'
+      );
+      const normalConsumables = CONSUMABLE_IDS.filter(
+        (id) => !CONSUMABLES[id].merchantOnly && CONSUMABLES[id].rarity !== 'secret'
+      );
+      const normalArtifacts = ARTIFACT_IDS.filter(
+        (id) => !ARTIFACTS[id].merchantOnly && ARTIFACTS[id].rarity !== 'secret'
+      );
 
       const wId = rng.pick(normalWeapons);
       const cId = rng.pick(normalConsumables);
@@ -656,5 +672,201 @@ export class DungeonGenerator {
       room.bossDefeated = false;
       return;
     }
+  }
+
+  private static generateLevel7Floor(
+    levelIndex: number,
+    floorSeed: number,
+    playerCount: number,
+    rng: SeededRandom,
+    biome: (typeof BIOMES)[number]
+  ): GeneratedFloor {
+    const grid: (RoomData | null)[][] = Array.from({ length: 6 }, () =>
+      Array.from({ length: 6 }, () => null)
+    );
+
+    const makeRoom = (gx: number, gy: number, type: RoomType): RoomData => {
+      const roomSeed = deriveSeed(floorSeed, gx + 1, gy + 1);
+      const room: RoomData = {
+        gx,
+        gy,
+        type,
+        seed: roomSeed,
+        templateId: (gx + gy) % 6,
+        connections: { north: false, south: false, east: false, west: false },
+        visited: false,
+        cleared: false,
+        doorsLocked: false,
+        secretRevealed: false,
+        enemies: [],
+        loot: [],
+      };
+      grid[gy][gx] = room;
+      return room;
+    };
+
+    const doorTxs = [7, 14, 21, 28];
+    const hallway = makeRoom(0, 1, 'start');
+    hallway.cleared = true;
+    hallway.visited = true;
+    hallway.widthTiles = 37;
+    hallway.heightTiles = 9;
+    hallway.connections.east = true;
+    hallway.hallwayDoors = [];
+
+    const bonusKinds = ['chest', 'chest', 'heart', 'heart', 'shards', 'shards', 'none', 'none'];
+    rng.shuffle(bonusKinds);
+    let bonusIdx = 0;
+
+    for (let i = 0; i < 4; i++) {
+      const tx = doorTxs[i];
+      const doorCenterX = tx * 16 + 8;
+
+      // Top room (gx: i+1, gy: 0)
+      const topRoom = makeRoom(i + 1, 0, i % 2 === 1 ? 'hazard' : i === 3 ? 'elite' : 'combat');
+      topRoom.connections.south = true;
+      topRoom.hallwayDoors = [
+        {
+          dir: 'south',
+          tx: 5,
+          ty: 10,
+          targetGx: 0,
+          targetGy: 1,
+          spawnX: doorCenterX,
+          spawnY: 26,
+          returnX: 88,
+          returnY: 150,
+        },
+      ];
+      this.populateRoom(topRoom, biome, levelIndex, rng, playerCount);
+      if (topRoom.enemies.length === 0) {
+        topRoom.enemies.push({
+          uid: `l7_top_${i}_0`,
+          defId: rng.pick(biome.enemyPool),
+          x: 88,
+          y: 72,
+          hp: 10,
+          maxHp: 10,
+          isElite: false,
+          alive: true,
+        });
+      }
+      const topBonus = bonusKinds[bonusIdx++];
+      if (topBonus === 'chest') {
+        topRoom.loot.push({ uid: `l7_ch_${i}_0`, kind: 'chest', x: 88, y: 52, collected: false });
+      } else if (topBonus === 'heart') {
+        topRoom.loot.push({ uid: `l7_ht_${i}_0`, kind: 'heart', x: 88, y: 52, collected: false });
+      } else if (topBonus === 'shards') {
+        topRoom.loot.push({ uid: `l7_sh_${i}_0`, kind: 'shard', x: 88, y: 52, amount: 4, collected: false });
+      }
+
+      hallway.hallwayDoors.push({
+        dir: 'north',
+        tx,
+        ty: 0,
+        targetGx: i + 1,
+        targetGy: 0,
+        spawnX: 88,
+        spawnY: 150,
+        returnX: doorCenterX,
+        returnY: 26,
+      });
+
+      // Bottom room (gx: i+1, gy: 2)
+      const botRoom = makeRoom(i + 1, 2, i % 2 === 0 ? 'hazard' : i === 2 ? 'elite' : 'combat');
+      botRoom.connections.north = true;
+      botRoom.hallwayDoors = [
+        {
+          dir: 'north',
+          tx: 5,
+          ty: 0,
+          targetGx: 0,
+          targetGy: 1,
+          spawnX: doorCenterX,
+          spawnY: 118,
+          returnX: 88,
+          returnY: 26,
+        },
+      ];
+      this.populateRoom(botRoom, biome, levelIndex, rng, playerCount);
+      if (botRoom.enemies.length === 0) {
+        botRoom.enemies.push({
+          uid: `l7_bot_${i}_0`,
+          defId: rng.pick(biome.enemyPool),
+          x: 88,
+          y: 104,
+          hp: 10,
+          maxHp: 10,
+          isElite: false,
+          alive: true,
+        });
+      }
+      const botBonus = bonusKinds[bonusIdx++];
+      if (botBonus === 'chest') {
+        botRoom.loot.push({ uid: `l7_ch_${i}_2`, kind: 'chest', x: 88, y: 124, collected: false });
+      } else if (botBonus === 'heart') {
+        botRoom.loot.push({ uid: `l7_ht_${i}_2`, kind: 'heart', x: 88, y: 124, collected: false });
+      } else if (botBonus === 'shards') {
+        botRoom.loot.push({ uid: `l7_sh_${i}_2`, kind: 'shard', x: 88, y: 124, amount: 4, collected: false });
+      }
+
+      hallway.hallwayDoors.push({
+        dir: 'south',
+        tx,
+        ty: 8,
+        targetGx: i + 1,
+        targetGy: 2,
+        spawnX: 88,
+        spawnY: 26,
+        returnX: doorCenterX,
+        returnY: 118,
+      });
+    }
+
+    // Giant scrollable Boss Room (gx: 5, gy: 1), 23x23 tiles (368x368 px)
+    const bossRoom = makeRoom(5, 1, 'boss');
+    bossRoom.widthTiles = 23;
+    bossRoom.heightTiles = 23;
+    bossRoom.connections.west = true;
+    bossRoom.bossDefeated = false;
+    bossRoom.pillars = [
+      { tx: 6, ty: 6 },
+      { tx: 15, ty: 6 },
+      { tx: 6, ty: 15 },
+      { tx: 15, ty: 15 },
+    ];
+    bossRoom.hallwayDoors = [
+      {
+        dir: 'west',
+        tx: 0,
+        ty: 11,
+        targetGx: 0,
+        targetGy: 1,
+        spawnX: 562,
+        spawnY: 72,
+        returnX: 28,
+        returnY: 184,
+      },
+    ];
+
+    hallway.hallwayDoors.push({
+      dir: 'east',
+      tx: 36,
+      ty: 4,
+      targetGx: 5,
+      targetGy: 1,
+      spawnX: 28,
+      spawnY: 184,
+      returnX: 562,
+      returnY: 72,
+      isBossGate: true,
+    });
+
+    return {
+      levelIndex,
+      seed: floorSeed,
+      modifier: 'none',
+      rooms: grid as RoomData[][],
+    };
   }
 }
