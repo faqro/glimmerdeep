@@ -22,6 +22,8 @@ export class LobbyScene extends Phaser.Scene {
   private onMainAction?: () => void;
   private mobileFocusIndex = 2; // 0: COPY, 1: BACK, 2: START/READY
   private connectTimedOut = false;
+  private triedAlternateBackend = false;
+  private switchNetBtn?: Phaser.GameObjects.BitmapText;
   private unsubNav?: () => void;
   private unsubBtn?: () => void;
 
@@ -33,6 +35,8 @@ export class LobbyScene extends Phaser.Scene {
     this.isReady = net.mode === 'host';
     this.mobileFocusIndex = 2;
     this.connectTimedOut = false;
+    this.triedAlternateBackend = false;
+    this.switchNetBtn = undefined;
     this.add.rectangle(180, 135, 360, 270, 0x0e0c21);
 
     addPixelText(this, 180, 24, 'CO-OP LOBBY', 16, 0xf49ac1, 0.5, 0.5);
@@ -55,7 +59,7 @@ export class LobbyScene extends Phaser.Scene {
 
     this.add.image(180, 142, 'ui_panel').setDisplaySize(308, 130);
 
-    this.statusText = addPixelText(this, 180, 218, '', 8, 0xb8a1ff, 0.5, 0.5, 320);
+    this.statusText = addPixelText(this, 180, 214, '', 8, 0xb8a1ff, 0.5, 0.5, 320);
 
     this.rebuildActionButton();
 
@@ -106,7 +110,30 @@ export class LobbyScene extends Phaser.Scene {
     this.refreshPlayers();
 
     if (net.mode === 'client') {
-      this.time.delayedCall(8000, () => {
+      this.switchNetBtn = addPixelText(this, 180, 226, '', 8, 0x66ffd9, 0.5, 0.5);
+      if (!isMobileMode()) {
+        this.switchNetBtn.setInteractive({ useHandCursor: true }).on('pointerdown', () => {
+          const next = net.signalingBackend === 'nostr' ? 'mqtt' : 'nostr';
+          this.connectTimedOut = false;
+          net.reconnectClientWithBackend(next);
+          net.broadcastLobbySelf(this.isReady);
+          SoundSystem.playPickup();
+          this.refreshPlayers();
+        });
+      }
+
+      this.time.delayedCall(5000, () => {
+        if (!this.scene.isActive('LobbyScene')) return;
+        if (net.mode === 'client' && net.players.size <= 1 && !this.triedAlternateBackend) {
+          this.triedAlternateBackend = true;
+          const alt = net.signalingBackend === 'nostr' ? 'mqtt' : 'nostr';
+          net.reconnectClientWithBackend(alt);
+          net.broadcastLobbySelf(this.isReady);
+          this.refreshPlayers();
+        }
+      });
+
+      this.time.delayedCall(12000, () => {
         if (!this.scene.isActive('LobbyScene')) return;
         if (net.mode === 'client' && net.players.size <= 1) {
           this.connectTimedOut = true;
@@ -224,6 +251,15 @@ export class LobbyScene extends Phaser.Scene {
     });
 
     const allReady = list.length > 0 && list.every((p) => p.ready);
+    const altBackend = net.signalingBackend === 'nostr' ? 'MQTT' : 'NOSTR';
+    if (this.switchNetBtn) {
+      const showSwitch = net.mode === 'client' && list.length <= 1;
+      this.switchNetBtn.setVisible(showSwitch);
+      if (showSwitch) {
+        this.switchNetBtn.setText(`[TRY ${altBackend}]`);
+      }
+    }
+
     if (net.mode === 'host') {
       this.statusText
         .setText(allReady ? `${list.length}/4 Adventurers Ready` : 'Waiting for all players to ready up...')
@@ -235,7 +271,11 @@ export class LobbyScene extends Phaser.Scene {
       this.statusText.setText(net.connectionError).setTint(0xff5d8f);
     } else if (list.length <= 1) {
       this.statusText
-        .setText(this.connectTimedOut ? 'No host found yet - check code & network' : 'Connecting to party...')
+        .setText(
+          this.connectTimedOut
+            ? 'No host found - check code/NET'
+            : `Connecting to party (${net.signalingBackend.toUpperCase()})...`
+        )
         .setTint(this.connectTimedOut ? 0xffe066 : 0xb8a1ff);
     } else {
       this.statusText.setText(`Connected (${list.length}/4) - Waiting for host...`).setTint(0xb8a1ff);

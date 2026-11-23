@@ -7,15 +7,15 @@ export type SignalingBackend = 'nostr' | 'mqtt';
 
 const APP_ID = 'glimmerdeep-roguelike-v1';
 const SIGNALING_STORAGE_KEY = 'glimmerdeep_signaling';
+const PLAYER_UID_STORAGE_KEY = 'glimmerdeep_player_uid';
 const HEARTBEAT_INTERVAL_MS = 3000;
 const PEER_STALE_TIMEOUT_MS = 12000;
 
 const MQTT_RELAY_URLS = [
-  'wss://broker.hivemq.com:8884/mqtt',
   'wss://broker.emqx.io:8084/mqtt',
-  'wss://broker.coreflux.cloud:8884/mqtt',
-  'wss://test.mosquitto.org:8081/mqtt',
   'wss://public:public@public.cloud.shiftr.io',
+  'wss://test.mosquitto.org:8081/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
 ];
 
 function buildIceServers(): RTCIceServer[] {
@@ -169,6 +169,7 @@ export class MultiplayerSystem {
   public signalingBackend: SignalingBackend = 'nostr';
   public inviteCode = '';
   public localPeerId = 'local';
+  public readonly localUid: string;
   public localName = 'Wanderer';
   public localPaletteId = 'lavender';
   public players = new Map<string, LobbyPlayerInfo>();
@@ -203,7 +204,14 @@ export class MultiplayerSystem {
   public connectionError: string | null = null;
 
   constructor() {
+    let uid = `u_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     try {
+      const savedUid = localStorage.getItem(PLAYER_UID_STORAGE_KEY);
+      if (savedUid && savedUid.trim().length > 0) {
+        uid = savedUid;
+      } else {
+        localStorage.setItem(PLAYER_UID_STORAGE_KEY, uid);
+      }
       const saved = localStorage.getItem(SIGNALING_STORAGE_KEY);
       if (saved === 'mqtt' || saved === 'nostr') {
         this.signalingBackend = saved;
@@ -211,6 +219,7 @@ export class MultiplayerSystem {
     } catch {
       // ignore storage access errors
     }
+    this.localUid = uid;
   }
 
   setSignalingBackend(backend: SignalingBackend): void {
@@ -225,7 +234,7 @@ export class MultiplayerSystem {
   static generateInviteCode(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let code = '';
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 4; i++) {
       code += chars[Math.floor(Math.random() * chars.length)];
     }
     return code;
@@ -260,6 +269,52 @@ export class MultiplayerSystem {
     this.connectRoom(this.inviteCode, false);
   }
 
+  reconnectClientWithBackend(backend: SignalingBackend): void {
+    if (this.mode !== 'client' || !this.inviteCode) return;
+    const savedCallbacks = {
+      onLobbyUpdate: this.onLobbyUpdate,
+      onGameStart: this.onGameStart,
+      onRemotePlayerState: this.onRemotePlayerState,
+      onWorldSync: this.onWorldSync,
+      onRoomSync: this.onRoomSync,
+      onRemoteAttack: this.onRemoteAttack,
+      onRemoteInteract: this.onRemoteInteract,
+      onPeerJoined: this.onPeerJoined,
+      onPeerLeft: this.onPeerLeft,
+      onHostMigrated: this.onHostMigrated,
+      onPlayAgain: this.onPlayAgain,
+      onSelfIdResolved: this.onSelfIdResolved,
+      onConnectionError: this.onConnectionError,
+    };
+    const code = this.inviteCode;
+    const name = this.localName;
+    const paletteId = this.localPaletteId;
+
+    this.setSignalingBackend(backend);
+    this.disconnect();
+
+    this.onLobbyUpdate = savedCallbacks.onLobbyUpdate;
+    this.onGameStart = savedCallbacks.onGameStart;
+    this.onRemotePlayerState = savedCallbacks.onRemotePlayerState;
+    this.onWorldSync = savedCallbacks.onWorldSync;
+    this.onRoomSync = savedCallbacks.onRoomSync;
+    this.onRemoteAttack = savedCallbacks.onRemoteAttack;
+    this.onRemoteInteract = savedCallbacks.onRemoteInteract;
+    this.onPeerJoined = savedCallbacks.onPeerJoined;
+    this.onPeerLeft = savedCallbacks.onPeerLeft;
+    this.onHostMigrated = savedCallbacks.onHostMigrated;
+    this.onPlayAgain = savedCallbacks.onPlayAgain;
+    this.onSelfIdResolved = savedCallbacks.onSelfIdResolved;
+    this.onConnectionError = savedCallbacks.onConnectionError;
+
+    this.mode = 'client';
+    this.inviteCode = code;
+    this.localName = name;
+    this.localPaletteId = paletteId;
+    this.connectRoom(code, false);
+    this.onLobbyUpdate?.();
+  }
+
   private connectRoom(code: string, isHost: boolean): void {
     const normalizedCode = code.trim().toUpperCase();
     this.inviteCode = normalizedCode;
@@ -290,7 +345,7 @@ export class MultiplayerSystem {
             {
               ...baseConfig,
               relayConfig: {
-                redundancy: 12,
+                redundancy: 16,
               },
             },
             `gd-${normalizedCode}`
@@ -305,6 +360,7 @@ export class MultiplayerSystem {
 
     this.players.set(this.localPeerId, {
       peerId: this.localPeerId,
+      uid: this.localUid,
       name: this.localName,
       paletteId: this.localPaletteId,
       ready: isHost,
@@ -321,9 +377,10 @@ export class MultiplayerSystem {
         this.players.delete(prevId);
         this.localPeerId = self.peerId;
         const selfInfo: LobbyPlayerInfo = existing
-          ? { ...existing, peerId: self.peerId }
+          ? { ...existing, peerId: self.peerId, uid: this.localUid }
           : {
               peerId: self.peerId,
+              uid: this.localUid,
               name: this.localName,
               paletteId: this.localPaletteId,
               ready: isHost,
@@ -489,6 +546,12 @@ export class MultiplayerSystem {
       const activeDirect = Object.keys(room.getPeers());
       for (const peerId of activeDirect) {
         this.directPeers.add(peerId);
+        if (!this.players.has(peerId)) {
+          const selfInfo = this.players.get(this.localPeerId);
+          if (selfInfo) {
+            this.sendLobbyFn?.(selfInfo, peerId);
+          }
+        }
         Promise.race([
           room.ping(peerId),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('ping-timeout')), 2500)),
@@ -571,6 +634,7 @@ export class MultiplayerSystem {
   broadcastLobbySelf(ready: boolean): void {
     const info: LobbyPlayerInfo = {
       peerId: this.localPeerId,
+      uid: this.localUid,
       name: this.localName,
       paletteId: this.localPaletteId,
       ready,

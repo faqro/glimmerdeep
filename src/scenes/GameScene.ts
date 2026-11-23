@@ -614,9 +614,10 @@ export class GameScene extends Phaser.Scene {
 
     net.onPeerJoined = (peerId, info) => {
       if (net.mode !== 'host') return;
-      const saved = this.disconnectedPlayers.get(info.name);
+      const key = info.uid ?? info.name;
+      const saved = this.disconnectedPlayers.get(key);
       if (saved && saved.levelIndex === this.levelIndex) {
-        this.disconnectedPlayers.delete(info.name);
+        this.disconnectedPlayers.delete(key);
         net.sendStartToPeer(peerId, this.floorSeed, this.levelIndex, saved.snapshot);
         this.ui.showToast(`${info.name} reconnected!`, '#66ffd9');
       } else {
@@ -628,7 +629,8 @@ export class GameScene extends Phaser.Scene {
     net.onPeerLeft = (peerId, leaving) => {
       const lastState = this.remotePlayers.get(peerId);
       if (lastState) {
-        this.disconnectedPlayers.set(lastState.name, {
+        const key = leaving?.uid ?? lastState.name;
+        this.disconnectedPlayers.set(key, {
           levelIndex: this.levelIndex,
           snapshot: {
             ...lastState,

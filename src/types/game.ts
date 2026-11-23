@@ -337,6 +337,7 @@ export type GameMode = 'solo' | 'host' | 'client';
 
 export interface LobbyPlayerInfo {
   peerId: string;
+  uid?: string;
   name: string;
   paletteId: string;
   ready: boolean;

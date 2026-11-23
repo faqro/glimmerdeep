@@ -254,7 +254,7 @@ export class MenuScene extends Phaser.Scene {
           }
         } else if (this.activeField === 'code') {
           const ch = typed.toUpperCase();
-          if (this.joinCode.length < 6 && /^[A-Z0-9]$/.test(ch)) {
+          if (this.joinCode.length < 4 && /^[A-Z0-9]$/.test(ch)) {
             this.joinCode += ch;
             this.refreshTextboxes();
           }
@@ -270,7 +270,7 @@ export class MenuScene extends Phaser.Scene {
       if (this.activeField === 'code') {
         const cleaned = text.toUpperCase().replace(/[^A-Z0-9]/g, '');
         if (cleaned.length > 0) {
-          this.joinCode = (this.joinCode + cleaned).slice(0, 6);
+          this.joinCode = (this.joinCode + cleaned).slice(0, 4);
           this.refreshTextboxes();
         }
       } else if (this.activeField === 'name') {
@@ -496,7 +496,7 @@ export class MenuScene extends Phaser.Scene {
         this.virtualKeyboard?.open({
           title: 'ENTER INVITE CODE',
           initialValue: this.joinCode,
-          maxLength: 6,
+          maxLength: 4,
           uppercaseOnly: true,
           allowSymbols: false,
           onChange: (val) => {
