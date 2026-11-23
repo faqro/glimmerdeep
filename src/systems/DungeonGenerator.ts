@@ -400,71 +400,252 @@ export class DungeonGenerator {
       room.puzzleSolved = false;
       const kind = floorRng.pick(['plates', 'mirror_beam', 'block_push'] as const);
       room.puzzleKind = kind;
+      const variant = floorRng.int(0, 3);
 
       if (kind === 'plates') {
-        room.puzzlePlates = [
-          { id: 'p0', tx: 3, ty: 3, order: 1, activated: false },
-          { id: 'p1', tx: 7, ty: 3, order: 2, activated: false },
-          { id: 'p2', tx: 5, ty: 7, order: 3, activated: false },
-        ];
-      } else if (kind === 'mirror_beam') {
-        const variant = floorRng.int(0, 1);
         if (variant === 0) {
+          room.puzzleObstacles = [
+            { tx: 4, ty: 4 },
+            { tx: 6, ty: 4 },
+            { tx: 4, ty: 6 },
+            { tx: 6, ty: 6 },
+          ];
+          room.puzzlePlates = [
+            { id: 'p0', tx: 2, ty: 2, order: 1, activated: false },
+            { id: 'p1', tx: 8, ty: 8, order: 2, activated: false },
+            { id: 'p2', tx: 8, ty: 2, order: 3, activated: false },
+            { id: 'p3', tx: 2, ty: 8, order: 4, activated: false },
+          ];
+        } else if (variant === 1) {
+          room.puzzleObstacles = [
+            { tx: 4, ty: 3 },
+            { tx: 6, ty: 3 },
+            { tx: 4, ty: 7 },
+            { tx: 6, ty: 7 },
+          ];
+          room.puzzlePlates = [
+            { id: 'p0', tx: 2, ty: 3, order: 1, activated: false },
+            { id: 'p1', tx: 8, ty: 7, order: 2, activated: false },
+            { id: 'p2', tx: 2, ty: 7, order: 3, activated: false },
+            { id: 'p3', tx: 8, ty: 3, order: 4, activated: false },
+          ];
+        } else if (variant === 2) {
+          room.puzzleObstacles = [
+            { tx: 3, ty: 4 },
+            { tx: 5, ty: 3 },
+            { tx: 7, ty: 4 },
+            { tx: 4, ty: 7 },
+            { tx: 6, ty: 7 },
+          ];
+          room.puzzlePlates = [
+            { id: 'p0', tx: 2, ty: 2, order: 1, activated: false },
+            { id: 'p1', tx: 8, ty: 2, order: 2, activated: false },
+            { id: 'p2', tx: 5, ty: 6, order: 3, activated: false },
+            { id: 'p3', tx: 2, ty: 8, order: 4, activated: false },
+            { id: 'p4', tx: 8, ty: 8, order: 5, activated: false },
+          ];
+        } else {
+          room.puzzleObstacles = [
+            { tx: 3, ty: 3 },
+            { tx: 3, ty: 7 },
+            { tx: 7, ty: 3 },
+            { tx: 7, ty: 7 },
+            { tx: 5, ty: 4 },
+            { tx: 5, ty: 6 },
+          ];
+          room.puzzlePlates = [
+            { id: 'p0', tx: 2, ty: 2, order: 1, activated: false },
+            { id: 'p1', tx: 6, ty: 5, order: 2, activated: false },
+            { id: 'p2', tx: 4, ty: 5, order: 3, activated: false },
+            { id: 'p3', tx: 8, ty: 2, order: 4, activated: false },
+            { id: 'p4', tx: 8, ty: 8, order: 5, activated: false },
+          ];
+        }
+      } else if (kind === 'mirror_beam') {
+        if (variant === 0) {
+          room.puzzleObstacles = [
+            { tx: 2, ty: 7 },
+            { tx: 7, ty: 7 },
+            { tx: 8, ty: 6 },
+            { tx: 5, ty: 3 },
+          ];
           room.puzzleBeam = {
             emitterTx: 2,
-            emitterTy: 2,
+            emitterTy: 4,
             emitterDir: 'east',
-            targetTx: 8,
+            targetTx: 9,
             targetTy: 8,
             mirrors: [
-              { id: 'm0', tx: 6, ty: 2, orientation: 'slash' },
-              { id: 'm1', tx: 6, ty: 6, orientation: 'slash' },
-              { id: 'm2', tx: 8, ty: 6, orientation: 'slash' },
+              { id: 'm0', tx: 4, ty: 4, orientation: 'backslash' },
+              { id: 'm1', tx: 4, ty: 2, orientation: 'backslash' },
+              { id: 'm2', tx: 8, ty: 2, orientation: 'slash' },
+              { id: 'm3', tx: 8, ty: 4, orientation: 'backslash' },
+              { id: 'm4', tx: 6, ty: 4, orientation: 'backslash' },
+              { id: 'm5', tx: 6, ty: 8, orientation: 'slash' },
+              { id: 'm6', tx: 4, ty: 7, orientation: 'backslash' },
             ],
           };
-        } else {
+        } else if (variant === 1) {
+          room.puzzleObstacles = [
+            { tx: 8, ty: 5 },
+            { tx: 1, ty: 4 },
+            { tx: 8, ty: 9 },
+            { tx: 4, ty: 3 },
+          ];
           room.puzzleBeam = {
             emitterTx: 2,
             emitterTy: 8,
             emitterDir: 'north',
-            targetTx: 4,
+            targetTx: 9,
+            targetTy: 2,
+            mirrors: [
+              { id: 'm0', tx: 2, ty: 2, orientation: 'backslash' },
+              { id: 'm1', tx: 6, ty: 2, orientation: 'slash' },
+              { id: 'm2', tx: 6, ty: 7, orientation: 'backslash' },
+              { id: 'm3', tx: 3, ty: 7, orientation: 'slash' },
+              { id: 'm4', tx: 3, ty: 4, orientation: 'backslash' },
+              { id: 'm5', tx: 8, ty: 4, orientation: 'backslash' },
+              { id: 'm6', tx: 8, ty: 2, orientation: 'backslash' },
+              { id: 'm7', tx: 8, ty: 7, orientation: 'slash' },
+            ],
+          };
+        } else if (variant === 2) {
+          room.puzzleObstacles = [
+            { tx: 4, ty: 3 },
+            { tx: 6, ty: 7 },
+            { tx: 3, ty: 6 },
+            { tx: 7, ty: 6 },
+          ];
+          room.puzzleBeam = {
+            emitterTx: 1,
+            emitterTy: 3,
+            emitterDir: 'east',
+            targetTx: 9,
             targetTy: 7,
             mirrors: [
-              { id: 'm0', tx: 2, ty: 3, orientation: 'backslash' },
-              { id: 'm1', tx: 7, ty: 3, orientation: 'slash' },
-              { id: 'm2', tx: 7, ty: 7, orientation: 'backslash' },
+              { id: 'm0', tx: 2, ty: 3, orientation: 'slash' },
+              { id: 'm1', tx: 2, ty: 8, orientation: 'slash' },
+              { id: 'm2', tx: 5, ty: 8, orientation: 'backslash' },
+              { id: 'm3', tx: 5, ty: 2, orientation: 'backslash' },
+              { id: 'm4', tx: 8, ty: 2, orientation: 'slash' },
+              { id: 'm5', tx: 8, ty: 7, orientation: 'slash' },
+              { id: 'm6', tx: 7, ty: 8, orientation: 'backslash' },
+            ],
+          };
+        } else {
+          room.puzzleObstacles = [
+            { tx: 5, ty: 3 },
+            { tx: 3, ty: 5 },
+            { tx: 7, ty: 6 },
+            { tx: 5, ty: 7 },
+            { tx: 2, ty: 4 },
+          ];
+          room.puzzleBeam = {
+            emitterTx: 9,
+            emitterTy: 3,
+            emitterDir: 'west',
+            targetTx: 2,
+            targetTy: 8,
+            mirrors: [
+              { id: 'm0', tx: 7, ty: 3, orientation: 'slash' },
+              { id: 'm1', tx: 7, ty: 2, orientation: 'backslash' },
+              { id: 'm2', tx: 3, ty: 2, orientation: 'backslash' },
+              { id: 'm3', tx: 3, ty: 4, orientation: 'slash' },
+              { id: 'm4', tx: 6, ty: 4, orientation: 'slash' },
+              { id: 'm5', tx: 6, ty: 8, orientation: 'backslash' },
+              { id: 'm6', tx: 4, ty: 8, orientation: 'slash' },
+              { id: 'm7', tx: 4, ty: 6, orientation: 'slash' },
+              { id: 'm8', tx: 2, ty: 6, orientation: 'backslash' },
             ],
           };
         }
       } else {
-        const variant = floorRng.int(0, 1);
         if (variant === 0) {
+          room.puzzleObstacles = [
+            { tx: 3, ty: 4 },
+            { tx: 5, ty: 4 },
+            { tx: 7, ty: 4 },
+            { tx: 5, ty: 6 },
+          ];
           room.puzzleBlock = {
             goals: [
-              { tx: 3, ty: 3 },
-              { tx: 7, ty: 3 },
-            ],
-            blocks: [
-              { id: 'b0', tx: 4, ty: 6, initialTx: 4, initialTy: 6 },
-              { id: 'b1', tx: 6, ty: 6, initialTx: 6, initialTy: 6 },
-            ],
-            resetTx: 2,
-            resetTy: 2,
-          };
-        } else {
-          room.puzzleBlock = {
-            goals: [
-              { tx: 3, ty: 3 },
-              { tx: 5, ty: 3 },
-              { tx: 7, ty: 3 },
+              { tx: 3, ty: 2 },
+              { tx: 7, ty: 2 },
             ],
             blocks: [
               { id: 'b0', tx: 3, ty: 6, initialTx: 3, initialTy: 6 },
+              { id: 'b1', tx: 7, ty: 6, initialTx: 7, initialTy: 6 },
+            ],
+            resetTx: 2,
+            resetTy: 8,
+          };
+        } else if (variant === 1) {
+          room.puzzleObstacles = [
+            { tx: 4, ty: 3 },
+            { tx: 6, ty: 3 },
+            { tx: 4, ty: 6 },
+            { tx: 6, ty: 6 },
+            { tx: 5, ty: 4 },
+          ];
+          room.puzzleBlock = {
+            goals: [
+              { tx: 3, ty: 2 },
+              { tx: 5, ty: 2 },
+              { tx: 7, ty: 2 },
+            ],
+            blocks: [
+              { id: 'b0', tx: 3, ty: 7, initialTx: 3, initialTy: 7 },
               { id: 'b1', tx: 5, ty: 7, initialTx: 5, initialTy: 7 },
+              { id: 'b2', tx: 7, ty: 7, initialTx: 7, initialTy: 7 },
+            ],
+            resetTx: 2,
+            resetTy: 8,
+          };
+        } else if (variant === 2) {
+          room.puzzleObstacles = [
+            { tx: 3, ty: 4 },
+            { tx: 4, ty: 4 },
+            { tx: 6, ty: 4 },
+            { tx: 7, ty: 4 },
+            { tx: 4, ty: 7 },
+            { tx: 6, ty: 7 },
+          ];
+          room.puzzleBlock = {
+            goals: [
+              { tx: 2, ty: 2 },
+              { tx: 5, ty: 2 },
+              { tx: 8, ty: 2 },
+            ],
+            blocks: [
+              { id: 'b0', tx: 3, ty: 6, initialTx: 3, initialTy: 6 },
+              { id: 'b1', tx: 5, ty: 6, initialTx: 5, initialTy: 6 },
               { id: 'b2', tx: 7, ty: 6, initialTx: 7, initialTy: 6 },
             ],
             resetTx: 2,
-            resetTy: 2,
+            resetTy: 8,
+          };
+        } else {
+          room.puzzleObstacles = [
+            { tx: 3, ty: 3 },
+            { tx: 4, ty: 3 },
+            { tx: 6, ty: 5 },
+            { tx: 7, ty: 5 },
+            { tx: 3, ty: 7 },
+            { tx: 4, ty: 7 },
+          ];
+          room.puzzleBlock = {
+            goals: [
+              { tx: 2, ty: 2 },
+              { tx: 7, ty: 2 },
+              { tx: 8, ty: 8 },
+            ],
+            blocks: [
+              { id: 'b0', tx: 2, ty: 6, initialTx: 2, initialTy: 6 },
+              { id: 'b1', tx: 5, ty: 4, initialTx: 5, initialTy: 4 },
+              { id: 'b2', tx: 7, ty: 7, initialTx: 7, initialTy: 7 },
+            ],
+            resetTx: 2,
+            resetTy: 8,
           };
         }
       }

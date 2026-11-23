@@ -66,7 +66,8 @@ export type WeaponStyle =
   | 'heavy_cannon'
   | 'bounce_spore'
   | 'comet_shot'
-  | 'fan_spread';
+  | 'fan_spread'
+  | 'flamethrower';
 
 export interface WeaponDef {
   id: string;
@@ -117,6 +118,7 @@ export type StatusEffectId =
   | 'sparkling'
   | 'starward'
   | 'vitality'
+  | 'giant'
   | 'burning'
   | 'poisoned'
   | 'sluggish'
@@ -268,6 +270,7 @@ export interface RoomData {
   eventKind?: 'fairy_circle' | 'wishing_well' | 'cursed_altar' | 'lore_stone';
   puzzleKind?: PuzzleKind;
   puzzleSolved?: boolean;
+  puzzleObstacles?: Array<{ tx: number; ty: number }>;
   puzzlePlates?: PuzzlePlate[];
   puzzleBeam?: PuzzleBeamSetup;
   puzzleBlock?: PuzzleBlockSetup;

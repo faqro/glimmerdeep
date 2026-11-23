@@ -411,7 +411,7 @@ export const BOSSES: Record<string, BossDef> = {
     subtitle: 'Warden of the Moonlit Grove',
     hp: 65,
     speed: 58,
-    damage: 2,
+    damage: 1,
     spriteKey: 'boss_hollow_stag',
     accentColor: 0xf49ac1,
   },

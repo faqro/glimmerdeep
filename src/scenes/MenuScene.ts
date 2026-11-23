@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { version } from '../../package.json';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
 import { pickRandomPaletteId } from '../data/palettes';
@@ -171,6 +172,8 @@ export class MenuScene extends Phaser.Scene {
       0.5,
       336
     );
+
+    addPixelText(this, 354, 264, `v${version}`, 8, 0x7e71b8, 1, 1);
 
     this.buildJoinModal();
 

@@ -398,6 +398,16 @@ export class PixelArtGenerator {
       tex.refresh();
     }
 
+    // Crystal Guardian rotating reflective shield (10x10)
+    {
+      const { ctx, tex } = this.createCanvas('obj_crystal_shield', 10, 10);
+      this.px(ctx, 1, 2, '#100d24', 8, 6);
+      this.px(ctx, 2, 3, '#38bdf8', 6, 4);
+      this.px(ctx, 3, 3, '#6ef3ff', 4, 2);
+      this.px(ctx, 4, 3, '#ffffff', 2, 1);
+      tex.refresh();
+    }
+
     // Glowing Mushroom prop (12x14)
     const mush = this.createCanvas('prop_mushroom', 12, 14);
     this.drawGrid(mush.ctx, 0, 0, [
@@ -428,6 +438,39 @@ export class PixelArtGenerator {
       '...oooo...',
     ], { o: '#100d24', Y: '#ffd275', w: '#ffffff' });
     lantern.tex.refresh();
+
+    // Animated molten lava tiles (16x16 full-tile, seamless)
+    for (let frame = 0; frame < 3; frame++) {
+      const { ctx, tex } = this.createCanvas(`tile_lava_${frame}`, 16, 16);
+      this.px(ctx, 0, 0, '#c93b14', 16, 16);
+
+      // Flowing orange magma bands that wrap seamlessly across 16px
+      const shift = frame * 5;
+      for (let x = 0; x < 16; x++) {
+        const wy1 = (Math.floor(Math.sin(((x + shift) / 16) * Math.PI * 2) * 2) + 4) & 15;
+        const wy2 = (Math.floor(Math.cos(((x - shift + 16) / 16) * Math.PI * 2) * 2) + 12) & 15;
+        this.px(ctx, x, wy1, '#e85d1a', 1, 3);
+        this.px(ctx, x, (wy1 + 1) & 15, '#ff8c24', 1, 1);
+        this.px(ctx, x, wy2, '#e85d1a', 1, 3);
+        this.px(ctx, x, (wy2 + 1) & 15, '#ff8c24', 1, 1);
+      }
+
+      // Glowing magma hotspots / bubbles
+      const spots = [
+        [(2 + frame * 3) % 14, 3],
+        [(10 + frame * 2) % 14, 7],
+        [(5 + frame * 4) % 14, 11],
+        [(12 - frame * 2 + 14) % 14, 14],
+      ];
+      for (const [sx, sy] of spots) {
+        this.px(ctx, sx, sy, '#ffbb33', 2, 2);
+        if (frame === 1 || (sx + frame) % 2 === 0) {
+          this.px(ctx, sx, sy, '#ffe066', 1, 1);
+        }
+      }
+
+      tex.refresh();
+    }
 
     // Spike trap grate (16x16): idle (black grate) and active (spikes out)
     const spikeIdle = this.createCanvas('obj_spike_idle', 16, 16);
@@ -559,6 +602,19 @@ export class PixelArtGenerator {
           '..ooo...........',
         ],
         pal: { o: '#100d24', F: '#ff6b35', Y: '#ffe066', W: '#6b4230' },
+      },
+      item_flamethrower: {
+        rows: [
+          '..........oo....',
+          '..oooo...oYYo...',
+          '.oRRRRo..oRRo...',
+          '.oRRRRooooSSo...',
+          '.oRRRRSSSSSSSSo.',
+          '..ooooooooSSoo..',
+          '....oBBo..oo....',
+          '....oooo........',
+        ],
+        pal: { o: '#100d24', R: '#ff4500', Y: '#ffe066', S: '#94a3b8', B: '#475569' },
       },
       item_cloudbreaker: {
         rows: [
@@ -1120,6 +1176,129 @@ export class PixelArtGenerator {
           '......oo........',
         ],
         pal: { o: '#100d24', G: '#ffd275', P: '#ff75c3', w: '#ffffff' },
+      },
+      item_blink_scroll: {
+        rows: [
+          '...oooooo.......',
+          '..oYYYYYYo......',
+          '..oPPPPPPo......',
+          '..oPPwPPPo......',
+          '..oPPPPPPo......',
+          '..oPPPPPPo......',
+          '..oYYYYYYo......',
+          '...oooooo.......',
+        ],
+        pal: { o: '#100d24', Y: '#ffd275', P: '#c084fc', w: '#ffffff' },
+      },
+      item_grappling_hook: {
+        rows: [
+          '.....oo..oo.....',
+          '....oSSooSSo....',
+          '...oSSoSSoSSo...',
+          '......oSSo......',
+          '.....oSSo.......',
+          '....oBBo........',
+          '...oBBo.........',
+          '..oooo..........',
+        ],
+        pal: { o: '#100d24', S: '#cbd5e1', B: '#b45309' },
+      },
+      item_gravity_jar: {
+        rows: [
+          '.....oooo.......',
+          '....oGGGGoo.....',
+          '...oPPPPPPo.....',
+          '..oPPWWWWPPo....',
+          '..oPPWbbWPPo....',
+          '..oPPWWWWPPo....',
+          '...oPPPPPPo.....',
+          '....oooooo......',
+        ],
+        pal: { o: '#100d24', G: '#94a3b8', P: '#7c3aed', W: '#c084fc', b: '#100d24' },
+      },
+      item_chaos_dice: {
+        rows: [
+          '..oooooooo......',
+          '.oWWWWWWWWo.....',
+          '.oWRWWWWWRo.....',
+          '.oWWWWBWWWo.....',
+          '.oWRWWWWWRo.....',
+          '.oWWWWWWWWo.....',
+          '..oooooooo......',
+        ],
+        pal: { o: '#100d24', W: '#f8fafc', R: '#ff5d8f', B: '#6ef3ff' },
+      },
+      item_decoy_plush: {
+        rows: [
+          '..oo....oo......',
+          '.oPPo..oPPo.....',
+          '.oPPPPPPPPo.....',
+          '.oPoPPPPoPo.....',
+          '..oPPPPPPo......',
+          '..oPPYYPPo......',
+          '...oooooo.......',
+        ],
+        pal: { o: '#100d24', P: '#f49ac1', Y: '#ffe066' },
+      },
+      item_titan_shroom: {
+        rows: [
+          '...oooooo.......',
+          '.ooRRRRRRoo.....',
+          'oRRwRRRRwRRo....',
+          'oRRRRwRRRRRo....',
+          '.oooooooooo.....',
+          '...oWWWWo.......',
+          '...oWWWWo.......',
+          '...oooooo.......',
+        ],
+        pal: { o: '#100d24', R: '#ff6b35', w: '#ffe066', W: '#fde68a' },
+      },
+      item_chrono_hourglass: {
+        rows: [
+          '..oooooooo......',
+          '..oGGGGGGGo.....',
+          '...oCCCCo.......',
+          '....oCCo........',
+          '....oYYo........',
+          '...oYYYYo.......',
+          '..oGGGGGGGo.....',
+          '..oooooooo......',
+        ],
+        pal: { o: '#100d24', G: '#ffd275', C: '#6ef3ff', Y: '#ffe066' },
+      },
+      item_swap_orb: {
+        rows: [
+          '...oooooo.......',
+          '..oCCCCCCo......',
+          '.oCCwCCPPPo.....',
+          '.oCCPPPPPPo.....',
+          '.oCCPPwPPPo.....',
+          '..oPPPPPPo......',
+          '...oooooo.......',
+        ],
+        pal: { o: '#100d24', C: '#6ef3ff', P: '#f49ac1', w: '#ffffff' },
+      },
+      item_disco_prism: {
+        rows: [
+          '.....oo.........',
+          '....oWCo........',
+          '...oRRYYo.......',
+          '..oGGCCPPo......',
+          '.oRRYYGGCCo.....',
+          '..oooooooo......',
+        ],
+        pal: { o: '#100d24', W: '#ffffff', C: '#6ef3ff', R: '#ff5d8f', Y: '#ffe066', G: '#66ffd9', P: '#c084fc' },
+      },
+      item_meteor_whistle: {
+        rows: [
+          '.....oooo.......',
+          '....oRRRRoo.....',
+          '...oRRYYRRRo....',
+          '..oGGGRRRRRo....',
+          '..oGGo..ooo.....',
+          '...oo...........',
+        ],
+        pal: { o: '#100d24', R: '#ff6b35', Y: '#ffe066', G: '#94a3b8' },
       },
       item_lucky_backpack: {
         rows: [

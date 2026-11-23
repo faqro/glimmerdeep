@@ -30,6 +30,7 @@ export class StatusEffectManager {
   static getSpeedMultiplier(effects: ActiveStatusEffect[]): number {
     let mult = 1;
     if (this.has(effects, 'moonblessed')) mult *= 1.2;
+    if (this.has(effects, 'giant')) mult *= 1.25;
     if (this.has(effects, 'sluggish')) mult *= 0.72;
     return mult;
   }
