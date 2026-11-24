@@ -1,0 +1,7 @@
+name = "glimmerdeep-turn"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[vars]
+TURN_TTL_SECONDS = "14400"
+ALLOWED_ORIGINS = "*"

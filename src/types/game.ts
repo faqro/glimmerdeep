@@ -209,7 +209,7 @@ export interface ShopStockItem {
   sold: boolean;
 }
 
-export type PuzzleKind = 'plates' | 'mirror_beam' | 'block_push';
+export type PuzzleKind = 'plates' | 'mirror_beam' | 'block_push' | 'lights_out' | 'memory_simon';
 
 export interface PuzzlePlate {
   id: string;
@@ -278,6 +278,12 @@ export interface RoomData {
   puzzlePlates?: PuzzlePlate[];
   puzzleBeam?: PuzzleBeamSetup;
   puzzleBlock?: PuzzleBlockSetup;
+  puzzleLights?: Array<{ id: string; tx: number; ty: number; gx: number; gy: number; lit: boolean }>;
+  puzzleSimon?: {
+    sequence: number[];
+    progress: number;
+    runes: Array<{ id: string; idx: number; tx: number; ty: number; color: number }>;
+  };
   bossDefeated?: boolean;
   brokenCrates?: string[];
   widthTiles?: number;

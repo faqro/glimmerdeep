@@ -1127,6 +1127,20 @@ export class PixelArtGenerator {
         ],
         pal: { o: '#100d24', C: '#b08968', R: '#ff5d8f', w: '#ffffff' },
       },
+      item_syringe: {
+        rows: [
+          '................',
+          '..ooo...........',
+          '..oPPooooooo....',
+          '..oPwGGGGGGoo...',
+          '..oPPGGGGGGooooo',
+          '..oPPooooooo....',
+          '..ooo...........',
+          '................',
+          '................',
+        ],
+        pal: { o: '#100d24', P: '#b8a1ff', G: '#66ffd9', w: '#ffffff' },
+      },
       item_star_bomb: {
         rows: [
           '.......ooo......',

@@ -8,7 +8,7 @@ import { WEAPONS } from '../data/weapons';
 import { SoundSystem } from '../audio/SoundSystem';
 import { isMobileMode, mobileInput } from '../mobile/MobileInput';
 import { DungeonGenerator, GeneratedFloor } from '../systems/DungeonGenerator';
-import { addItemToSlots, consumeUse, createItemInstance, hasArtifact, rollBossCombatItemId, rollRandomItemId } from '../systems/InventorySystem';
+import { addItemToSlots, consumeUse, createItemInstance, hasArtifact, rollBossCombatItemId, rollRandomItemId, rollSecretChestItemId } from '../systems/InventorySystem';
 import { JournalSystem } from '../systems/JournalSystem';
 import { net, NetRoomSync, NetWorldSync, SyncedProjectile } from '../systems/MultiplayerSystem';
 import { StatusEffectManager } from '../systems/StatusEffectSystem';
@@ -76,6 +76,8 @@ interface ActiveProjectile {
   burns: boolean;
   cometBoost?: boolean;
   slimeSplatter?: boolean;
+  healsAlly?: boolean;
+  healAmount?: number;
   startX?: number;
   startY?: number;
   hitUids: Set<string>;
@@ -269,11 +271,15 @@ export class GameScene extends Phaser.Scene {
     beamGfx?: Phaser.GameObjects.Graphics;
     beamTarget?: Phaser.GameObjects.Image;
     resetRune?: { sprite: Phaser.GameObjects.Image; x: number; y: number };
+    simonCenter?: { sprite: Phaser.GameObjects.Image; x: number; y: number };
     plates: Array<{ id: string; order: number; sprite: Phaser.GameObjects.Image; x: number; y: number }>;
     mirrors: Array<{ id: string; sprite: Phaser.GameObjects.Image; x: number; y: number }>;
     blocks: Array<{ id: string; sprite: Phaser.Physics.Arcade.Sprite }>;
     blockGoals: Array<{ tx: number; ty: number; sprite: Phaser.GameObjects.Image }>;
-  } = { plates: [], mirrors: [], blocks: [], blockGoals: [] };
+    lights: Array<{ id: string; gx: number; gy: number; sprite: Phaser.GameObjects.Image; x: number; y: number }>;
+    simonRunes: Array<{ id: string; idx: number; color: number; sprite: Phaser.GameObjects.Image; x: number; y: number }>;
+  } = { plates: [], mirrors: [], blocks: [], blockGoals: [], lights: [], simonRunes: [] };
+  private simonPlaying = false;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -687,6 +693,15 @@ export class GameScene extends Phaser.Scene {
               this.playRipOutAnimationForRemote(peerId, accentColor);
             }
           }
+        }
+      } else if (ev.kind === 'heal') {
+        if (ev.targetId === this.playerState.id && !this.playerState.downed) {
+          const heal = ev.amount ?? 3;
+          this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + heal);
+          SoundSystem.playHeal();
+          this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x66ffd9, 10);
+          this.ui.showToast(`+${heal} HP from ally!`, '#66ffd9');
+          net.broadcastPlayerState(this.playerState);
         }
       } else if (ev.kind === 'drop' && ev.targetId) {
         const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
@@ -1188,7 +1203,8 @@ export class GameScene extends Phaser.Scene {
     this.blockPushCooldownMs = 0;
     this.respawnAnimMs = 0;
     this.remoteReviveAnimUntil.clear();
-    this.specialObjs = { plates: [], mirrors: [], blocks: [], blockGoals: [] };
+    this.simonPlaying = false;
+    this.specialObjs = { plates: [], mirrors: [], blocks: [], blockGoals: [], lights: [], simonRunes: [] };
 
     const room = this.floor.rooms[gy][gx];
     this.currentRoom = room;
@@ -1610,7 +1626,7 @@ export class GameScene extends Phaser.Scene {
       this.specialObjs.altar = this.add.image(88, 84, 'obj_altar').setDepth(6);
       if (room.eventUsed) this.specialObjs.altar.setAlpha(0.45);
       this.roomGroup.add(this.specialObjs.altar);
-    } else if (room.type === 'puzzle') {
+    } else if (room.type === 'puzzle' || room.type === 'secret') {
       if (room.puzzleObstacles) {
         for (const obs of room.puzzleObstacles) {
           const ox = obs.tx * 16 + 8;
@@ -1688,6 +1704,30 @@ export class GameScene extends Phaser.Scene {
         this.roomGroup.add(rlbl);
         this.specialObjs.resetRune = { sprite: rsp, x: rx, y: ry };
         this.refreshBlockGoalVisuals();
+      } else if (room.puzzleLights) {
+        for (const cell of room.puzzleLights) {
+          const lx = cell.tx * 16 + 8;
+          const ly = cell.ty * 16 + 8;
+          const sp = this.add.image(lx, ly, cell.lit ? 'obj_plate_lit' : 'obj_plate').setDepth(3);
+          this.roomGroup.add(sp);
+          this.specialObjs.lights.push({ id: cell.id, gx: cell.gx, gy: cell.gy, sprite: sp, x: lx, y: ly });
+        }
+      } else if (room.puzzleSimon) {
+        const cx = 5 * 16 + 8;
+        const cy = 5 * 16 + 8;
+        const centerSp = this.add.image(cx, cy, 'obj_reset_rune').setDepth(3).setTint(0x66ffd9);
+        const centerLbl = addPixelText(this, cx, cy - 12, 'PLAY', 8, 0x66ffd9, 0.5, 0.5).setDepth(4);
+        this.roomGroup.add(centerSp);
+        this.roomGroup.add(centerLbl);
+        this.specialObjs.simonCenter = { sprite: centerSp, x: cx, y: cy };
+
+        for (const r of room.puzzleSimon.runes) {
+          const rx = r.tx * 16 + 8;
+          const ry = r.ty * 16 + 8;
+          const sp = this.add.image(rx, ry, 'obj_plate').setDepth(3).setTint(r.color);
+          this.roomGroup.add(sp);
+          this.specialObjs.simonRunes.push({ id: r.id, idx: r.idx, color: r.color, sprite: sp, x: rx, y: ry });
+        }
       }
     }
 
@@ -1942,6 +1982,12 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    if (item && item.id === 'wandering_eye') {
+      this.attackCooldownMs = 250;
+      this.useWanderingEyeWallBreak(this.playerState.activeSlot);
+      return;
+    }
+
     if (item && item.category === 'weapon') {
       const w = WEAPONS[item.id];
       if (w.style === 'beam_prism') {
@@ -1996,7 +2042,12 @@ export class GameScene extends Phaser.Scene {
 
   private handleSecondaryAction(): void {
     const item = this.playerState.inventory[this.playerState.activeSlot];
-    if (!item || item.category !== 'consumable') return;
+    if (!item) return;
+    if (item.id === 'wandering_eye') {
+      this.useWanderingEyeWallBreak(this.playerState.activeSlot);
+      return;
+    }
+    if (item.category !== 'consumable') return;
     this.useConsumable(this.playerState.activeSlot);
   }
 
@@ -2039,6 +2090,46 @@ export class GameScene extends Phaser.Scene {
       SoundSystem.playHeal();
       this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0xff5d8f, 8);
       this.ui.showToast(`+${heal} HP!`, '#ff5d8f');
+    } else if (item.id === 'syringe') {
+      const heal = Math.round(3 * modMult);
+      if (net.mode === 'solo') {
+        this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + heal);
+        SoundSystem.playHeal();
+        this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x66ffd9, 8);
+        this.ui.showToast(`+${heal} HP!`, '#66ffd9');
+      } else {
+        const angle = this.playerState.aimAngle;
+        SoundSystem.playShoot();
+        this.createPlayerProjectile(
+          this.playerSprite.x,
+          this.playerSprite.y,
+          angle,
+          240,
+          0,
+          0x66ffd9,
+          false,
+          false,
+          0,
+          false,
+          false,
+          this.playerState.id,
+          false,
+          false,
+          1400,
+          false,
+          true,
+          heal
+        );
+        net.broadcastAttack({
+          peerId: this.playerState.id,
+          gx: this.currentRoom.gx,
+          gy: this.currentRoom.gy,
+          x: this.playerSprite.x,
+          y: this.playerSprite.y,
+          angle,
+          weaponId: 'syringe_shot',
+        });
+      }
     } else if (item.id === 'fairy_dust') {
       this.playerState.stamina = Math.min(this.playerState.maxStamina, this.playerState.stamina + 2);
       StatusEffectManager.addEffect(this.playerState.statusEffects, 'moonblessed', 10000);
@@ -2406,28 +2497,42 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Reveal adjacent secret walls if near them
-    let revealed = false;
-    if (this.currentRoom.connections.secretNorth && y < 44 && !this.currentRoom.secretRevealed) {
-      this.currentRoom.secretRevealed = true;
-      revealed = true;
+    this.tryOpenAdjacentSecretWall(x, y);
+  }
+
+  private isNearClosedSecretWall(x: number, y: number): boolean {
+    if (this.currentRoom.secretRevealed) return false;
+    return Boolean(
+      (this.currentRoom.connections.secretNorth && y < 44) ||
+        (this.currentRoom.connections.secretSouth && y > 132) ||
+        (this.currentRoom.connections.secretWest && x < 44) ||
+        (this.currentRoom.connections.secretEast && x > 132)
+    );
+  }
+
+  private tryOpenAdjacentSecretWall(x: number, y: number): boolean {
+    if (!this.isNearClosedSecretWall(x, y)) return false;
+    this.currentRoom.secretRevealed = true;
+    SoundSystem.playUnlock();
+    this.spawnParticles(x, y, 0xffe066, 12);
+    this.ui.showToast('Secret passage opened!', '#ffe066');
+    this.loadRoom(this.currentRoom.gx, this.currentRoom.gy, this.playerSprite.x, this.playerSprite.y);
+    return true;
+  }
+
+  private useWanderingEyeWallBreak(slotIdx: number): boolean {
+    const item = this.playerState.inventory[slotIdx];
+    if (!item || item.id !== 'wandering_eye') return false;
+    if (!this.tryOpenAdjacentSecretWall(this.playerSprite.x, this.playerSprite.y)) {
+      this.ui.showToast('Stand near a cracked secret wall!', '#ffe066');
+      return false;
     }
-    if (this.currentRoom.connections.secretSouth && y > 132 && !this.currentRoom.secretRevealed) {
-      this.currentRoom.secretRevealed = true;
-      revealed = true;
+    const broke = consumeUse(this.playerState.inventory, slotIdx, 1);
+    if (broke) {
+      SoundSystem.playBreak();
+      this.ui.showToast('Wandering Eye shattered!', '#ffe066');
     }
-    if (this.currentRoom.connections.secretWest && x < 44 && !this.currentRoom.secretRevealed) {
-      this.currentRoom.secretRevealed = true;
-      revealed = true;
-    }
-    if (this.currentRoom.connections.secretEast && x > 132 && !this.currentRoom.secretRevealed) {
-      this.currentRoom.secretRevealed = true;
-      revealed = true;
-    }
-    if (revealed) {
-      SoundSystem.playUnlock();
-      this.ui.showToast('Secret passage opened!', '#ffe066');
-      this.loadRoom(this.currentRoom.gx, this.currentRoom.gy, this.playerSprite.x, this.playerSprite.y);
-    }
+    return true;
   }
 
   private spawnWeaponAttack(
@@ -2438,6 +2543,31 @@ export class GameScene extends Phaser.Scene {
     ownerId: string,
     isLocal: boolean
   ): void {
+    if (weaponId === 'syringe_shot') {
+      SoundSystem.playShoot();
+      this.createPlayerProjectile(
+        x,
+        y,
+        angle,
+        240,
+        0,
+        0x66ffd9,
+        false,
+        false,
+        0,
+        false,
+        false,
+        ownerId,
+        false,
+        false,
+        1400,
+        false,
+        true,
+        3
+      );
+      return;
+    }
+
     const w = WEAPONS[weaponId];
     const isMeleeStyle =
       weaponId === 'unarmed' ||
@@ -2735,7 +2865,9 @@ export class GameScene extends Phaser.Scene {
     burns = false,
     cometBoost = false,
     customLifeMs?: number,
-    slimeSplatter = false
+    slimeSplatter = false,
+    healsAlly = false,
+    healAmount = 3
   ): void {
     const sp = this.physics.add.sprite(x, y, 'proj_orb').setDepth(11).setTint(color);
     this.projectiles.push({
@@ -2757,6 +2889,8 @@ export class GameScene extends Phaser.Scene {
       burns,
       cometBoost,
       slimeSplatter,
+      healsAlly,
+      healAmount,
       startX: x,
       startY: y,
       hitUids: new Set(),
@@ -2954,26 +3088,7 @@ export class GameScene extends Phaser.Scene {
     const px = this.playerSprite.x;
     const py = this.playerSprite.y;
 
-    // 1. Revive downed ally
-    for (const ally of this.remotePlayers.values()) {
-      if (ally.downed && ally.gx === this.currentRoom.gx && ally.gy === this.currentRoom.gy) {
-        if (Phaser.Math.Distance.Between(px, py, ally.x, ally.y) < 30) {
-          net.broadcastInteract({
-            peerId: this.playerState.id,
-            gx: this.currentRoom.gx,
-            gy: this.currentRoom.gy,
-            kind: 'revive',
-            targetId: ally.id,
-          });
-          this.playerState.stamina = Math.min(this.playerState.maxStamina, this.playerState.stamina + 1);
-          SoundSystem.playHeal();
-          this.ui.showToast(`Revived ${ally.name}! (+1 Stamina)`, '#ff75c3');
-          return;
-        }
-      }
-    }
-
-    // 2. Loot / Chests
+    // 1. Loot / Chests
     for (const l of this.lootObjs) {
       if (l.collected) continue;
       if (Phaser.Math.Distance.Between(px, py, l.sprite.x, l.sprite.y) < 26) {
@@ -3117,7 +3232,11 @@ export class GameScene extends Phaser.Scene {
     }
 
     // 6b. Mirror Rotation (Mirror/Beam Puzzle)
-    if (this.currentRoom.type === 'puzzle' && !this.currentRoom.puzzleSolved && this.currentRoom.puzzleBeam) {
+    if (
+      (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
+      !this.currentRoom.puzzleSolved &&
+      this.currentRoom.puzzleBeam
+    ) {
       for (const mVis of this.specialObjs.mirrors) {
         if (Phaser.Math.Distance.Between(px, py, mVis.x, mVis.y) < 24) {
           const model = this.currentRoom.puzzleBeam.mirrors.find((m) => m.id === mVis.id);
@@ -3142,7 +3261,7 @@ export class GameScene extends Phaser.Scene {
 
     // 6c. Reset Blocks (Block-Push Puzzle)
     if (
-      this.currentRoom.type === 'puzzle' &&
+      (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
       !this.currentRoom.puzzleSolved &&
       this.specialObjs.resetRune &&
       Phaser.Math.Distance.Between(px, py, this.specialObjs.resetRune.x, this.specialObjs.resetRune.y) < 26
@@ -3157,7 +3276,78 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    // 7. Fallback: if no world object is in range and active slot is a consumable, use it with E
+    // 6d. Lights-Out Rune Grid
+    if (
+      (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
+      !this.currentRoom.puzzleSolved &&
+      this.currentRoom.puzzleLights
+    ) {
+      for (const lVis of this.specialObjs.lights) {
+        if (Phaser.Math.Distance.Between(px, py, lVis.x, lVis.y) < 16) {
+          for (const cell of this.currentRoom.puzzleLights) {
+            if (Math.abs(cell.gx - lVis.gx) + Math.abs(cell.gy - lVis.gy) <= 1) {
+              cell.lit = !cell.lit;
+              const vis = this.specialObjs.lights.find((v) => v.id === cell.id);
+              vis?.sprite.setTexture(cell.lit ? 'obj_plate_lit' : 'obj_plate');
+            }
+          }
+          SoundSystem.playPickup();
+          if (this.currentRoom.puzzleLights.every((c) => c.lit)) {
+            this.solvePuzzle('Runes aligned! Secret unlocked!');
+          }
+          return;
+        }
+      }
+    }
+
+    // 6e. Arcane Memory (Simon) Runes
+    if (
+      (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
+      !this.currentRoom.puzzleSolved &&
+      this.currentRoom.puzzleSimon &&
+      !this.simonPlaying
+    ) {
+      const simon = this.currentRoom.puzzleSimon;
+      if (
+        this.specialObjs.simonCenter &&
+        Phaser.Math.Distance.Between(px, py, this.specialObjs.simonCenter.x, this.specialObjs.simonCenter.y) < 20
+      ) {
+        this.playSimonSequence();
+        return;
+      }
+      for (const rVis of this.specialObjs.simonRunes) {
+        if (Phaser.Math.Distance.Between(px, py, rVis.x, rVis.y) < 20) {
+          rVis.sprite.setTexture('obj_plate_lit');
+          this.time.delayedCall(220, () => {
+            if (rVis.sprite.active) rVis.sprite.setTexture('obj_plate');
+          });
+          if (simon.sequence[simon.progress] === rVis.idx) {
+            simon.progress++;
+            SoundSystem.playPickup();
+            this.spawnParticles(rVis.x, rVis.y, rVis.color, 6);
+            if (simon.progress >= simon.sequence.length) {
+              this.solvePuzzle('Arcane echo mastered!');
+            } else {
+              this.ui.showToast(`Echo ${simon.progress}/${simon.sequence.length}`, '#66ffd9');
+            }
+          } else {
+            simon.progress = 0;
+            SoundSystem.playHit();
+            this.ui.showToast('Wrong rune! Center [E] to replay', '#ff5d8f');
+          }
+          return;
+        }
+      }
+    }
+
+    // 7. Wandering Eye secret wall break when standing near a cracked wall
+    const eyeSlot = hasArtifact(this.playerState.inventory, 'wandering_eye');
+    if (eyeSlot !== -1 && this.isNearClosedSecretWall(px, py)) {
+      this.useWanderingEyeWallBreak(eyeSlot);
+      return;
+    }
+
+    // 8. Fallback: if no world object is in range and active slot is a consumable, use it with E
     const activeItem = this.playerState.inventory[this.playerState.activeSlot];
     if (activeItem && activeItem.category === 'consumable') {
       this.useConsumable(this.playerState.activeSlot);
@@ -3408,7 +3598,7 @@ export class GameScene extends Phaser.Scene {
       }
       this.dropAllHeldItems();
       net.broadcastPlayerState(this.playerState);
-      this.ui.showToast('You are downed! Ally can revive [E]', '#ff5d8f');
+      this.ui.showToast('You are downed! Wait for a revive!', '#ff5d8f');
     }
   }
 
@@ -5657,6 +5847,35 @@ export class GameScene extends Phaser.Scene {
         continue;
       }
 
+      if (p.fromPlayer && p.healsAlly) {
+        if (p.ownerId === this.playerState.id) {
+          let healedAlly = false;
+          for (const ally of this.remotePlayers.values()) {
+            if (ally.downed || ally.gx !== this.currentRoom.gx || ally.gy !== this.currentRoom.gy) continue;
+            if (Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, ally.x, ally.y) < 14) {
+              const heal = p.healAmount ?? 3;
+              net.broadcastInteract({
+                peerId: this.playerState.id,
+                gx: this.currentRoom.gx,
+                gy: this.currentRoom.gy,
+                kind: 'heal',
+                targetId: ally.id,
+                amount: heal,
+              });
+              SoundSystem.playHeal();
+              this.spawnParticles(ally.x, ally.y, 0x66ffd9, 10);
+              this.ui.showToast(`Healed ${ally.name} (+${heal} HP)!`, '#66ffd9');
+              p.sprite.destroy();
+              this.projectiles.splice(i, 1);
+              healedAlly = true;
+              break;
+            }
+          }
+          if (healedAlly) continue;
+        }
+        continue;
+      }
+
       if (p.fromPlayer && p.ownerId === this.playerState.id) {
         let reflected = false;
         if (!p.boomerang) {
@@ -5914,8 +6133,36 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private playSimonSequence(): void {
+    const simon = this.currentRoom.puzzleSimon;
+    if (!simon || this.simonPlaying) return;
+    this.simonPlaying = true;
+    simon.progress = 0;
+    this.ui.showToast('Watch & remember the 6-rune sequence!', '#ffe066');
+    const stepMs = 460;
+    simon.sequence.forEach((runeIdx, step) => {
+      this.time.delayedCall(step * stepMs + 120, () => {
+        if (!this.scene.isActive('GameScene') || this.currentRoom.puzzleSimon !== simon) return;
+        const rVis = this.specialObjs.simonRunes.find((r) => r.idx === runeIdx);
+        if (rVis && rVis.sprite.active) {
+          rVis.sprite.setTexture('obj_plate_lit');
+          SoundSystem.playPickup();
+          this.spawnParticles(rVis.x, rVis.y, rVis.color, 6);
+          this.time.delayedCall(260, () => {
+            if (rVis.sprite.active) rVis.sprite.setTexture('obj_plate');
+          });
+        }
+        if (step === simon.sequence.length - 1) {
+          this.time.delayedCall(300, () => {
+            this.simonPlaying = false;
+          });
+        }
+      });
+    });
+  }
+
   private updatePuzzlePlates(): void {
-    if (this.currentRoom.type !== 'puzzle' || this.currentRoom.puzzleSolved || this.plateCooldownMs > 0) return;
+    if ((this.currentRoom.type !== 'puzzle' && this.currentRoom.type !== 'secret') || this.currentRoom.puzzleSolved || this.plateCooldownMs > 0) return;
     const plates = this.currentRoom.puzzlePlates;
     if (!plates) return;
 
@@ -5951,8 +6198,16 @@ export class GameScene extends Phaser.Scene {
     SoundSystem.playUnlock();
     this.ui.showToast(message, '#66ffd9');
     if (net.mode !== 'client') {
-      const itemId = rollRandomItemId(new SeededRandom((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0));
-      this.spawnRoomLoot(`puz_${Date.now()}`, 'item', 88, 88, itemId);
+      const rng = new SeededRandom((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0);
+      if (this.currentRoom.type === 'secret') {
+        const chestItemId = rollSecretChestItemId(rng);
+        this.spawnRoomLoot(`sec_chest_${Date.now()}`, 'chest', 88, 88, chestItemId);
+        this.spawnRoomLoot(`sec_shard_${Date.now()}_1`, 'shard', 64, 88, undefined, 5);
+        this.spawnRoomLoot(`sec_shard_${Date.now()}_2`, 'shard', 112, 88, undefined, 5);
+      } else {
+        const itemId = rollRandomItemId(rng);
+        this.spawnRoomLoot(`puz_${Date.now()}`, 'item', 88, 88, itemId);
+      }
     }
   }
 
@@ -6459,18 +6714,42 @@ export class GameScene extends Phaser.Scene {
       promptText =
         net.mode === 'solo' ? '[E] Pillar Blessing (+2 Hearts)' : '[E] Pillar Revive';
     } else if (
-      this.currentRoom.type === 'puzzle' &&
+      (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
       !this.currentRoom.puzzleSolved &&
       this.specialObjs.resetRune &&
       Phaser.Math.Distance.Between(px, py, this.specialObjs.resetRune.x, this.specialObjs.resetRune.y) < 26
     ) {
       promptText = '[E] Reset Blocks';
     } else if (
-      this.currentRoom.type === 'puzzle' &&
+      (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
       !this.currentRoom.puzzleSolved &&
       this.specialObjs.mirrors.some((m) => Phaser.Math.Distance.Between(px, py, m.x, m.y) < 24)
     ) {
       promptText = '[E] Rotate Mirror';
+    } else if (
+      (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
+      !this.currentRoom.puzzleSolved &&
+      this.specialObjs.lights.some((l) => Phaser.Math.Distance.Between(px, py, l.x, l.y) < 16)
+    ) {
+      promptText = '[E] Toggle Rune';
+    } else if (
+      (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
+      !this.currentRoom.puzzleSolved &&
+      this.specialObjs.simonCenter &&
+      Phaser.Math.Distance.Between(px, py, this.specialObjs.simonCenter.x, this.specialObjs.simonCenter.y) < 20
+    ) {
+      promptText = '[E] Play Sequence';
+    } else if (
+      (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
+      !this.currentRoom.puzzleSolved &&
+      this.specialObjs.simonRunes.some((r) => Phaser.Math.Distance.Between(px, py, r.x, r.y) < 20)
+    ) {
+      promptText = '[E] Activate Rune';
+    } else if (
+      hasArtifact(this.playerState.inventory, 'wandering_eye') !== -1 &&
+      this.isNearClosedSecretWall(px, py)
+    ) {
+      promptText = '[E] Open Secret Wall (Eye)';
     } else {
       for (const l of this.lootObjs) {
         if (!l.collected && (l.kind === 'chest' || l.kind === 'item') && Phaser.Math.Distance.Between(px, py, l.sprite.x, l.sprite.y) < 26) {

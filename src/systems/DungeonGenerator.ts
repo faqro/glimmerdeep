@@ -327,39 +327,15 @@ export class DungeonGenerator {
       return;
     }
 
-    if (room.type === 'treasure' || room.type === 'secret') {
+    if (room.type === 'treasure') {
       room.cleared = true;
-      const secretWeapons = WEAPON_IDS.filter((id) => WEAPONS[id].rarity === 'secret');
-      const secretChestItemId =
-        room.type === 'secret' && secretWeapons.length > 0 && rng.chance(1 / 7)
-          ? rng.pick(secretWeapons)
-          : undefined;
       room.loot.push({
         uid: `chest_${room.gx}_${room.gy}`,
         kind: 'chest',
         x: 88,
         y: 88,
-        itemId: secretChestItemId,
         collected: false,
       });
-      if (room.type === 'secret') {
-        room.loot.push({
-          uid: `sec_shard_${room.gx}_${room.gy}_1`,
-          kind: 'shard',
-          x: 64,
-          y: 88,
-          amount: 5,
-          collected: false,
-        });
-        room.loot.push({
-          uid: `sec_shard_${room.gx}_${room.gy}_2`,
-          kind: 'shard',
-          x: 112,
-          y: 88,
-          amount: 5,
-          collected: false,
-        });
-      }
       return;
     }
 
@@ -409,6 +385,142 @@ export class DungeonGenerator {
       room.cleared = true;
       room.eventUsed = false;
       room.eventKind = floorRng.pick(['fairy_circle', 'wishing_well', 'cursed_altar', 'lore_stone']);
+      return;
+    }
+
+    if (room.type === 'secret') {
+      room.cleared = false;
+      room.puzzleSolved = false;
+      const kind = floorRng.pick(['plates', 'mirror_beam', 'block_push', 'lights_out', 'memory_simon'] as const);
+      room.puzzleKind = kind;
+
+      if (kind === 'plates') {
+        // 8-plate labyrinth across the entire room
+        room.puzzleObstacles = [
+          { tx: 3, ty: 2 },
+          { tx: 3, ty: 3 },
+          { tx: 7, ty: 2 },
+          { tx: 7, ty: 3 },
+          { tx: 3, ty: 7 },
+          { tx: 3, ty: 8 },
+          { tx: 7, ty: 7 },
+          { tx: 7, ty: 8 },
+          { tx: 5, ty: 3 },
+          { tx: 5, ty: 7 },
+        ];
+        room.puzzlePlates = [
+          { id: 'sp0', tx: 2, ty: 2, order: 1, activated: false },
+          { id: 'sp1', tx: 8, ty: 8, order: 2, activated: false },
+          { id: 'sp2', tx: 8, ty: 2, order: 3, activated: false },
+          { id: 'sp3', tx: 2, ty: 8, order: 4, activated: false },
+          { id: 'sp4', tx: 4, ty: 4, order: 5, activated: false },
+          { id: 'sp5', tx: 6, ty: 6, order: 6, activated: false },
+          { id: 'sp6', tx: 6, ty: 4, order: 7, activated: false },
+          { id: 'sp7', tx: 4, ty: 6, order: 8, activated: false },
+        ];
+      } else if (kind === 'mirror_beam') {
+        // 10-mirror cross-room beam labyrinth with decoys
+        room.puzzleObstacles = [
+          { tx: 3, ty: 3 },
+          { tx: 3, ty: 4 },
+          { tx: 6, ty: 5 },
+          { tx: 7, ty: 3 },
+          { tx: 4, ty: 7 },
+          { tx: 6, ty: 7 },
+        ];
+        room.puzzleBeam = {
+          emitterTx: 1,
+          emitterTy: 2,
+          emitterDir: 'east',
+          targetTx: 9,
+          targetTy: 8,
+          mirrors: [
+            { id: 'sm0', tx: 4, ty: 2, orientation: 'slash' },
+            { id: 'sm1', tx: 4, ty: 5, orientation: 'slash' },
+            { id: 'sm2', tx: 2, ty: 5, orientation: 'backslash' },
+            { id: 'sm3', tx: 2, ty: 8, orientation: 'backslash' },
+            { id: 'sm4', tx: 5, ty: 8, orientation: 'slash' },
+            { id: 'sm5', tx: 5, ty: 2, orientation: 'slash' },
+            { id: 'sm6', tx: 8, ty: 2, orientation: 'slash' },
+            { id: 'sm7', tx: 8, ty: 6, orientation: 'backslash' },
+            { id: 'sm8', tx: 7, ty: 6, orientation: 'backslash' },
+            { id: 'sm9', tx: 7, ty: 8, orientation: 'slash' },
+          ],
+        };
+      } else if (kind === 'block_push') {
+        // 3-block Sokoban around central pillars
+        room.puzzleObstacles = [
+          { tx: 4, ty: 3 },
+          { tx: 6, ty: 3 },
+          { tx: 4, ty: 7 },
+          { tx: 6, ty: 7 },
+          { tx: 5, ty: 4 },
+        ];
+        room.puzzleBlock = {
+          blocks: [
+            { id: 'sb0', tx: 3, ty: 4, initialTx: 3, initialTy: 4 },
+            { id: 'sb1', tx: 3, ty: 6, initialTx: 3, initialTy: 6 },
+            { id: 'sb2', tx: 7, ty: 5, initialTx: 7, initialTy: 5 },
+          ],
+          goals: [
+            { tx: 8, ty: 3 },
+            { tx: 8, ty: 7 },
+            { tx: 2, ty: 3 },
+          ],
+          resetTx: 2,
+          resetTy: 8,
+        };
+      } else if (kind === 'lights_out') {
+        // 3x3 Lights-Out grid guaranteed solvable by reverse-toggling from all-lit
+        const grid: Array<{ id: string; tx: number; ty: number; gx: number; gy: number; lit: boolean }> = [];
+        for (let gy = 0; gy < 3; gy++) {
+          for (let gx = 0; gx < 3; gx++) {
+            grid.push({
+              id: `lt_${gx}_${gy}`,
+              tx: 4 + gx,
+              ty: 4 + gy,
+              gx,
+              gy,
+              lit: true,
+            });
+          }
+        }
+        const toggleAt = (cx: number, cy: number) => {
+          for (const cell of grid) {
+            if (Math.abs(cell.gx - cx) + Math.abs(cell.gy - cy) <= 1) {
+              cell.lit = !cell.lit;
+            }
+          }
+        };
+        const moves = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+        floorRng.shuffle(moves);
+        const numScramble = floorRng.int(4, 6);
+        for (let i = 0; i < numScramble; i++) {
+          const idx = moves[i];
+          toggleAt(idx % 3, Math.floor(idx / 3));
+        }
+        if (grid.every((c) => c.lit)) {
+          toggleAt(1, 1);
+          toggleAt(0, 0);
+        }
+        room.puzzleLights = grid;
+      } else {
+        // memory_simon: 4 colored arcane runes + 6-step sequence
+        const seq: number[] = [];
+        for (let i = 0; i < 6; i++) {
+          seq.push(floorRng.int(0, 3));
+        }
+        room.puzzleSimon = {
+          sequence: seq,
+          progress: 0,
+          runes: [
+            { id: 'sr0', idx: 0, tx: 5, ty: 3, color: 0xff5d8f },
+            { id: 'sr1', idx: 1, tx: 7, ty: 5, color: 0x66ffd9 },
+            { id: 'sr2', idx: 2, tx: 5, ty: 7, color: 0xffe066 },
+            { id: 'sr3', idx: 3, tx: 3, ty: 5, color: 0xc084fc },
+          ],
+        };
+      }
       return;
     }
 

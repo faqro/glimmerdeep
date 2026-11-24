@@ -59,6 +59,26 @@ export const SUPER_RARE_MERCHANT_IDS: string[] = [
   ...Object.values(ARTIFACTS).filter((a) => a.merchantOnly).map((a) => a.id),
 ];
 
+export function rollSecretChestItemId(rng: SeededRandom): string {
+  const secretPool: string[] = [
+    ...WEAPON_IDS.filter((id) => WEAPONS[id].rarity === 'secret'),
+    ...CONSUMABLE_IDS.filter((id) => CONSUMABLES[id].rarity === 'secret'),
+    ...ARTIFACT_IDS.filter((id) => ARTIFACTS[id].rarity === 'secret'),
+  ];
+  const superRarePool: string[] = [
+    ...WEAPON_IDS.filter((id) => WEAPONS[id].rarity === 'super_rare'),
+    ...CONSUMABLE_IDS.filter((id) => CONSUMABLES[id].rarity === 'super_rare'),
+    ...ARTIFACT_IDS.filter((id) => ARTIFACTS[id].rarity === 'super_rare'),
+  ];
+  if (secretPool.length > 0 && rng.chance(1 / 7)) {
+    return rng.pick(secretPool);
+  }
+  if (superRarePool.length > 0) {
+    return rng.pick(superRarePool);
+  }
+  return rollRandomItemId(rng);
+}
+
 export function rollRandomItemId(rng: SeededRandom, includeWeapons = true): string {
   const pool: string[] = [
     ...CONSUMABLE_IDS.filter((id) => !CONSUMABLES[id].merchantOnly && CONSUMABLES[id].rarity !== 'secret'),

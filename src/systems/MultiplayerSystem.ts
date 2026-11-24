@@ -36,7 +36,10 @@ const MQTT_RELAY_URLS = [
   'wss://broker.hivemq.com:8884/mqtt',
 ];
 
-function buildIceServers(): RTCIceServer[] {
+let cachedTurnIceServers: RTCIceServer[] = [];
+let cachedTurnExpiresAt = 0;
+
+function buildIceServers(dynamicTurnServers: RTCIceServer[] = []): RTCIceServer[] {
   const servers: RTCIceServer[] = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -55,7 +58,41 @@ function buildIceServers(): RTCIceServer[] {
     });
   }
 
+  for (const s of dynamicTurnServers) {
+    servers.push(s);
+  }
+
   return servers;
+}
+
+async function resolveIceServers(): Promise<RTCIceServer[]> {
+  const endpoint = (import.meta.env?.VITE_TURN_CREDENTIALS_URL as string | undefined)?.trim();
+  if (!endpoint) return buildIceServers();
+
+  const now = Date.now();
+  if (cachedTurnIceServers.length > 0 && now < cachedTurnExpiresAt) {
+    return buildIceServers(cachedTurnIceServers);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const res = await fetch(endpoint, { method: 'GET', signal: controller.signal });
+    if (!res.ok) return buildIceServers();
+    const data = (await res.json()) as { iceServers?: RTCIceServer[]; ttl?: number };
+    const list = Array.isArray(data.iceServers) ? data.iceServers : [];
+    if (list.length > 0) {
+      cachedTurnIceServers = list;
+      const ttlMs = Math.max(60_000, ((data.ttl ?? 14400) - 60) * 1000);
+      cachedTurnExpiresAt = Date.now() + ttlMs;
+      return buildIceServers(list);
+    }
+  } catch {
+    // Fall back to STUN / static TURN if Worker is unreachable or timed out
+  } finally {
+    clearTimeout(timer);
+  }
+  return buildIceServers();
 }
 
 export interface NetAttackEvent {
@@ -169,6 +206,7 @@ export class MultiplayerSystem {
   public players = new Map<string, LobbyPlayerInfo>();
 
   private localJoinedAt = 0;
+  private connectGen = 0;
   private room: Room | null = null;
   private peerLastSeen = new Map<string, number>();
   private directPeers = new Set<string>();
@@ -316,16 +354,31 @@ export class MultiplayerSystem {
     this.onLobbyUpdate?.();
   }
 
-  private connectRoom(code: string, isHost: boolean): void {
+  private async connectRoom(code: string, isHost: boolean): Promise<void> {
+    const gen = ++this.connectGen;
     const normalizedCode = code.trim().toUpperCase();
     this.inviteCode = normalizedCode;
     this.connectionError = null;
+    this.localJoinedAt = isHost ? 0 : Date.now();
+    this.localPeerId = `pending_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+    this.players.set(this.localPeerId, {
+      peerId: this.localPeerId,
+      uid: this.localUid,
+      name: this.localName,
+      paletteId: this.localPaletteId,
+      ready: isHost,
+      isHost,
+      joinedAt: this.localJoinedAt,
+    });
+
+    const iceServers = await resolveIceServers();
+    if (gen !== this.connectGen || this.mode === 'solo') return;
 
     const baseConfig = {
       appId: APP_ID,
       trickleIce: false,
       rtcConfig: {
-        iceServers: buildIceServers(),
+        iceServers,
         iceCandidatePoolSize: 4,
       },
     };
@@ -354,21 +407,14 @@ export class MultiplayerSystem {
           );
     this.room = room;
     const rawSelfId = (room as unknown as { selfId?: string }).selfId;
-    this.localPeerId =
-      rawSelfId && rawSelfId.length > 0
-        ? rawSelfId
-        : `pending_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-    this.localJoinedAt = isHost ? 0 : Date.now();
-
-    this.players.set(this.localPeerId, {
-      peerId: this.localPeerId,
-      uid: this.localUid,
-      name: this.localName,
-      paletteId: this.localPaletteId,
-      ready: isHost,
-      isHost,
-      joinedAt: this.localJoinedAt,
-    });
+    if (rawSelfId && rawSelfId.length > 0 && rawSelfId !== this.localPeerId) {
+      const prevInfo = this.players.get(this.localPeerId);
+      this.players.delete(this.localPeerId);
+      this.localPeerId = rawSelfId;
+      if (prevInfo) {
+        this.players.set(rawSelfId, { ...prevInfo, peerId: rawSelfId, uid: this.localUid });
+      }
+    }
 
     room
       .getSelf()
@@ -812,6 +858,7 @@ export class MultiplayerSystem {
   }
 
   disconnect(): void {
+    this.connectGen++;
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
