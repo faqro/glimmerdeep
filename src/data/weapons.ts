@@ -540,7 +540,7 @@ export const WEAPONS: Record<string, WeaponDef> = {
     id: 'shugorons_horn',
     name: "Shugoron's Horn",
     rarity: 'secret',
-    description: 'Heavy strike + chain lightning to all foes (12 dmg)',
+    description: '12 dmg strike + 5 dmg chain lightning to all foes',
     style: 'lightning_horn',
     damage: 12,
     maxUses: 6,

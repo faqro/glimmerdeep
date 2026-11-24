@@ -54,6 +54,9 @@ interface ActiveEnemy {
   repositionDir?: number;
   targetX?: number;
   targetY?: number;
+  targetVx?: number;
+  targetVy?: number;
+  lastSyncAt?: number;
 }
 
 interface ActiveProjectile {
@@ -138,7 +141,19 @@ export class GameScene extends Phaser.Scene {
   private wardRing!: Phaser.GameObjects.Arc;
   private playerState!: PlayerStateSnapshot;
   private remotePlayers = new Map<string, PlayerStateSnapshot>();
-  private remoteSprites = new Map<string, { sprite: Phaser.GameObjects.Sprite; label: Phaser.GameObjects.BitmapText }>();
+  private remotePlayerLastDirectAt = new Map<string, number>();
+  private remoteSprites = new Map<
+    string,
+    {
+      sprite: Phaser.GameObjects.Sprite;
+      label: Phaser.GameObjects.BitmapText;
+      targetX: number;
+      targetY: number;
+      vx: number;
+      vy: number;
+      lastRecvAt: number;
+    }
+  >();
   private disconnectedPlayers = new Map<string, { levelIndex: number; snapshot: PlayerStateSnapshot }>();
 
   private wallGroup!: Phaser.Physics.Arcade.StaticGroup;
@@ -255,6 +270,7 @@ export class GameScene extends Phaser.Scene {
   private totalShardsCollected = 0;
   private totalEnemiesDefeated = 0;
   private netSyncTimerMs = 0;
+  private worldSyncTimerMs = 0;
   private plateCooldownMs = 0;
   private blockPushCooldownMs = 0;
   private giantStompCooldownMs = 0;
@@ -297,6 +313,7 @@ export class GameScene extends Phaser.Scene {
     this.transitioningLevel = false;
     this.paused = false;
     this.remotePlayers.clear();
+    this.remotePlayerLastDirectAt.clear();
     this.remoteSprites.clear();
     this.disconnectedPlayers.clear();
     this.spectateTargetId = null;
@@ -397,8 +414,8 @@ export class GameScene extends Phaser.Scene {
 
     this.playerSprite = this.physics.add.sprite(88, 88, `player_${this.playerState.paletteId}`, 0);
     this.playerSprite.setDepth(10);
-    this.playerSprite.setSize(10, 12);
-    this.playerSprite.setOffset(3, 10);
+    this.playerSprite.setSize(7, 7);
+    this.playerSprite.setOffset(4.5, 9.5);
     this.playerSprite.setCollideWorldBounds(true);
 
     this.wardRing = this.add.circle(88, 88, 13, 0x6ef3ff, 0.12).setStrokeStyle(1, 0x6ef3ff, 0.85).setDepth(11).setVisible(false);
@@ -522,6 +539,7 @@ export class GameScene extends Phaser.Scene {
       this.slimeSplatters = [];
       this.pillarObjs = [];
       this.projectiles = [];
+      this.remotePlayerLastDirectAt.clear();
       this.remoteSprites.clear();
     });
 
@@ -610,7 +628,17 @@ export class GameScene extends Phaser.Scene {
     net.onPlayAgain = undefined;
     net.onRemotePlayerState = (state, peerId) => {
       if (net.players.has(peerId)) {
+        const now = performance.now();
         this.remotePlayers.set(peerId, { ...state, id: peerId });
+        this.remotePlayerLastDirectAt.set(peerId, now);
+        const vis = this.remoteSprites.get(peerId);
+        if (vis) {
+          vis.targetX = state.x;
+          vis.targetY = state.y;
+          vis.vx = state.vx ?? 0;
+          vis.vy = state.vy ?? 0;
+          vis.lastRecvAt = now;
+        }
       }
     };
 
@@ -646,6 +674,7 @@ export class GameScene extends Phaser.Scene {
         });
       }
       this.remotePlayers.delete(peerId);
+      this.remotePlayerLastDirectAt.delete(peerId);
       const vis = this.remoteSprites.get(peerId);
       if (vis) {
         vis.sprite.destroy();
@@ -658,7 +687,8 @@ export class GameScene extends Phaser.Scene {
 
     net.onHostMigrated = (newHostPeerId, isLocalNewHost) => {
       if (isLocalNewHost) {
-        this.netSyncTimerMs = 65;
+        this.netSyncTimerMs = 45;
+        this.worldSyncTimerMs = 250;
         this.ui.showToast('Host disconnected! You are now Host', '#ffe066');
       } else {
         const hostName = net.players.get(newHostPeerId)?.name ?? 'Teammate';
@@ -858,14 +888,19 @@ export class GameScene extends Phaser.Scene {
         });
         return;
       }
+      const now = performance.now();
       for (const p of sync.players) {
         if (p.id !== this.playerState.id && net.players.has(p.id)) {
-          this.remotePlayers.set(p.id, p);
+          const lastDirect = this.remotePlayerLastDirectAt.get(p.id) ?? 0;
+          if (!this.remotePlayers.has(p.id) || now - lastDirect > 300) {
+            this.remotePlayers.set(p.id, p);
+          }
         }
       }
       for (const peerId of Array.from(this.remotePlayers.keys())) {
         if (!net.players.has(peerId)) {
           this.remotePlayers.delete(peerId);
+          this.remotePlayerLastDirectAt.delete(peerId);
           const vis = this.remoteSprites.get(peerId);
           if (vis) {
             vis.sprite.destroy();
@@ -1051,10 +1086,11 @@ export class GameScene extends Phaser.Scene {
 
   private syncActiveEnemiesFromRemote(
     room: RoomData,
-    syncedEnemies: Array<{ uid: string; x: number; y: number; hp: number; alive: boolean }>,
+    syncedEnemies: Array<{ uid: string; x: number; y: number; vx?: number; vy?: number; hp: number; alive: boolean }>,
     authoritativeList: boolean
   ): void {
     const syncedById = new Map(syncedEnemies.map((es) => [es.uid, es]));
+    const now = performance.now();
     for (const ae of this.activeEnemies) {
       const es = syncedById.get(ae.uid);
       const shouldDie =
@@ -1076,6 +1112,9 @@ export class GameScene extends Phaser.Scene {
         ae.hp = es.hp;
         ae.targetX = es.x;
         ae.targetY = es.y;
+        ae.targetVx = es.vx ?? 0;
+        ae.targetVy = es.vy ?? 0;
+        ae.lastSyncAt = now;
       }
     }
     this.activeEnemies = this.activeEnemies.filter((e) => e.hp > 0 && e.sprite.active);
@@ -1130,7 +1169,21 @@ export class GameScene extends Phaser.Scene {
     }
 
     for (const sp of roomProjs) {
-      const existing = this.projectiles.find((p) => p.netSynced && p.uid === sp.uid);
+      let existing = this.projectiles.find((p) => p.netSynced && p.uid === sp.uid);
+      if (!existing) {
+        const remoteMatch = this.projectiles.find(
+          (p) =>
+            p.fromRemoteEvent &&
+            p.ownerId === sp.ownerId &&
+            Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, sp.x, sp.y) < 36
+        );
+        if (remoteMatch) {
+          remoteMatch.uid = sp.uid;
+          remoteMatch.fromRemoteEvent = false;
+          remoteMatch.netSynced = true;
+          existing = remoteMatch;
+        }
+      }
       if (existing) {
         existing.targetX = sp.x;
         existing.targetY = sp.y;
@@ -1267,7 +1320,14 @@ export class GameScene extends Phaser.Scene {
     if (!isSpectating) {
       this.playerState.gx = gx;
       this.playerState.gy = gy;
+      this.playerState.x = spawnX;
+      this.playerState.y = spawnY;
+      this.playerState.vx = 0;
+      this.playerState.vy = 0;
       this.playerSprite.setPosition(spawnX, spawnY).setVisible(true);
+      if (net.mode !== 'solo') {
+        net.broadcastPlayerState(this.playerState);
+      }
       const skOffsets = [
         { dx: -12, dy: -8 },
         { dx: 12, dy: -8 },
@@ -2644,31 +2704,51 @@ export class GameScene extends Phaser.Scene {
         if (this.hitNyarlathotepArm(sx, sy, range, dmg)) {
           hitAny = true;
         }
-        if (w?.style === 'lightning_horn' && firstHit) {
-          let curr: ActiveEnemy | null = firstHit;
-          while (curr) {
-            chainedSet.add(curr);
-            const cx = curr.sprite.x;
-            const cy = curr.sprite.y;
-            this.spawnParticles(cx, cy, 0x6ef3ff, 6);
-            this.damageEnemy(curr, dmg, curr === firstHit ? angle : undefined);
-
-            let nextEnemy: ActiveEnemy | null = null;
+        if (w?.style === 'lightning_horn') {
+          const firstHitFromMelee = firstHit !== null;
+          const chainDmg = 5;
+          if (!firstHit) {
             let bestDist = Infinity;
             for (const cand of this.activeEnemies) {
-              if (!cand.sprite.active || chainedSet.has(cand)) continue;
-              const d = Phaser.Math.Distance.Between(cx, cy, cand.sprite.x, cand.sprite.y);
+              if (!cand.sprite.active) continue;
+              const d = Phaser.Math.Distance.Between(x, y, cand.sprite.x, cand.sprite.y);
               if (d < bestDist) {
                 bestDist = d;
-                nextEnemy = cand;
+                firstHit = cand;
               }
             }
-            if (nextEnemy) {
-              this.drawLightningBolt(cx, cy, nextEnemy.sprite.x, nextEnemy.sprite.y);
+            if (firstHit) {
+              hitAny = true;
+              this.drawLightningBolt(x, y, firstHit.sprite.x, firstHit.sprite.y);
             }
-            curr = nextEnemy;
           }
-          this.cameras.main.shake(100, 0.008);
+          if (firstHit) {
+            let curr: ActiveEnemy | null = firstHit;
+            while (curr) {
+              chainedSet.add(curr);
+              const cx = curr.sprite.x;
+              const cy = curr.sprite.y;
+              this.spawnParticles(cx, cy, 0x6ef3ff, 6);
+              const isMeleeHit = curr === firstHit && firstHitFromMelee;
+              this.damageEnemy(curr, isMeleeHit ? dmg : chainDmg, isMeleeHit ? angle : undefined);
+
+              let nextEnemy: ActiveEnemy | null = null;
+              let bestDist = Infinity;
+              for (const cand of this.activeEnemies) {
+                if (!cand.sprite.active || chainedSet.has(cand)) continue;
+                const d = Phaser.Math.Distance.Between(cx, cy, cand.sprite.x, cand.sprite.y);
+                if (d < bestDist) {
+                  bestDist = d;
+                  nextEnemy = cand;
+                }
+              }
+              if (nextEnemy) {
+                this.drawLightningBolt(cx, cy, nextEnemy.sprite.x, nextEnemy.sprite.y);
+              }
+              curr = nextEnemy;
+            }
+            this.cameras.main.shake(100, 0.008);
+          }
         }
         if (hitAny && w) {
           const broke = consumeUse(this.playerState.inventory, this.playerState.activeSlot, 1);
@@ -3955,6 +4035,8 @@ export class GameScene extends Phaser.Scene {
   private updatePlayerMovement(time: number, delta: number): void {
     if (this.playerState.downed) {
       this.playerSprite.setVelocity(0, 0);
+      this.playerState.vx = 0;
+      this.playerState.vy = 0;
       this.playerSprite.setFrame(5).setDepth(7);
       this.playerState.downedTimerMs -= delta;
       const anyAlive = Array.from(this.remotePlayers.values()).some((p) => !p.downed);
@@ -3980,6 +4062,8 @@ export class GameScene extends Phaser.Scene {
       this.playerSprite.setVelocity(0, 0);
       this.playerState.x = this.playerSprite.x;
       this.playerState.y = this.playerSprite.y;
+      this.playerState.vx = 0;
+      this.playerState.vy = 0;
       return;
     }
 
@@ -3988,11 +4072,15 @@ export class GameScene extends Phaser.Scene {
       this.playerSprite.setVelocity(this.nyarThrowVx, this.nyarThrowVy);
       this.playerState.x = this.playerSprite.x;
       this.playerState.y = this.playerSprite.y;
+      this.playerState.vx = this.nyarThrowVx;
+      this.playerState.vy = this.nyarThrowVy;
       return;
     }
 
     if (this.respawnAnimMs > 0) {
       this.playerSprite.setVelocity(0, 0);
+      this.playerState.vx = 0;
+      this.playerState.vy = 0;
       this.playerState.dodging = false;
       return;
     }
@@ -4037,6 +4125,8 @@ export class GameScene extends Phaser.Scene {
       } else {
         this.spikePinnedMs = Math.max(0, this.spikePinnedMs - delta);
         this.playerSprite.setVelocity(0, 0);
+        this.playerState.vx = 0;
+        this.playerState.vy = 0;
         this.playerState.dodging = false;
         this.playerState.x = this.playerSprite.x;
         this.playerState.y = this.playerSprite.y;
@@ -4097,6 +4187,9 @@ export class GameScene extends Phaser.Scene {
 
     this.playerState.x = this.playerSprite.x;
     this.playerState.y = this.playerSprite.y;
+    const body = this.playerSprite.body as Phaser.Physics.Arcade.Body | null;
+    this.playerState.vx = body ? body.velocity.x : 0;
+    this.playerState.vy = body ? body.velocity.y : 0;
 
     const hasWard = StatusEffectManager.has(this.playerState.statusEffects, 'starward');
     this.wardRing.setPosition(this.playerSprite.x, this.playerSprite.y).setVisible(hasWard);
@@ -4505,18 +4598,29 @@ export class GameScene extends Phaser.Scene {
 
   private updateEnemies(time: number, delta: number): void {
     if (!this.isRoomAuthority()) {
-      const lerpFactor = 1 - Math.exp(-delta * 0.018);
+      const lerpFactor = 1 - Math.exp(-delta * 0.022);
+      const nowPerf = performance.now();
       for (const e of this.activeEnemies) {
         if (!e.sprite.active) continue;
+        e.sprite.setVelocity(0, 0);
         e.sprite.setFrame(Math.floor(time / 280) % 2);
         if (e.targetX !== undefined && e.targetY !== undefined) {
-          const dist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, e.targetX, e.targetY);
+          const leadSec = Math.min(0.08, Math.max(0, (nowPerf - (e.lastSyncAt ?? nowPerf)) / 1000));
+          const predX = e.targetX + (e.targetVx ?? 0) * leadSec;
+          const predY = e.targetY + (e.targetVy ?? 0) * leadSec;
+          const dx = predX - e.sprite.x;
+          if (Math.abs(e.targetVx ?? 0) > 4) {
+            e.sprite.setFlipX((e.targetVx ?? 0) < 0);
+          } else if (Math.abs(dx) > 0.5) {
+            e.sprite.setFlipX(dx < 0);
+          }
+          const dist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, predX, predY);
           if (dist > 48) {
-            e.sprite.setPosition(e.targetX, e.targetY);
-          } else if (dist > 0.2) {
+            e.sprite.setPosition(predX, predY);
+          } else if (dist > 0.15) {
             e.sprite.setPosition(
-              Phaser.Math.Linear(e.sprite.x, e.targetX, lerpFactor),
-              Phaser.Math.Linear(e.sprite.y, e.targetY, lerpFactor)
+              Phaser.Math.Linear(e.sprite.x, predX, lerpFactor),
+              Phaser.Math.Linear(e.sprite.y, predY, lerpFactor)
             );
           }
         }
@@ -6488,6 +6592,7 @@ export class GameScene extends Phaser.Scene {
     for (const peerId of Array.from(this.remotePlayers.keys())) {
       if (!net.players.has(peerId)) {
         this.remotePlayers.delete(peerId);
+        this.remotePlayerLastDirectAt.delete(peerId);
         const vis = this.remoteSprites.get(peerId);
         if (vis) {
           vis.sprite.destroy();
@@ -6497,7 +6602,8 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // Render remote players in current room
+    // Render remote players in current room with client-side velocity prediction & interpolation
+    const nowPerf = performance.now();
     for (const [peerId, st] of this.remotePlayers.entries()) {
       const sameRoom = st.gx === this.currentRoom.gx && st.gy === this.currentRoom.gy;
       let vis = this.remoteSprites.get(peerId);
@@ -6505,20 +6611,37 @@ export class GameScene extends Phaser.Scene {
         if (!vis) {
           const sp = this.add.sprite(st.x, st.y, `player_${st.paletteId}`, 0).setDepth(10);
           const lb = addPixelText(this, st.x, st.y - 16, st.name, 8, 0xffe066, 0.5, 0.5).setDepth(11);
-          vis = { sprite: sp, label: lb };
+          vis = {
+            sprite: sp,
+            label: lb,
+            targetX: st.x,
+            targetY: st.y,
+            vx: st.vx ?? 0,
+            vy: st.vy ?? 0,
+            lastRecvAt: nowPerf,
+          };
           this.remoteSprites.set(peerId, vis);
+        } else if (vis.targetX !== st.x || vis.targetY !== st.y) {
+          vis.targetX = st.x;
+          vis.targetY = st.y;
+          vis.vx = st.vx ?? 0;
+          vis.vy = st.vy ?? 0;
+          vis.lastRecvAt = nowPerf;
         }
         const now = this.time.now;
         const isRipAnimating = (this.remoteReviveAnimUntil.get(peerId) ?? 0) > now;
         if (!isRipAnimating) {
-          const playerLerp = 1 - Math.exp(-delta * 0.018);
-          const pDist = Phaser.Math.Distance.Between(vis.sprite.x, vis.sprite.y, st.x, st.y);
+          const leadSec = Math.min(0.08, Math.max(0, (nowPerf - vis.lastRecvAt) / 1000));
+          const predX = vis.targetX + vis.vx * leadSec;
+          const predY = vis.targetY + vis.vy * leadSec;
+          const playerLerp = 1 - Math.exp(-delta * 0.022);
+          const pDist = Phaser.Math.Distance.Between(vis.sprite.x, vis.sprite.y, predX, predY);
           if (pDist > 48) {
-            vis.sprite.setPosition(st.x, st.y);
-          } else if (pDist > 0.2) {
+            vis.sprite.setPosition(predX, predY);
+          } else if (pDist > 0.15) {
             vis.sprite.setPosition(
-              Phaser.Math.Linear(vis.sprite.x, st.x, playerLerp),
-              Phaser.Math.Linear(vis.sprite.y, st.y, playerLerp)
+              Phaser.Math.Linear(vis.sprite.x, predX, playerLerp),
+              Phaser.Math.Linear(vis.sprite.y, predY, playerLerp)
             );
           }
           vis.sprite.setFlipX(st.flipX);
@@ -6560,10 +6683,52 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.netSyncTimerMs += delta;
-    if (this.netSyncTimerMs >= 65) {
+    if (this.netSyncTimerMs >= 45) {
       this.netSyncTimerMs = 0;
       net.broadcastPlayerState(this.playerState);
 
+      if (this.isRoomAuthority()) {
+        net.broadcastRoomSync({
+          gx: this.currentRoom.gx,
+          gy: this.currentRoom.gy,
+          cleared: this.currentRoom.cleared,
+          doorsLocked: this.currentRoom.doorsLocked,
+          bossDefeated: this.currentRoom.bossDefeated,
+          enemies: this.activeEnemies.map((e) => {
+            const b = e.sprite.body as Phaser.Physics.Arcade.Body | null;
+            return {
+              uid: e.uid,
+              x: e.sprite.x,
+              y: e.sprite.y,
+              vx: b ? Math.round(b.velocity.x) : 0,
+              vy: b ? Math.round(b.velocity.y) : 0,
+              hp: e.hp,
+              alive: e.hp > 0,
+            };
+          }),
+          projectiles: this.projectiles
+            .filter((p) => p.sprite.active)
+            .map((p) => ({
+              uid: p.uid,
+              gx: this.currentRoom.gx,
+              gy: this.currentRoom.gy,
+              x: p.sprite.x,
+              y: p.sprite.y,
+              vx: p.vx,
+              vy: p.vy,
+              color: p.color,
+              fromPlayer: p.fromPlayer,
+              ownerId: p.ownerId,
+              damage: p.damage,
+              burns: p.burns,
+            })),
+        });
+      }
+    }
+
+    this.worldSyncTimerMs += delta;
+    if (this.worldSyncTimerMs >= 250) {
+      this.worldSyncTimerMs = 0;
       if (net.mode === 'host') {
         const roomStates: NetWorldSync['roomStates'] = [];
         for (let y = 0; y < 6; y++) {
@@ -6614,54 +6779,7 @@ export class GameScene extends Phaser.Scene {
           hostGy: this.currentRoom.gy,
           players: [this.playerState, ...Array.from(this.remotePlayers.values()).filter((p) => net.players.has(p.id))],
           lobbyPlayers: Array.from(net.players.values()),
-          projectiles: this.projectiles
-            .filter((p) => p.sprite.active)
-            .map((p) => ({
-              uid: p.uid,
-              gx: this.currentRoom.gx,
-              gy: this.currentRoom.gy,
-              x: p.sprite.x,
-              y: p.sprite.y,
-              vx: p.vx,
-              vy: p.vy,
-              color: p.color,
-              fromPlayer: p.fromPlayer,
-              ownerId: p.ownerId,
-              damage: p.damage,
-              burns: p.burns,
-            })),
           roomStates,
-        });
-      } else if (net.mode === 'client' && this.isRoomAuthority()) {
-        net.broadcastRoomSync({
-          gx: this.currentRoom.gx,
-          gy: this.currentRoom.gy,
-          cleared: this.currentRoom.cleared,
-          doorsLocked: this.currentRoom.doorsLocked,
-          bossDefeated: this.currentRoom.bossDefeated,
-          enemies: this.activeEnemies.map((e) => ({
-            uid: e.uid,
-            x: e.sprite.x,
-            y: e.sprite.y,
-            hp: e.hp,
-            alive: e.hp > 0,
-          })),
-          projectiles: this.projectiles
-            .filter((p) => p.sprite.active)
-            .map((p) => ({
-              uid: p.uid,
-              gx: this.currentRoom.gx,
-              gy: this.currentRoom.gy,
-              x: p.sprite.x,
-              y: p.sprite.y,
-              vx: p.vx,
-              vy: p.vy,
-              color: p.color,
-              fromPlayer: p.fromPlayer,
-              ownerId: p.ownerId,
-              damage: p.damage,
-              burns: p.burns,
-            })),
         });
       }
     }

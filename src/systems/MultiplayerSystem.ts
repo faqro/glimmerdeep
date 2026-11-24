@@ -155,7 +155,7 @@ export interface NetRoomSync {
   cleared: boolean;
   doorsLocked: boolean;
   bossDefeated?: boolean;
-  enemies: Array<{ uid: string; x: number; y: number; hp: number; alive: boolean }>;
+  enemies: Array<{ uid: string; x: number; y: number; vx?: number; vy?: number; hp: number; alive: boolean }>;
   projectiles: SyncedProjectile[];
 }
 
