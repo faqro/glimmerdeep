@@ -293,7 +293,7 @@ export class GameScene extends Phaser.Scene {
     restoreReconnect?: boolean;
   }): void {
     this.levelIndex = data.levelIndex ?? 0;
-    this.floorSeed = data.floorSeed ?? Math.floor(Math.random() * 900000) + 100000;
+    this.floorSeed = data.floorSeed ?? getDailySeed(this.levelIndex);
     this.transitioningLevel = false;
     this.paused = false;
     this.remotePlayers.clear();

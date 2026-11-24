@@ -183,7 +183,7 @@ export class DungeonGenerator {
       }
     }
 
-    this.ensureAllRoomsAccessible(grid, connect);
+    this.ensureAllRoomsAccessible(grid, connect, rng);
 
     // Assign room types to non-start, non-boss, non-secret rooms
     const normalRooms: RoomData[] = [];
@@ -254,7 +254,8 @@ export class DungeonGenerator {
 
   private static ensureAllRoomsAccessible(
     grid: (RoomData | null)[][],
-    connect: (ax: number, ay: number, bx: number, by: number) => void
+    connect: (ax: number, ay: number, bx: number, by: number) => void,
+    rng: SeededRandom
   ): void {
     const key = (x: number, y: number) => `${x},${y}`;
     const dirs: Array<{
@@ -328,10 +329,14 @@ export class DungeonGenerator {
       }
       if (unreachable.length === 0) break;
 
+      // Shuffle candidates with the daily floor RNG so repair paths are seeded and deterministic per day
+      rng.shuffle(unreachable);
+      const shuffledDirs = rng.shuffle([...dirs]);
+
       // Prefer connecting an unreachable room directly to an adjacent reachable non-boss room
       let linked = false;
       for (const [ux, uy] of unreachable) {
-        for (const d of dirs) {
+        for (const d of shuffledDirs) {
           const rx = ux + d.dx;
           const ry = uy + d.dy;
           if (rx < 0 || rx >= 6 || ry < 0 || ry >= 6) continue;
@@ -351,7 +356,9 @@ export class DungeonGenerator {
         const unreachableSet = new Set(unreachable.map(([x, y]) => key(x, y)));
         const parentMap = new Map<string, string | null>();
         const bfsQueue: Array<[number, number]> = [];
-        for (const k of reachable) {
+        const reachableCoords = Array.from(reachable);
+        rng.shuffle(reachableCoords);
+        for (const k of reachableCoords) {
           const [rx, ry] = k.split(',').map(Number);
           if (rx === 5 && ry === 2) continue;
           parentMap.set(k, null);
@@ -361,7 +368,7 @@ export class DungeonGenerator {
         while (bfsQueue.length > 0 && !targetKey) {
           const [cx, cy] = bfsQueue.shift()!;
           const ck = key(cx, cy);
-          for (const d of dirs) {
+          for (const d of shuffledDirs) {
             const nx = cx + d.dx;
             const ny = cy + d.dy;
             if (nx < 0 || nx >= 6 || ny < 0 || ny >= 6) continue;
