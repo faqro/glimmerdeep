@@ -122,20 +122,25 @@ export class LobbyScene extends Phaser.Scene {
         });
       }
 
-      this.time.delayedCall(5000, () => {
+      const initialBackend = net.signalingBackend;
+      this.time.delayedCall(8000, () => {
         if (!this.scene.isActive('LobbyScene')) return;
-        if (net.mode === 'client' && net.players.size <= 1 && !this.triedAlternateBackend) {
+        if (net.mode === 'client' && net.players.size <= 1 && !net.hasDirectPeers() && !this.triedAlternateBackend) {
           this.triedAlternateBackend = true;
-          const alt = net.signalingBackend === 'nostr' ? 'mqtt' : 'nostr';
+          const alt = initialBackend === 'nostr' ? 'mqtt' : 'nostr';
           net.reconnectClientWithBackend(alt);
           net.broadcastLobbySelf(this.isReady);
           this.refreshPlayers();
         }
       });
 
-      this.time.delayedCall(12000, () => {
+      this.time.delayedCall(16000, () => {
         if (!this.scene.isActive('LobbyScene')) return;
         if (net.mode === 'client' && net.players.size <= 1) {
+          if (!net.hasDirectPeers() && net.signalingBackend !== initialBackend) {
+            net.reconnectClientWithBackend(initialBackend);
+            net.broadcastLobbySelf(this.isReady);
+          }
           this.connectTimedOut = true;
           this.refreshPlayers();
         }
