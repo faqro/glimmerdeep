@@ -4256,6 +4256,23 @@ export class GameScene extends Phaser.Scene {
       }
     } else {
       this.beamDamageTickMs = 120;
+      if (!this.currentRoom.secretRevealed) {
+        const hitSecretNorth =
+          this.currentRoom.connections.secretNorth && Math.abs(endX - 88) <= 12 && endY <= 20;
+        const hitSecretSouth =
+          this.currentRoom.connections.secretSouth &&
+          Math.abs(endX - 88) <= 12 &&
+          endY >= this.roomHeightPx - 20;
+        const hitSecretWest =
+          this.currentRoom.connections.secretWest && Math.abs(endY - 88) <= 12 && endX <= 20;
+        const hitSecretEast =
+          this.currentRoom.connections.secretEast &&
+          Math.abs(endY - 88) <= 12 &&
+          endX >= this.roomWidthPx - 20;
+        if (hitSecretNorth || hitSecretSouth || hitSecretWest || hitSecretEast) {
+          this.tryOpenAdjacentSecretWall(endX, endY);
+        }
+      }
     }
 
     this.beamDrainAccumMs += delta;

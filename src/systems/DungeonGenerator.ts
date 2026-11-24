@@ -183,6 +183,8 @@ export class DungeonGenerator {
       }
     }
 
+    this.ensureAllRoomsAccessible(grid, connect);
+
     // Assign room types to non-start, non-boss, non-secret rooms
     const normalRooms: RoomData[] = [];
     for (let y = 0; y < 6; y++) {
@@ -248,6 +250,152 @@ export class DungeonGenerator {
       modifier,
       rooms: grid as RoomData[][],
     };
+  }
+
+  private static ensureAllRoomsAccessible(
+    grid: (RoomData | null)[][],
+    connect: (ax: number, ay: number, bx: number, by: number) => void
+  ): void {
+    const key = (x: number, y: number) => `${x},${y}`;
+    const dirs: Array<{
+      dir: 'north' | 'south' | 'east' | 'west';
+      opp: 'north' | 'south' | 'east' | 'west';
+      dx: number;
+      dy: number;
+    }> = [
+      { dir: 'north', opp: 'south', dx: 0, dy: -1 },
+      { dir: 'south', opp: 'north', dx: 0, dy: 1 },
+      { dir: 'east', opp: 'west', dx: 1, dy: 0 },
+      { dir: 'west', opp: 'east', dx: -1, dy: 0 },
+    ];
+
+    // Normalize normal connections between non-secret rooms so they are symmetric and valid
+    for (let y = 0; y < 6; y++) {
+      for (let x = 0; x < 6; x++) {
+        const r = grid[y][x];
+        if (!r || r.type === 'secret') continue;
+        for (const d of dirs) {
+          if (!r.connections[d.dir]) continue;
+          const nx = x + d.dx;
+          const ny = y + d.dy;
+          const nr = nx >= 0 && nx < 6 && ny >= 0 && ny < 6 ? grid[ny][nx] : null;
+          if (!nr || nr.type === 'secret') {
+            r.connections[d.dir] = false;
+          } else {
+            nr.connections[d.opp] = true;
+          }
+        }
+      }
+    }
+
+    const collectReachable = (): Set<string> => {
+      const visited = new Set<string>();
+      const start = grid[2]?.[0];
+      if (!start || start.type === 'secret') return visited;
+      const queue: Array<[number, number]> = [[0, 2]];
+      visited.add(key(0, 2));
+      while (queue.length > 0) {
+        const [x, y] = queue.shift()!;
+        const r = grid[y][x]!;
+        for (const d of dirs) {
+          if (!r.connections[d.dir]) continue;
+          const nx = x + d.dx;
+          const ny = y + d.dy;
+          if (nx < 0 || nx >= 6 || ny < 0 || ny >= 6) continue;
+          const nr = grid[ny][nx];
+          if (!nr || nr.type === 'secret') continue;
+          const nk = key(nx, ny);
+          if (!visited.has(nk)) {
+            visited.add(nk);
+            queue.push([nx, ny]);
+          }
+        }
+      }
+      return visited;
+    };
+
+    let reachable = collectReachable();
+
+    while (true) {
+      const unreachable: Array<[number, number]> = [];
+      for (let y = 0; y < 6; y++) {
+        for (let x = 0; x < 6; x++) {
+          const r = grid[y][x];
+          if (r && r.type !== 'secret' && !reachable.has(key(x, y))) {
+            unreachable.push([x, y]);
+          }
+        }
+      }
+      if (unreachable.length === 0) break;
+
+      // Prefer connecting an unreachable room directly to an adjacent reachable non-boss room
+      let linked = false;
+      for (const [ux, uy] of unreachable) {
+        for (const d of dirs) {
+          const rx = ux + d.dx;
+          const ry = uy + d.dy;
+          if (rx < 0 || rx >= 6 || ry < 0 || ry >= 6) continue;
+          if (rx === 5 && ry === 2) continue;
+          const rr = grid[ry][rx];
+          if (rr && rr.type !== 'secret' && reachable.has(key(rx, ry))) {
+            connect(rx, ry, ux, uy);
+            linked = true;
+            break;
+          }
+        }
+        if (linked) break;
+      }
+
+      if (!linked) {
+        // Fallback: carve shortest path through non-secret, non-boss cells to connect the component
+        const unreachableSet = new Set(unreachable.map(([x, y]) => key(x, y)));
+        const parentMap = new Map<string, string | null>();
+        const bfsQueue: Array<[number, number]> = [];
+        for (const k of reachable) {
+          const [rx, ry] = k.split(',').map(Number);
+          if (rx === 5 && ry === 2) continue;
+          parentMap.set(k, null);
+          bfsQueue.push([rx, ry]);
+        }
+        let targetKey: string | null = null;
+        while (bfsQueue.length > 0 && !targetKey) {
+          const [cx, cy] = bfsQueue.shift()!;
+          const ck = key(cx, cy);
+          for (const d of dirs) {
+            const nx = cx + d.dx;
+            const ny = cy + d.dy;
+            if (nx < 0 || nx >= 6 || ny < 0 || ny >= 6) continue;
+            if (nx === 5 && ny === 2) continue;
+            const nr = grid[ny][nx];
+            if (nr && nr.type === 'secret') continue;
+            const nk = key(nx, ny);
+            if (parentMap.has(nk)) continue;
+            parentMap.set(nk, ck);
+            if (unreachableSet.has(nk)) {
+              targetKey = nk;
+              break;
+            }
+            bfsQueue.push([nx, ny]);
+          }
+        }
+        if (targetKey) {
+          let cur: string | null = targetKey;
+          while (cur) {
+            const prev: string | null = parentMap.get(cur) ?? null;
+            if (prev) {
+              const [ax, ay] = prev.split(',').map(Number);
+              const [bx, by] = cur.split(',').map(Number);
+              connect(ax, ay, bx, by);
+            }
+            cur = prev;
+          }
+          linked = true;
+        }
+      }
+
+      if (!linked) break;
+      reachable = collectReachable();
+    }
   }
 
   private static populateRoom(
@@ -354,7 +502,9 @@ export class DungeonGenerator {
 
       const wId = rng.pick(normalWeapons);
       const cId = rng.pick(normalConsumables);
-      const aId = rng.pick(normalArtifacts);
+      const forceWanderingEye =
+        levelIndex === 1 && normalArtifacts.includes('wandering_eye') && rng.chance(0.25);
+      const aId = forceWanderingEye ? 'wandering_eye' : rng.pick(normalArtifacts);
       stock.push({ itemId: wId, price: rng.int(22, 34), sold: false });
       stock.push({ itemId: cId, price: CONSUMABLES[cId].price, sold: false });
       stock.push({ itemId: aId, price: ARTIFACTS[aId].price, sold: false });
@@ -363,7 +513,7 @@ export class DungeonGenerator {
       if (SUPER_RARE_MERCHANT_IDS.length > 0 && rng.chance(0.1)) {
         const srId = rng.pick(SUPER_RARE_MERCHANT_IDS);
         const srDef = WEAPONS[srId] ?? CONSUMABLES[srId] ?? ARTIFACTS[srId];
-        const slotIdx = rng.int(0, 2);
+        const slotIdx = forceWanderingEye ? rng.int(0, 1) : rng.int(0, 2);
         stock[slotIdx] = {
           itemId: srId,
           price: srDef?.price ?? 50,
