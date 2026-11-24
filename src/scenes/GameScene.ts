@@ -131,6 +131,14 @@ interface ActiveSkeleton {
   formationIndex: number;
 }
 
+interface CarriedSkeletonState {
+  uid: string;
+  staffInstanceId: string;
+  hp: number;
+  maxHp: number;
+  formationIndex: number;
+}
+
 export class GameScene extends Phaser.Scene {
   private levelIndex = 0;
   private floorSeed = 123456;
@@ -306,6 +314,7 @@ export class GameScene extends Phaser.Scene {
     floorSeed?: number;
     resetRun?: boolean;
     carryPlayer?: PlayerStateSnapshot;
+    carrySkeletons?: CarriedSkeletonState[];
     restoreReconnect?: boolean;
   }): void {
     this.levelIndex = data.levelIndex ?? 0;
@@ -455,6 +464,35 @@ export class GameScene extends Phaser.Scene {
     );
 
     this.loadRoom(spawnGx, spawnGy, spawnX, spawnY);
+
+    if (data.carrySkeletons && data.carrySkeletons.length > 0 && !data.resetRun) {
+      const skOffsets = [
+        { dx: -12, dy: -8 },
+        { dx: 12, dy: -8 },
+        { dx: -12, dy: 8 },
+        { dx: 12, dy: 8 },
+      ];
+      for (const cs of data.carrySkeletons) {
+        const off = skOffsets[cs.formationIndex % skOffsets.length];
+        const sx = Phaser.Math.Clamp(spawnX + off.dx, 24, Math.max(24, this.roomWidthPx - 24));
+        const sy = Phaser.Math.Clamp(spawnY + off.dy, 24, Math.max(24, this.roomHeightPx - 24));
+        const skSprite = this.physics.add.sprite(sx, sy, 'ally_skeleton', 0).setDepth(9);
+        skSprite.setSize(10, 12);
+        skSprite.setOffset(3, 4);
+        skSprite.setCollideWorldBounds(true);
+        this.skeletonGroup.add(skSprite);
+        this.summonedSkeletons.push({
+          uid: cs.uid,
+          staffInstanceId: cs.staffInstanceId,
+          sprite: skSprite,
+          hp: cs.hp,
+          maxHp: cs.maxHp,
+          attackCooldownMs: 0,
+          hitFlashMs: 0,
+          formationIndex: cs.formationIndex,
+        });
+      }
+    }
 
     const biome = BIOMES[Math.min(this.levelIndex, BIOMES.length - 1)];
     this.time.delayedCall(120, () => {
@@ -885,6 +923,7 @@ export class GameScene extends Phaser.Scene {
           levelIndex: sync.levelIndex,
           floorSeed: sync.floorSeed,
           carryPlayer: this.playerState,
+          carrySkeletons: this.getCarriedSkeletons(),
         });
         return;
       }
@@ -3559,7 +3598,20 @@ export class GameScene extends Phaser.Scene {
       levelIndex: nextLevel,
       floorSeed: nextSeed,
       carryPlayer: this.playerState,
+      carrySkeletons: this.getCarriedSkeletons(),
     });
+  }
+
+  private getCarriedSkeletons(): CarriedSkeletonState[] {
+    return this.summonedSkeletons
+      .filter((s) => s.sprite.active && s.hp > 0)
+      .map((s) => ({
+        uid: s.uid,
+        staffInstanceId: s.staffInstanceId,
+        hp: s.hp,
+        maxHp: s.maxHp,
+        formationIndex: s.formationIndex,
+      }));
   }
 
   private damagePlayer(rawDmg: number): void {
