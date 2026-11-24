@@ -111,6 +111,84 @@ export class PixelArtGenerator {
       '......oo..',
     ], { o: '#100d24', w: '#ffe066' });
     arrow.tex.refresh();
+
+    // Star projectile 10x10
+    const starProj = this.createCanvas('proj_star', 10, 10);
+    this.drawGrid(starProj.ctx, 0, 0, [
+      '....oo....',
+      '....YY....',
+      '..ooYYoo..',
+      '.oYYYYYYo.',
+      'oYYwYYwYYo',
+      '.oYYYYYYo.',
+      '..oYYYYo..',
+      '.oYYooYYo.',
+      '.oo....oo.',
+      '..........',
+    ], { o: '#100d24', Y: '#ffe066', w: '#ffffff' });
+    starProj.tex.refresh();
+
+    // Musical note projectiles 10x10 (4 variations)
+    const notePal = { o: '#100d24', w: '#ffffff', c: '#a5f3fc' };
+    const note0 = this.createCanvas('proj_note_0', 10, 10);
+    this.drawGrid(note0.ctx, 0, 0, [
+      '.....oo...',
+      '.....ow...',
+      '.....ow...',
+      '.....ow...',
+      '.....ow...',
+      '...ooow...',
+      '..owwcwo..',
+      '..owwwwo..',
+      '...oooo...',
+      '..........',
+    ], notePal);
+    note0.tex.refresh();
+
+    const note1 = this.createCanvas('proj_note_1', 10, 10);
+    this.drawGrid(note1.ctx, 0, 0, [
+      '...oooo...',
+      '..owwwwo..',
+      '..owwcwo..',
+      '..owooo...',
+      '..ow......',
+      '..ow......',
+      '..ow......',
+      '..ow......',
+      '..oo......',
+      '..........',
+    ], notePal);
+    note1.tex.refresh();
+
+    const note2 = this.createCanvas('proj_note_2', 10, 10);
+    this.drawGrid(note2.ctx, 0, 0, [
+      '....ooo...',
+      '....owwo..',
+      '....ow.wo.',
+      '....ow..o.',
+      '....ow....',
+      '..ooow....',
+      '.owwcwo...',
+      '.owwwwo...',
+      '..oooo....',
+      '..........',
+    ], notePal);
+    note2.tex.refresh();
+
+    const note3 = this.createCanvas('proj_note_3', 10, 10);
+    this.drawGrid(note3.ctx, 0, 0, [
+      '..ooooooo.',
+      '..owwwwwwo',
+      '..ow....wo',
+      '..ow....wo',
+      '.oow...oow',
+      'owwwo.owww',
+      'owwwo.owww',
+      '.ooo...ooo',
+      '..........',
+      '..........',
+    ], notePal);
+    note3.tex.refresh();
   }
 
   private generateUIElements(): void {
@@ -794,6 +872,27 @@ export class PixelArtGenerator {
           '........oWWo....',
           '.......oWWo.....',
           '......oooo......',
+        ],
+        pal: { o: '#100d24', G: '#9ef01a', w: '#ffffff', W: '#6b4230' },
+      },
+      fx_vine_scythe: {
+        rows: [
+          '......ooooooo...',
+          '.....oGGGGGGGo..',
+          '....oGGwGGGGGGoo',
+          '....oGGo..ooGGGo',
+          '.....oWo....oGGo',
+          '.....oWo.....oGo',
+          '.....oWo......oo',
+          '.....oWo........',
+          '.....oWo........',
+          '.....oWo........',
+          '.....oWo........',
+          '.....oWo........',
+          '.....oWo........',
+          '.....oWo........',
+          '.....oWo........',
+          '.....ooo........',
         ],
         pal: { o: '#100d24', G: '#9ef01a', w: '#ffffff', W: '#6b4230' },
       },

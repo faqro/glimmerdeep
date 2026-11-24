@@ -288,6 +288,7 @@ export interface RoomData {
   brokenCrates?: string[];
   widthTiles?: number;
   heightTiles?: number;
+  isTestRoom?: boolean;
   hallwayDoors?: Array<{
     dir: Direction;
     tx: number;

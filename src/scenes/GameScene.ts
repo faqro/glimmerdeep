@@ -41,9 +41,18 @@ interface ActiveEnemy {
   dashVx: number;
   dashVy: number;
   slowedMs: number;
+  slowFxMs?: number;
+  frostSlowMs?: number;
+  frozenMs?: number;
+  iceHits?: number;
+  iceGfx?: Phaser.GameObjects.Graphics;
   bubbledMs: number;
+  bubbleGfx?: Phaser.GameObjects.Graphics;
+  bubbleDriftVx?: number;
+  bubbleDriftVy?: number;
   burningMs: number;
   burnTickMs: number;
+  burnFxMs: number;
   hitFlashMs: number;
   phase: number;
   bossStep?: number;
@@ -75,10 +84,22 @@ interface ActiveProjectile {
   returning: boolean;
   bouncesLeft: number;
   slows: boolean;
+  freezes?: boolean;
   bubbles: boolean;
+  bubbled?: boolean;
+  bubbleGfx?: Phaser.GameObjects.Graphics;
   burns: boolean;
   cometBoost?: boolean;
   slimeSplatter?: boolean;
+  splitSpore?: boolean;
+  starShatter?: boolean;
+  voidRift?: boolean;
+  shockBlast?: boolean;
+  starBomb?: boolean;
+  lunarDisc?: boolean;
+  lunarSliceMs?: number;
+  isMusicNote?: boolean;
+  floatPhase?: number;
   healsAlly?: boolean;
   healAmount?: number;
   startX?: number;
@@ -179,16 +200,26 @@ export class GameScene extends Phaser.Scene {
     spawnX?: number;
     spawnY?: number;
     isBossGate?: boolean;
+    isTestExit?: boolean;
   }> = [];
   private roomGroup!: Phaser.GameObjects.Group;
   private roomWidthPx = 176;
   private roomHeightPx = 176;
+  private isTestRoom = false;
+  private testSpawnCooldownMs = 0;
+  private testWaveCount = 4;
+  private testCrateRespawnTimers = new Map<string, number>();
+  private testHealingPad: { x: number; y: number; cooldownMs: number } | null = null;
+  private lastLavaFrame = -1;
 
   private activeEnemies: ActiveEnemy[] = [];
   private summonedSkeletons: ActiveSkeleton[] = [];
   private projectiles: ActiveProjectile[] = [];
   private hazards: ActiveHazard[] = [];
   private slimeSplatters: Array<{ x: number; y: number; radius: number; gfx: Phaser.GameObjects.Graphics; lifeMs: number }> = [];
+  private cometTrailActiveMs = 0;
+  private cometTrailAccumMs = 0;
+  private cometTrailNodes: Array<{ x: number; y: number; gfx: Phaser.GameObjects.Graphics; lifeMs: number; hitUids: Set<string> }> = [];
   private pillarObjs: Array<{ idx: number; x: number; y: number; tx: number; ty: number; gfx: Phaser.GameObjects.Graphics }> = [];
   private spikeTraps: ActiveSpikeTrap[] = [];
   private lootObjs: ActiveLootObj[] = [];
@@ -197,6 +228,21 @@ export class GameScene extends Phaser.Scene {
   private beamDamageTickMs = 0;
   private beamDrainAccumMs = 0;
   private beamFxAccumMs = 0;
+  private flameDamageTickMs = 0;
+  private flameDrainAccumMs = 0;
+  private flameFxAccumMs = 0;
+  private prismBeams: Array<{
+    gfx: Phaser.GameObjects.Graphics;
+    ownerId: string;
+    isLocal: boolean;
+    angle: number;
+    range: number;
+    damage: number;
+    chargeMs: number;
+    activeMs: number;
+    fxAccumMs: number;
+    hitUids: Set<string>;
+  }> = [];
 
   // Level 7 & Nyarlathotep Boss State
   private l7WhisperStep = 0;
@@ -316,11 +362,14 @@ export class GameScene extends Phaser.Scene {
     carryPlayer?: PlayerStateSnapshot;
     carrySkeletons?: CarriedSkeletonState[];
     restoreReconnect?: boolean;
+    exitedTestRoom?: boolean;
   }): void {
     this.levelIndex = data.levelIndex ?? 0;
     this.floorSeed = data.floorSeed ?? getDailySeed(this.levelIndex);
     this.transitioningLevel = false;
     this.paused = false;
+    this.testSpawnCooldownMs = 0;
+    this.testWaveCount = 4;
     this.remotePlayers.clear();
     this.remotePlayerLastDirectAt.clear();
     this.remoteSprites.clear();
@@ -331,6 +380,7 @@ export class GameScene extends Phaser.Scene {
       this.totalShardsCollected = 0;
       this.totalEnemiesDefeated = 0;
       const isSecretLoadout = net.localName === 'SECRET';
+      const isTesterLoadout = net.localName === 'TESTER' && !data.exitedTestRoom;
       this.playerState = {
         id: net.localPeerId,
         name: net.localName,
@@ -352,13 +402,15 @@ export class GameScene extends Phaser.Scene {
         downedTimerMs: 0,
         dodging: false,
         activeSlot: 0,
-        inventory: isSecretLoadout
-          ? [
-              createItemInstance('shugorons_horn'),
-              createItemInstance('black_staff'),
-              createItemInstance('haunters_eye'),
-            ]
-          : [createItemInstance('moonblade'), createItemInstance('heartdew_potion'), null],
+        inventory: isTesterLoadout
+          ? [null, null, null]
+          : isSecretLoadout
+            ? [
+                createItemInstance('shugorons_horn'),
+                createItemInstance('black_staff'),
+                createItemInstance('haunters_eye'),
+              ]
+            : [createItemInstance('moonblade'), createItemInstance('heartdew_potion'), null],
         statusEffects: [],
         inExitReady: false,
         animState: 'idle',
@@ -368,7 +420,7 @@ export class GameScene extends Phaser.Scene {
         JournalSystem.discoverItem('shugorons_horn');
         JournalSystem.discoverItem('black_staff');
         JournalSystem.discoverItem('haunters_eye');
-      } else {
+      } else if (!isTesterLoadout) {
         JournalSystem.discoverItem('moonblade');
         JournalSystem.discoverItem('heartdew_potion');
       }
@@ -395,12 +447,30 @@ export class GameScene extends Phaser.Scene {
     if (this.playerState.name === 'ADMIN') {
       JournalSystem.unlockAll();
     }
-    this.floor = DungeonGenerator.generateFloor(this.levelIndex, this.floorSeed, playerCount);
+    this.isTestRoom =
+      this.playerState.name === 'TESTER' &&
+      (data.resetRun || !data.carryPlayer) &&
+      !data.exitedTestRoom;
+    this.floor = this.isTestRoom
+      ? DungeonGenerator.generateTestFloor(this.floorSeed)
+      : DungeonGenerator.generateFloor(this.levelIndex, this.floorSeed, playerCount);
     const spawnGx = data.restoreReconnect ? this.playerState.gx : 0;
     const spawnGy = data.restoreReconnect ? this.playerState.gy : this.levelIndex === 6 ? 1 : 2;
-    const spawnX = data.restoreReconnect ? this.playerState.x : this.levelIndex === 6 ? 36 : 88;
-    const spawnY = data.restoreReconnect ? this.playerState.y : this.levelIndex === 6 ? 72 : 88;
-    if (this.levelIndex === 6 && !data.restoreReconnect) {
+    const spawnX = data.restoreReconnect
+      ? this.playerState.x
+      : this.isTestRoom
+        ? 168
+        : this.levelIndex === 6
+          ? 36
+          : 88;
+    const spawnY = data.restoreReconnect
+      ? this.playerState.y
+      : this.isTestRoom
+        ? 408
+        : this.levelIndex === 6
+          ? 72
+          : 88;
+    if ((this.levelIndex === 6 || this.isTestRoom) && !data.restoreReconnect) {
       this.playerState.gx = spawnGx;
       this.playerState.gy = spawnGy;
       this.playerState.x = spawnX;
@@ -1258,6 +1328,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private loadRoom(gx: number, gy: number, spawnX: number, spawnY: number, isSpectating = false): void {
+    if (this.currentRoom?.isTestRoom) {
+      this.despawnAllTestEnemies();
+    }
     // Save active enemy positions/HP back into currentRoom before leaving
     if (this.currentRoom && this.activeEnemies.length > 0 && this.isRoomAuthority()) {
       for (const ae of this.activeEnemies) {
@@ -1280,18 +1353,34 @@ export class GameScene extends Phaser.Scene {
     this.pushBlockGroup.clear(true, true);
     this.doorZones = [];
     this.activeEnemies = [];
-    this.projectiles.forEach((p) => p.sprite.destroy());
+    this.projectiles.forEach((p) => {
+      p.bubbleGfx?.destroy();
+      p.sprite.destroy();
+    });
     this.projectiles = [];
     this.hazards = [];
     this.slimeSplatters = [];
+    this.cometTrailActiveMs = 0;
+    this.cometTrailAccumMs = 0;
+    this.cometTrailNodes.forEach((n) => n.gfx.destroy());
+    this.cometTrailNodes = [];
     this.pillarObjs = [];
     this.spikeTraps = [];
     this.spikePinnedMs = 0;
     this.lootObjs = [];
     this.fireflies = [];
+    this.testCrateRespawnTimers.clear();
+    this.testHealingPad = null;
+    this.testWaveCount = 4;
+    this.lastLavaFrame = -1;
     this.beamGfx?.clear();
     this.beamDamageTickMs = 0;
     this.beamDrainAccumMs = 0;
+    this.flameDamageTickMs = 0;
+    this.flameDrainAccumMs = 0;
+    this.flameFxAccumMs = 0;
+    this.prismBeams.forEach((b) => b.gfx.destroy());
+    this.prismBeams = [];
     this.blockPushCooldownMs = 0;
     this.respawnAnimMs = 0;
     this.remoteReviveAnimUntil.clear();
@@ -1415,12 +1504,14 @@ export class GameScene extends Phaser.Scene {
           const isHallwayDoorOpen = hd ? (!hd.isBossGate || l7BossGateOpen) : false;
           const isStandardDoorTile =
             !room.hallwayDoors &&
+            !room.isTestRoom &&
             ((ty === 0 && tx === 5 && (room.connections.north || (room.connections.secretNorth && room.secretRevealed))) ||
               (ty === hTiles - 1 && tx === 5 && (room.connections.south || (room.connections.secretSouth && room.secretRevealed))) ||
               (tx === 0 && ty === 5 && (room.connections.west || (room.connections.secretWest && room.secretRevealed))) ||
               (tx === wTiles - 1 && ty === 5 && (room.connections.east || (room.connections.secretEast && room.secretRevealed))));
+          const isTestExitTile = !!room.isTestRoom && tx === 0 && ty === 16;
 
-          if (isHallwayDoorOpen || isStandardDoorTile) {
+          if (isHallwayDoorOpen || isStandardDoorTile || isTestExitTile) {
             gfx.fillStyle(biome.floorLight, 1);
             gfx.fillRect(tx * 16, ty * 16, 16, 16);
           } else {
@@ -1456,7 +1547,11 @@ export class GameScene extends Phaser.Scene {
           }
         } else {
           const checker = (tx + ty) % 2 === 0;
-          gfx.fillStyle(checker ? biome.floorDark : biome.floorLight, 1);
+          if (room.isTestRoom && tx >= 21) {
+            gfx.fillStyle(checker ? 0x261522 : 0x2e1a29, 1);
+          } else {
+            gfx.fillStyle(checker ? biome.floorDark : biome.floorLight, 1);
+          }
           gfx.fillRect(tx * 16, ty * 16, 16, 16);
           if (this.levelIndex === 6 && ((tx * 37 + ty * 19) % 7 === 0)) {
             // Corrupted void veins on Level 7 floors
@@ -1477,7 +1572,15 @@ export class GameScene extends Phaser.Scene {
       y: number,
       w: number,
       h: number,
-      extra?: { targetGx?: number; targetGy?: number; spawnX?: number; spawnY?: number; isBossGate?: boolean; tint?: number }
+      extra?: {
+        targetGx?: number;
+        targetGy?: number;
+        spawnX?: number;
+        spawnY?: number;
+        isBossGate?: boolean;
+        isTestExit?: boolean;
+        tint?: number;
+      }
     ) => {
       const dg = this.add.rectangle(x, y, w, h, extra?.tint ?? biome.accent, 0.28).setDepth(2);
       this.roomGroup.add(dg);
@@ -1494,10 +1597,131 @@ export class GameScene extends Phaser.Scene {
         spawnX: extra?.spawnX,
         spawnY: extra?.spawnY,
         isBossGate: extra?.isBossGate,
+        isTestExit: extra?.isTestExit,
       });
     };
 
-    if (room.hallwayDoors) {
+    if (room.isTestRoom) {
+      // Exit door on west wall to leave the test room
+      addDoor('west', 8, 16 * 16 + 8, 16, 18, { isTestExit: true, tint: 0x66ffd9 });
+      const exitLbl = addPixelText(this, 22, 16 * 16 + 8, 'EXIT', 8, 0x66ffd9, 0, 0.5).setDepth(3);
+      this.roomGroup.add(exitLbl);
+
+      // Divider wall at tx = 20 with a wide archway at ty = 14..18
+      for (let ty = 1; ty < hTiles - 1; ty++) {
+        if (ty >= 14 && ty <= 18) continue;
+        gfx.fillStyle(biome.wallDark, 1);
+        gfx.fillRect(20 * 16, ty * 16, 16, 16);
+        gfx.fillStyle(biome.wallTop, 1);
+        gfx.fillRect(20 * 16 + 1, ty * 16 + 1, 14, 10);
+        const divWall = this.add.rectangle(20 * 16 + 8, ty * 16 + 8, 16, 16, 0x000000, 0);
+        this.wallGroup.add(divWall);
+        this.roomGroup.add(divWall);
+      }
+
+      // Invisible enemy blocker across the archway so enemies cannot leave the dungeon section
+      const archBlocker = this.add.rectangle(20 * 16 + 8, 16 * 16 + 8, 16, 5 * 16, 0x000000, 0);
+      this.doorBlockGroup.add(archBlocker);
+      this.roomGroup.add(archBlocker);
+
+      const archFloor = this.add.rectangle(20 * 16 + 8, 16 * 16 + 8, 16, 5 * 16, 0xff5d8f, 0.14).setDepth(2);
+      this.roomGroup.add(archFloor);
+
+      const dungeonLbl = addPixelText(this, 21 * 16 + 8, 16 * 16 + 8, 'DUNGEON ->', 8, 0xff8fab, 0, 0.5).setDepth(3);
+      this.roomGroup.add(dungeonLbl);
+
+      // Test crates in the main section
+      for (const tx of [3, 4, 5]) {
+        const ck = `${tx},26`;
+        if (room.brokenCrates?.includes(ck)) continue;
+        const crate = this.crateGroup.create(tx * 16 + 8, 26 * 16 + 8, 'obj_crate') as Phaser.Physics.Arcade.Sprite;
+        crate.setData('crateKey', ck);
+        crate.setDepth(5);
+        this.roomGroup.add(crate);
+      }
+
+      // Healing pad in the main section (outside the dungeon)
+      const healX = 15 * 16 + 8;
+      const healY = 26 * 16 + 8;
+      const healBase = this.add.circle(healX, healY, 12, 0x16a34a, 0.35).setStrokeStyle(1, 0x66ffd9, 0.9).setDepth(2);
+      const healGlow = this.add
+        .image(healX, healY, 'glow_soft')
+        .setScale(1.3)
+        .setTint(0x66ffd9)
+        .setAlpha(0.32)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setDepth(3);
+      const healCross = this.add.graphics().setDepth(3);
+      healCross.fillStyle(0x66ffd9, 0.95);
+      healCross.fillRect(healX - 5, healY - 1.5, 10, 3);
+      healCross.fillRect(healX - 1.5, healY - 5, 3, 10);
+      const healLbl = addPixelText(this, healX, healY - 16, 'HEAL', 8, 0x66ffd9, 0.5, 0.5).setDepth(3);
+      this.roomGroup.add(healBase);
+      this.roomGroup.add(healGlow);
+      this.roomGroup.add(healCross);
+      this.roomGroup.add(healLbl);
+      this.testHealingPad = { x: healX, y: healY, cooldownMs: 0 };
+
+      // Lava pools in the dungeon section
+      const testLavaTiles = [
+        { tx: 25, ty: 11 },
+        { tx: 26, ty: 11 },
+        { tx: 25, ty: 12 },
+        { tx: 26, ty: 12 },
+        { tx: 25, ty: 20 },
+        { tx: 26, ty: 20 },
+        { tx: 25, ty: 21 },
+        { tx: 26, ty: 21 },
+      ];
+      const testLavaSet = new Set(testLavaTiles.map((h) => `${h.tx},${h.ty}`));
+      const testRimGfx = this.add.graphics().setDepth(3);
+      testRimGfx.fillStyle(0x2b1008, 0.85);
+      for (const h of testLavaTiles) {
+        const px = h.tx * 16;
+        const py = h.ty * 16;
+        const hx = px + 8;
+        const hy = py + 8;
+        const sp = this.add.image(hx, hy, 'tile_lava_0').setDepth(2);
+        const hGlow = this.add
+          .image(hx, hy, 'glow_soft')
+          .setScale(0.95)
+          .setTint(0xff6b1a)
+          .setAlpha(0.28)
+          .setBlendMode(Phaser.BlendModes.ADD)
+          .setDepth(15);
+        this.roomGroup.add(sp);
+        this.roomGroup.add(hGlow);
+        this.hazards.push({
+          x: hx,
+          y: hy,
+          radius: 8,
+          sprite: sp,
+          glow: hGlow,
+          phase: (h.tx * 0.7 + h.ty * 1.1) % (Math.PI * 2),
+          tickMs: 0,
+        });
+        if (!testLavaSet.has(`${h.tx},${h.ty - 1}`)) testRimGfx.fillRect(px, py, 16, 1);
+        if (!testLavaSet.has(`${h.tx},${h.ty + 1}`)) testRimGfx.fillRect(px, py + 15, 16, 1);
+        if (!testLavaSet.has(`${h.tx - 1},${h.ty}`)) testRimGfx.fillRect(px, py, 1, 16);
+        if (!testLavaSet.has(`${h.tx + 1},${h.ty}`)) testRimGfx.fillRect(px + 15, py, 1, 16);
+      }
+      this.roomGroup.add(testRimGfx);
+
+      // Spike traps in the dungeon section
+      const testSpikeTiles = [
+        { tx: 23, ty: 16 },
+        { tx: 29, ty: 16 },
+        { tx: 26, ty: 5 },
+        { tx: 26, ty: 27 },
+      ];
+      for (const s of testSpikeTiles) {
+        const sx = s.tx * 16 + 8;
+        const sy = s.ty * 16 + 8;
+        const sp = this.add.image(sx, sy, 'obj_spike_idle').setDepth(2);
+        this.roomGroup.add(sp);
+        this.spikeTraps.push({ x: sx, y: sy, sprite: sp, state: 'idle', standMs: 0, activeMs: 0, hitThisCycle: false });
+      }
+    } else if (room.hallwayDoors) {
       for (const hd of room.hallwayDoors) {
         if (hd.isBossGate && !l7BossGateOpen) continue;
         const dx = hd.tx * 16 + 8;
@@ -1557,8 +1781,8 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
-    // Pillars & Props (skip pillars in boss/merchant/healing/puzzle rooms and hallway)
-    if (!room.hallwayDoors && room.type !== 'boss' && room.type !== 'merchant' && room.type !== 'healing' && room.type !== 'puzzle') {
+    // Pillars & Props (skip pillars in boss/merchant/healing/puzzle rooms, hallway, and test room)
+    if (!room.isTestRoom && !room.hallwayDoors && room.type !== 'boss' && room.type !== 'merchant' && room.type !== 'healing' && room.type !== 'puzzle') {
       for (const p of template.pillars) {
         const px = p.tx * 16 + 8;
         const py = p.ty * 16 + 8;
@@ -1585,7 +1809,7 @@ export class GameScene extends Phaser.Scene {
     // Decorative floor props (no mushrooms on Level 7)
     for (const pr of template.props) {
       if (this.levelIndex === 6 && pr.kind === 'mushroom') continue;
-      if (room.hallwayDoors) continue;
+      if (room.hallwayDoors || room.isTestRoom) continue;
       const px = pr.tx * 16 + 8;
       const py = pr.ty * 16 + 8;
       const tex = pr.kind === 'mushroom' ? 'prop_mushroom' : 'prop_lantern';
@@ -2047,6 +2271,7 @@ export class GameScene extends Phaser.Scene {
       bubbledMs: 0,
       burningMs: 0,
       burnTickMs: 0,
+      burnFxMs: 0,
       hitFlashMs: 0,
       phase: 1,
       shieldOrbs,
@@ -2089,8 +2314,8 @@ export class GameScene extends Phaser.Scene {
 
     if (item && item.category === 'weapon') {
       const w = WEAPONS[item.id];
-      if (w.style === 'beam_prism') {
-        // Continuous beam is handled while holding the shoot button in updateBeamWeapon()
+      if (w.style === 'beam_prism' || w.style === 'flamethrower') {
+        // Continuous stream/beam is handled while holding the shoot button in update()
         return;
       }
       if (w.staminaCost > 0) {
@@ -2259,11 +2484,34 @@ export class GameScene extends Phaser.Scene {
       this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0xff75c3, 12);
       this.ui.showToast('+2 Max Hearts for 2m!', '#ff75c3');
     } else if (item.id === 'star_bomb') {
-      this.triggerStarBomb(this.playerSprite.x, this.playerSprite.y);
+      SoundSystem.playSwing();
+      const angle = this.playerState.aimAngle;
+      this.createPlayerProjectile(
+        this.playerSprite.x,
+        this.playerSprite.y,
+        angle,
+        220,
+        0,
+        0xffe066,
+        false,
+        false,
+        0,
+        false,
+        false,
+        this.playerState.id,
+        false,
+        false,
+        520
+      );
+      const bombProj = this.projectiles[this.projectiles.length - 1];
+      if (bombProj) {
+        bombProj.starBomb = true;
+        bombProj.sprite.setTexture('item_star_bomb').clearTint().setScale(1.05);
+      }
     } else if (item.id === 'pocket_fireworks') {
       SoundSystem.playShoot();
-      for (let i = 0; i < 8; i++) {
-        const a = (Math.PI * 2 * i) / 8;
+      for (let i = 0; i < 16; i++) {
+        const a = (Math.PI * 2 * i) / 16;
         this.createPlayerProjectile(this.playerSprite.x, this.playerSprite.y, a, 210, 2, 0xff75c3, false, false, 1, false, false);
       }
     } else if (item.id === 'revive_totem') {
@@ -2564,19 +2812,107 @@ export class GameScene extends Phaser.Scene {
       SoundSystem.playPickup();
       this.ui.showToast('Meteors incoming!', '#ff6b35');
       for (let m = 0; m < 3; m++) {
-        this.time.delayedCall(250 + m * 350, () => {
+        this.time.delayedCall(m * 320, () => {
+          if (!this.scene.isActive('GameScene')) return;
           const alive = this.activeEnemies.filter((e) => e.sprite.active);
           const target = alive.length > 0 ? alive[Math.floor(Math.random() * alive.length)] : null;
-          const mx = target ? target.sprite.x : Phaser.Math.Between(36, 140);
-          const my = target ? target.sprite.y : Phaser.Math.Between(36, 140);
-          SoundSystem.playExplosion();
-          this.cameras.main.shake(120, 0.011);
-          this.spawnParticles(mx, my, 0xff6b35, 16);
-          for (const e of [...this.activeEnemies]) {
-            if (e.sprite.active && Phaser.Math.Distance.Between(mx, my, e.sprite.x, e.sprite.y) <= 44) {
-              this.damageEnemy(e, 6);
-            }
-          }
+          const mx = target
+            ? target.sprite.x
+            : Phaser.Math.Clamp(this.playerSprite.x + Phaser.Math.Between(-64, 64), 32, Math.max(32, this.roomWidthPx - 32));
+          const my = target
+            ? target.sprite.y
+            : Phaser.Math.Clamp(this.playerSprite.y + Phaser.Math.Between(-64, 64), 32, Math.max(32, this.roomHeightPx - 32));
+
+          // Ground shadow + warning ring
+          const shadow = this.add.circle(mx, my, 12, 0x0b0917, 0.5).setScale(0.25).setDepth(3);
+          const warnRing = this.add.circle(mx, my, 18, 0xff6b35, 0.12).setStrokeStyle(1.2, 0xff9f1c, 0.75).setScale(0.3).setDepth(3);
+          this.roomGroup.add(shadow);
+          this.roomGroup.add(warnRing);
+
+          // Big meteor raining down from the sky
+          const startX = mx - 44;
+          const startY = my - 115;
+          const meteor = this.add.graphics().setPosition(startX, startY).setDepth(16);
+          meteor.fillStyle(0xff4500, 0.45);
+          meteor.fillCircle(0, 0, 14);
+          meteor.fillStyle(0xff6b35, 0.9);
+          meteor.fillCircle(0, 0, 11);
+          meteor.fillStyle(0x4a2511, 1);
+          meteor.fillCircle(0, 0, 8);
+          meteor.fillStyle(0xffe066, 0.95);
+          meteor.fillCircle(-2, 2, 4);
+          this.roomGroup.add(meteor);
+
+          const trail = this.add.graphics().setDepth(15);
+          this.roomGroup.add(trail);
+
+          this.tweens.add({
+            targets: [shadow, warnRing],
+            scale: 1,
+            duration: 260,
+            ease: 'Quad.In',
+          });
+
+          this.tweens.add({
+            targets: meteor,
+            x: mx,
+            y: my,
+            duration: 260,
+            ease: 'Quad.In',
+            onUpdate: () => {
+              if (!trail.active || !meteor.active) return;
+              trail.clear();
+              trail.lineStyle(8, 0xff4500, 0.45);
+              trail.lineBetween(meteor.x - 16, meteor.y - 42, meteor.x, meteor.y);
+              trail.lineStyle(4, 0xffe066, 0.85);
+              trail.lineBetween(meteor.x - 10, meteor.y - 26, meteor.x, meteor.y);
+            },
+            onComplete: () => {
+              meteor.destroy();
+              trail.destroy();
+              shadow.destroy();
+              warnRing.destroy();
+              if (!this.scene.isActive('GameScene')) return;
+
+              SoundSystem.playExplosion();
+              this.cameras.main.shake(120, 0.011);
+              this.spawnParticles(mx, my, 0xff6b35, 16);
+              this.spawnFireParticles(mx, my, 5);
+
+              // Short circular blaze on the ground
+              const blaze = this.add.circle(mx, my, 26, 0xff4500, 0.48).setStrokeStyle(2, 0xffe066, 0.9).setDepth(3);
+              const blazeInner = this.add.circle(mx, my, 15, 0xff9f1c, 0.55).setDepth(3);
+              const blazeGlow = this.add
+                .image(mx, my, 'glow_soft')
+                .setScale(2.0)
+                .setTint(0xff6b35)
+                .setAlpha(0.45)
+                .setBlendMode(Phaser.BlendModes.ADD)
+                .setDepth(4);
+              this.roomGroup.add(blaze);
+              this.roomGroup.add(blazeInner);
+              this.roomGroup.add(blazeGlow);
+              this.tweens.add({
+                targets: [blaze, blazeInner, blazeGlow],
+                alpha: 0,
+                scale: 0.85,
+                delay: 220,
+                duration: 220,
+                ease: 'Quad.Out',
+                onComplete: () => {
+                  blaze.destroy();
+                  blazeInner.destroy();
+                  blazeGlow.destroy();
+                },
+              });
+
+              for (const e of [...this.activeEnemies]) {
+                if (e.sprite.active && Phaser.Math.Distance.Between(mx, my, e.sprite.x, e.sprite.y) <= 44) {
+                  this.damageEnemy(e, 6);
+                }
+              }
+            },
+          });
         });
       }
     }
@@ -2586,11 +2922,55 @@ export class GameScene extends Phaser.Scene {
 
   private triggerStarBomb(x: number, y: number): void {
     SoundSystem.playExplosion();
-    this.cameras.main.shake(140, 0.012);
-    this.spawnParticles(x, y, 0xffe066, 16);
+    this.cameras.main.shake(180, 0.014);
 
-    for (const e of this.activeEnemies) {
-      if (Phaser.Math.Distance.Between(x, y, e.sprite.x, e.sprite.y) <= 68) {
+    // Big expanding shockwave flash + star shrapnel burst
+    const flash = this.add.circle(x, y, 14, 0xffffff, 0.85).setDepth(14);
+    const blastRing = this.add.circle(x, y, 12, 0xff9f1c, 0.32).setStrokeStyle(3, 0xffe066, 0.95).setDepth(13);
+    this.roomGroup.add(flash);
+    this.roomGroup.add(blastRing);
+    this.tweens.add({
+      targets: flash,
+      scale: 2.2,
+      alpha: 0,
+      duration: 160,
+      ease: 'Quad.Out',
+      onComplete: () => flash.destroy(),
+    });
+    this.tweens.add({
+      targets: blastRing,
+      radius: 68,
+      alpha: 0,
+      duration: 280,
+      ease: 'Cubic.Out',
+      onComplete: () => blastRing.destroy(),
+    });
+
+    const shrapnelColors = [0xffe066, 0xffd275, 0xff9f1c, 0xffffff];
+    for (let i = 0; i < 24; i++) {
+      const a = (Math.PI * 2 * i) / 24 + Phaser.Math.FloatBetween(-0.15, 0.15);
+      const dist = Phaser.Math.Between(24, 72);
+      const tex = i % 3 === 0 ? 'proj_star' : i % 2 === 0 ? 'particle_star' : 'particle_spark';
+      const piece = this.add
+        .image(x, y, tex)
+        .setTint(shrapnelColors[i % shrapnelColors.length])
+        .setScale(tex === 'proj_star' ? Phaser.Math.FloatBetween(0.75, 1.1) : Phaser.Math.FloatBetween(1.0, 1.5))
+        .setDepth(14);
+      this.tweens.add({
+        targets: piece,
+        x: x + Math.cos(a) * dist,
+        y: y + Math.sin(a) * dist,
+        angle: Phaser.Math.Between(-240, 240),
+        scale: 0.2,
+        alpha: 0,
+        duration: Phaser.Math.Between(280, 460),
+        ease: 'Quad.Out',
+        onComplete: () => piece.destroy(),
+      });
+    }
+
+    for (const e of [...this.activeEnemies]) {
+      if (e.sprite.active && Phaser.Math.Distance.Between(x, y, e.sprite.x, e.sprite.y) <= 68) {
         this.damageEnemy(e, 5);
       }
     }
@@ -2668,6 +3048,128 @@ export class GameScene extends Phaser.Scene {
     }
 
     const w = WEAPONS[weaponId];
+    if (weaponId === 'frost_needle' && w) {
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const needleRange = 32;
+      let needleReach = needleRange;
+      const walls = (this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[]).filter((wl) => wl.active);
+      for (let d = 8; d <= needleRange; d += 4) {
+        const px = x + cos * d;
+        const py = y + sin * d;
+        if (px < 17 || px > this.roomWidthPx - 17 || py < 17 || py > this.roomHeightPx - 17) {
+          needleReach = d;
+          break;
+        }
+        if (walls.some((wl) => Math.abs(px - wl.x) < 8.5 && Math.abs(py - wl.y) < 8.5)) {
+          needleReach = d;
+          break;
+        }
+      }
+
+      SoundSystem.playSwing();
+      const thrustDist = Math.min(needleReach, 20);
+      const needle = this.add
+        .image(x + cos * 6, y + sin * 6, 'item_frost_needle')
+        .setRotation(angle + Math.PI / 4)
+        .setScale(1.1)
+        .setDepth(12);
+      const streak = this.add.graphics().setDepth(11);
+      streak.lineStyle(2.5, 0x9bf6ff, 0.7);
+      streak.lineBetween(x + cos * 8, y + sin * 8, x + cos * needleReach, y + sin * needleReach);
+      streak.lineStyle(1, 0xffffff, 0.9);
+      streak.lineBetween(x + cos * 8, y + sin * 8, x + cos * needleReach, y + sin * needleReach);
+      this.tweens.add({
+        targets: streak,
+        alpha: 0,
+        duration: 165,
+        onComplete: () => streak.destroy(),
+      });
+      this.tweens.add({
+        targets: needle,
+        x: x + cos * thrustDist,
+        y: y + sin * thrustDist,
+        duration: 80,
+        ease: 'Cubic.Out',
+        onComplete: () => {
+          if (!needle.active) return;
+          this.tweens.add({
+            targets: needle,
+            x: x + cos * 10,
+            y: y + sin * 10,
+            alpha: 0,
+            duration: 100,
+            ease: 'Quad.In',
+            onComplete: () => needle.destroy(),
+          });
+        },
+      });
+
+      if (isLocal) {
+        for (const e of [...this.activeEnemies]) {
+          if (!e.sprite.active) continue;
+          const dx = e.sprite.x - x;
+          const dy = e.sprite.y - y;
+          const along = dx * cos + dy * sin;
+          const perp = Math.abs(-sin * dx + cos * dy);
+          const pad = e.isBoss ? 14 : 9;
+          if (along >= -4 && along <= needleReach + pad && perp <= (e.isBoss ? 15 : 10)) {
+            if (e.bubbledMs > 0) {
+              this.popEnemyBubble(e);
+            }
+            if (e.frozenMs && e.frozenMs > 0) {
+              e.iceHits = (e.iceHits ?? 0) + 1;
+              if (e.iceHits >= 2) {
+                this.shatterEnemyIce(e);
+              } else {
+                this.drawEnemyIceCube(e, true);
+                this.spawnParticles(e.sprite.x, e.sprite.y, 0xbae6fd, 5);
+              }
+            }
+            this.spawnParticles(e.sprite.x, e.sprite.y, 0x9bf6ff, 4);
+            // Melee hit deals damage with no knockback and no freeze
+            this.damageEnemy(e, w.damage);
+          }
+        }
+        this.hitNyarlathotepArm(x + cos * Math.min(needleReach, 22), y + sin * Math.min(needleReach, 22), 22, w.damage);
+      }
+
+      // Shoot snowball out from the tip of the needle
+      const speedMult =
+        (this.floor.modifier === 'wild_magic' ? 1.2 : 1) *
+        StatusEffectManager.getProjectileSpeedMultiplier(this.playerState.statusEffects);
+      const spd = (w.projectileSpeed ?? 220) * speedMult;
+      const tipX = x + cos * Math.max(8, thrustDist - 2);
+      const tipY = y + sin * Math.max(8, thrustDist - 2);
+      this.time.delayedCall(55, () => {
+        if (!this.scene.isActive('GameScene')) return;
+        SoundSystem.playShoot();
+        this.spawnParticles(tipX, tipY, 0xe0f2fe, 3);
+        this.createPlayerProjectile(
+          tipX,
+          tipY,
+          angle,
+          spd,
+          w.damage,
+          0xe0f2fe,
+          false,
+          false,
+          0,
+          false,
+          false,
+          ownerId,
+          false,
+          false,
+          undefined,
+          false,
+          false,
+          3,
+          true
+        );
+      });
+      return;
+    }
+
     const isMeleeStyle =
       weaponId === 'unarmed' ||
       (w &&
@@ -2690,13 +3192,92 @@ export class GameScene extends Phaser.Scene {
       const isHeavy = w?.style === 'heavy_slam' || w?.style === 'heavy_sword';
       const cutsProjectiles = w?.style === 'heavy_sword';
       const isSpin = w?.style === 'spin_flail';
+      const isShadowFork = weaponId === 'shadow_fork';
+      const isSunRapier = weaponId === 'sun_rapier';
+      const isCrystalGlaive = weaponId === 'crystal_glaive';
+      const isPierceThrust = isShadowFork || isSunRapier || isCrystalGlaive;
+      const isWhip = w?.style === 'whip_pull';
+      const isKatana = weaponId === 'crescent_katana';
+      const isVineScythe = weaponId === 'vine_scythe';
+      const isFrostFang = weaponId === 'frost_fang';
+      const isObsidianAxe = weaponId === 'obsidian_axe';
+      const isAstralGreatsword = weaponId === 'astral_greatsword';
       SoundSystem.playSwing();
 
-      // Visual 16-bit slash arc (360 centered on player for flail)
+      // Visual 16-bit slash arc (360 centered on player for flail, or spear/rapier poke for shadow_fork / sun_rapier)
       const sx = isSpin ? x : x + Math.cos(angle) * 16;
       const sy = isSpin ? y : y + Math.sin(angle) * 16;
-      const slash = this.add.circle(sx, sy, isSpin ? range * 0.75 : isHeavy ? 20 : 13, w ? w.color : 0xffffff, 0.5).setDepth(12);
-      this.tweens.add({ targets: slash, scale: 1.35, alpha: 0, duration: cutsProjectiles ? 220 : 150, onComplete: () => slash.destroy() });
+      let forkMaxReach = range;
+      if (isPierceThrust) {
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const walls = (this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[]).filter((wl) => wl.active);
+        for (let d = 8; d <= range; d += 4) {
+          const px = x + cos * d;
+          const py = y + sin * d;
+          if (px < 17 || px > this.roomWidthPx - 17 || py < 17 || py > this.roomHeightPx - 17) {
+            forkMaxReach = d;
+            break;
+          }
+          if (walls.some((wl) => Math.abs(px - wl.x) < 8.5 && Math.abs(py - wl.y) < 8.5)) {
+            forkMaxReach = d;
+            break;
+          }
+        }
+        const forkThrust = Math.min(forkMaxReach, isSunRapier || isCrystalGlaive ? 28 : 36);
+        const pokeTex = isSunRapier ? 'item_sun_rapier' : isCrystalGlaive ? 'item_crystal_glaive' : 'item_shadow_fork';
+        const pokeRot = isSunRapier || isCrystalGlaive ? angle + Math.PI / 4 : angle + Math.PI / 2;
+        const streakColor = isSunRapier ? 0xffe066 : isCrystalGlaive ? 0x70f8ff : 0x8b5cf6;
+        const streakCore = isSunRapier || isCrystalGlaive ? 0xffffff : 0xe9d5ff;
+        const fork = this.add
+          .image(x + cos * 6, y + sin * 6, pokeTex)
+          .setRotation(pokeRot)
+          .setScale(1.15)
+          .setDepth(12);
+        const streak = this.add.graphics().setDepth(11);
+        streak.lineStyle(3, streakColor, 0.7);
+        streak.lineBetween(x + cos * 8, y + sin * 8, x + cos * forkMaxReach, y + sin * forkMaxReach);
+        streak.lineStyle(1.2, streakCore, 0.9);
+        streak.lineBetween(x + cos * 8, y + sin * 8, x + cos * forkMaxReach, y + sin * forkMaxReach);
+        this.tweens.add({
+          targets: streak,
+          alpha: 0,
+          duration: 180,
+          onComplete: () => streak.destroy(),
+        });
+        this.tweens.add({
+          targets: fork,
+          x: x + cos * forkThrust,
+          y: y + sin * forkThrust,
+          duration: 85,
+          ease: 'Cubic.Out',
+          onComplete: () => {
+            if (!fork.active) return;
+            this.tweens.add({
+              targets: fork,
+              x: x + cos * 10,
+              y: y + sin * 10,
+              alpha: 0,
+              duration: 105,
+              ease: 'Quad.In',
+              onComplete: () => fork.destroy(),
+            });
+          },
+        });
+      } else if (isKatana) {
+        this.spawnCrescentKatanaSwipe(x, y, angle, isLocal, 'item_crescent_katana', 0xc084fc, 0xffffff);
+      } else if (isVineScythe) {
+        this.spawnCrescentKatanaSwipe(x, y, angle, isLocal, 'fx_vine_scythe', 0x9ef01a, 0xd9f99d);
+      } else if (isFrostFang) {
+        this.spawnCrescentKatanaSwipe(x, y, angle, isLocal, 'item_frost_fang', 0x70f8ff, 0xe0f2fe);
+      } else if (isObsidianAxe) {
+        this.spawnObsidianAxeSlam(x, y, angle, isLocal);
+      } else if (isAstralGreatsword) {
+        this.spawnCrescentKatanaSwipe(x, y, angle, isLocal, 'item_astral_greatsword', 0xffe066, 0x6ef3ff);
+      } else if (!isWhip) {
+        const slash = this.add.circle(sx, sy, isSpin ? range * 0.75 : isHeavy ? 20 : 13, w ? w.color : 0xffffff, 0.5).setDepth(12);
+        this.tweens.add({ targets: slash, scale: 1.35, alpha: 0, duration: cutsProjectiles ? 220 : 150, onComplete: () => slash.destroy() });
+      }
 
       if (cutsProjectiles) {
         for (let i = this.projectiles.length - 1; i >= 0; i--) {
@@ -2717,8 +3298,21 @@ export class GameScene extends Phaser.Scene {
         const chainedSet = new Set<ActiveEnemy>();
         let firstHit: ActiveEnemy | null = null;
         for (const e of [...this.activeEnemies]) {
-          const dist = Phaser.Math.Distance.Between(sx, sy, e.sprite.x, e.sprite.y);
-          if (dist <= range) {
+          let hit = false;
+          if (isPierceThrust) {
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            const dx = e.sprite.x - x;
+            const dy = e.sprite.y - y;
+            const along = dx * cos + dy * sin;
+            const perp = Math.abs(-sin * dx + cos * dy);
+            const pad = e.isBoss ? 14 : 9;
+            hit = along >= -4 && along <= forkMaxReach + pad && perp <= (e.isBoss ? 16 : 11);
+          } else {
+            const dist = Phaser.Math.Distance.Between(sx, sy, e.sprite.x, e.sprite.y);
+            hit = dist <= range;
+          }
+          if (hit) {
             if (w?.style === 'lightning_horn') {
               if (!firstHit) firstHit = e;
               hitAny = true;
@@ -2732,11 +3326,40 @@ export class GameScene extends Phaser.Scene {
               e.burnTickMs = 0;
             }
             if (w?.style === 'whip_pull' && !e.isBoss) {
+              this.spawnParticles(e.sprite.x, e.sprite.y, 0x34d399, 4);
               const pullA = Phaser.Math.Angle.Between(e.sprite.x, e.sprite.y, x, y);
-              e.sprite.x += Math.cos(pullA) * 14;
-              e.sprite.y += Math.sin(pullA) * 14;
+              const distToPlayer = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, x, y);
+              const pullDist = Math.min(20, Math.max(0, distToPlayer - 18));
+              const minX = this.isTestRoom ? 21 * 16 + 8 : 22;
+              const targetX = Phaser.Math.Clamp(e.sprite.x + Math.cos(pullA) * pullDist, minX, Math.max(minX, this.roomWidthPx - 22));
+              const targetY = Phaser.Math.Clamp(e.sprite.y + Math.sin(pullA) * pullDist, 22, Math.max(22, this.roomHeightPx - 22));
+              if (pullDist > 0) {
+                this.tweens.add({
+                  targets: e.sprite,
+                  x: targetX,
+                  y: targetY,
+                  delay: 75,
+                  duration: 125,
+                  ease: 'Quad.Out',
+                });
+              }
             }
-            this.damageEnemy(e, dmg, isHeavy ? angle : undefined);
+            if (isPierceThrust) {
+              this.spawnParticles(e.sprite.x, e.sprite.y, isSunRapier ? 0xffe066 : isCrystalGlaive ? 0x70f8ff : 0x8b5cf6, 4);
+            }
+            if (e.bubbledMs > 0) {
+              this.popEnemyBubble(e);
+            }
+            if (e.frozenMs && e.frozenMs > 0) {
+              e.iceHits = (e.iceHits ?? 0) + 1;
+              if (e.iceHits >= 2) {
+                this.shatterEnemyIce(e);
+              } else {
+                this.drawEnemyIceCube(e, true);
+                this.spawnParticles(e.sprite.x, e.sprite.y, 0xbae6fd, 5);
+              }
+            }
+            this.damageEnemy(e, dmg, isHeavy || isShadowFork ? angle : undefined);
             hitAny = true;
           }
         }
@@ -2797,8 +3420,16 @@ export class GameScene extends Phaser.Scene {
           }
         }
 
-        // Echo Dagger repeats the slash after 220ms
+        if (weaponId === 'cloudbreaker') {
+          this.spawnCloudbreakerPulse(x, y, angle, true, hitAny);
+        }
+        if (isWhip) {
+          this.spawnThornWhipAnim(x, y, angle, range);
+        }
+
+        // Echo Dagger sends out a sonic wave ripple (45 deg arc, knockback only) and repeats the slash after 220ms
         if (w?.style === 'echo_blade') {
+          this.spawnEchoSonicWave(x, y, angle, true);
           this.time.delayedCall(220, () => {
             if (!this.playerSprite.active) return;
             const ex = this.playerSprite.x + Math.cos(angle) * 16;
@@ -2839,6 +3470,12 @@ export class GameScene extends Phaser.Scene {
             cs.destroy();
           }
         });
+      } else if (weaponId === 'cloudbreaker') {
+        this.spawnCloudbreakerPulse(x, y, angle, false, true);
+      } else if (w?.style === 'echo_blade') {
+        this.spawnEchoSonicWave(x, y, angle, false);
+      } else if (isWhip) {
+        this.spawnThornWhipAnim(x, y, angle, range);
       }
       return;
     }
@@ -2850,14 +3487,85 @@ export class GameScene extends Phaser.Scene {
       StatusEffectManager.getProjectileSpeedMultiplier(this.playerState.statusEffects);
     const spd = (w.projectileSpeed ?? 200) * speedMult;
 
-    if (w.style === 'prism_bounce') {
-      for (const offset of [-0.22, 0, 0.22]) {
-        this.createPlayerProjectile(x, y, angle + offset, spd, w.damage, w.color, false, false, 1, false, false, ownerId);
+    if (w.id === 'thunder_rod') {
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      let endX = x + cos * w.range;
+      let endY = y + sin * w.range;
+      let boltLen = w.range;
+      const maxWallDistSq = (w.range + 16) * (w.range + 16);
+      const walls = (this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[]).filter((wl) => {
+        if (!wl.active) return false;
+        const dx = wl.x - x;
+        const dy = wl.y - y;
+        return dx * dx + dy * dy <= maxWallDistSq;
+      });
+      for (let d = 8; d <= w.range; d += 4) {
+        const px = x + cos * d;
+        const py = y + sin * d;
+        if (px < 17 || px > this.roomWidthPx - 17 || py < 17 || py > this.roomHeightPx - 17) {
+          endX = px;
+          endY = py;
+          boltLen = d;
+          break;
+        }
+        if (walls.some((wl) => Math.abs(px - wl.x) < 8.5 && Math.abs(py - wl.y) < 8.5)) {
+          endX = px;
+          endY = py;
+          boltLen = d;
+          break;
+        }
       }
+
+      this.drawLightningBolt(x, y, endX, endY);
+      this.spawnParticles(endX, endY, 0x6ef3ff, 5);
+
+      if (isLocal) {
+        for (const e of [...this.activeEnemies]) {
+          if (!e.sprite.active) continue;
+          const dx = e.sprite.x - x;
+          const dy = e.sprite.y - y;
+          const along = dx * cos + dy * sin;
+          const pad = e.isBoss ? 14 : 9;
+          if (along < 0 || along > boltLen + pad) continue;
+          const perp = Math.abs(-sin * dx + cos * dy);
+          if (perp <= (e.isBoss ? 22 : 16)) {
+            this.spawnParticles(e.sprite.x, e.sprite.y, 0x6ef3ff, 5);
+            this.damageEnemy(e, w.damage);
+          }
+        }
+      }
+      return;
+    }
+
+    if (w.style === 'prism_bounce') {
+      const gfx = this.add.graphics().setDepth(12);
+      this.roomGroup.add(gfx);
+      this.prismBeams.push({
+        gfx,
+        ownerId,
+        isLocal,
+        angle,
+        range: w.range,
+        damage: w.damage,
+        chargeMs: 500,
+        activeMs: 250,
+        fxAccumMs: 0,
+        hitUids: new Set(),
+      });
     } else if (w.style === 'fan_spread') {
-      const offsets = w.id === 'spark_wand' ? [-0.12, 0.12] : [-0.24, 0, 0.24];
+      const offsets =
+        w.id === 'spark_wand'
+          ? [-Math.PI / 12, -Math.PI / 24, 0, Math.PI / 24, Math.PI / 12]
+          : [-0.24, 0, 0.24];
       for (const offset of offsets) {
         this.createPlayerProjectile(x, y, angle + offset, spd, w.damage, w.color, false, false, 0, false, false, ownerId);
+        if (w.id === 'spark_wand') {
+          const lastProj = this.projectiles[this.projectiles.length - 1];
+          if (lastProj) {
+            lastProj.sprite.setTexture('particle_spark').setTint(0xfef08a).setScale(1.15);
+          }
+        }
       }
     } else if (w.style === 'necromancy_staff') {
       if (!isLocal) {
@@ -2956,7 +3664,7 @@ export class GameScene extends Phaser.Scene {
         w.color,
         w.style === 'homing_staff',
         w.style === 'boomerang',
-        w.style === 'bounce_spore' ? 2 : 0,
+        w.style === 'bounce_spore' && w.id !== 'mushroom_staff' ? 2 : w.id === 'lunar_chakram' ? 2 : w.style === 'boomerang' ? 4 : 0,
         w.style === 'frost_needle',
         w.style === 'bubble',
         ownerId,
@@ -2965,6 +3673,42 @@ export class GameScene extends Phaser.Scene {
         undefined,
         w.id === 'slime_launcher'
       );
+      if (w.id === 'mushroom_staff') {
+        const lastProj = this.projectiles[this.projectiles.length - 1];
+        if (lastProj) lastProj.splitSpore = true;
+      } else if (w.id === 'star_cannon') {
+        const lastProj = this.projectiles[this.projectiles.length - 1];
+        if (lastProj) {
+          lastProj.starShatter = true;
+          lastProj.sprite.setTexture('proj_star').clearTint().setScale(1.15);
+        }
+      } else if (w.id === 'aurora_harp') {
+        const lastProj = this.projectiles[this.projectiles.length - 1];
+        if (lastProj) {
+          const noteIdx = Math.floor(Math.random() * 4);
+          const noteColors = [0x66ffd9, 0x6ef3ff, 0xc084fc, 0xf49ac1];
+          lastProj.isMusicNote = true;
+          lastProj.floatPhase = Math.random() * Math.PI * 2;
+          lastProj.sprite.setTexture(`proj_note_${noteIdx}`).setTint(noteColors[noteIdx]);
+        }
+      } else if (w.id === 'void_orb') {
+        const lastProj = this.projectiles[this.projectiles.length - 1];
+        if (lastProj) {
+          lastProj.voidRift = true;
+        }
+      } else if (w.id === 'lunar_chakram') {
+        const lastProj = this.projectiles[this.projectiles.length - 1];
+        if (lastProj) {
+          lastProj.lunarDisc = true;
+          lastProj.lunarSliceMs = 0;
+          lastProj.sprite.setTexture('item_lunar_chakram').clearTint();
+        }
+      } else if (w.id === 'celestial_scepter') {
+        const lastProj = this.projectiles[this.projectiles.length - 1];
+        if (lastProj) {
+          lastProj.shockBlast = true;
+        }
+      }
     }
   }
 
@@ -2986,9 +3730,15 @@ export class GameScene extends Phaser.Scene {
     customLifeMs?: number,
     slimeSplatter = false,
     healsAlly = false,
-    healAmount = 3
+    healAmount = 3,
+    freezes = false
   ): void {
-    const sp = this.physics.add.sprite(x, y, 'proj_orb').setDepth(11).setTint(color);
+    const sp = this.physics.add
+      .sprite(x, y, boomerang ? 'item_dream_reaper' : 'proj_orb')
+      .setDepth(11);
+    if (!boomerang) {
+      sp.setTint(color);
+    }
     this.projectiles.push({
       uid: `p_${this.playerState.id}_${++this.projSeq}`,
       sprite: sp,
@@ -3004,6 +3754,7 @@ export class GameScene extends Phaser.Scene {
       returning: false,
       bouncesLeft,
       slows,
+      freezes,
       bubbles,
       burns,
       cometBoost,
@@ -3055,7 +3806,7 @@ export class GameScene extends Phaser.Scene {
       dmg = Math.max(dmg, enemy.hp, 9999);
     }
     enemy.hitFlashMs = 120;
-    enemy.sprite.setTint(0xffffff);
+    enemy.sprite.setTint(0xffffff).setTintMode(Phaser.TintModes.FILL);
     SoundSystem.playHit();
     this.spawnParticles(enemy.sprite.x, enemy.sprite.y, 0xf49ac1, 4);
 
@@ -3075,10 +3826,11 @@ export class GameScene extends Phaser.Scene {
 
     enemy.hp -= dmg;
     if (knockbackAngle !== undefined && !enemy.isBoss) {
+      const minX = this.isTestRoom ? 21 * 16 + 8 : 22;
       enemy.sprite.x = Phaser.Math.Clamp(
         enemy.sprite.x + Math.cos(knockbackAngle) * 14,
-        22,
-        Math.max(22, this.roomWidthPx - 22)
+        minX,
+        Math.max(minX, this.roomWidthPx - 22)
       );
       enemy.sprite.y = Phaser.Math.Clamp(
         enemy.sprite.y + Math.sin(knockbackAngle) * 14,
@@ -3098,6 +3850,14 @@ export class GameScene extends Phaser.Scene {
     if (enemy.shieldOrbs) {
       for (const orb of enemy.shieldOrbs) orb.destroy();
       enemy.shieldOrbs = undefined;
+    }
+    if (enemy.bubbleGfx) {
+      enemy.bubbleGfx.destroy();
+      enemy.bubbleGfx = undefined;
+    }
+    if (enemy.iceGfx) {
+      enemy.iceGfx.destroy();
+      enemy.iceGfx = undefined;
     }
     enemy.sprite.destroy();
     this.activeEnemies = this.activeEnemies.filter((e) => e !== enemy);
@@ -3653,8 +4413,8 @@ export class GameScene extends Phaser.Scene {
     this.invulnMs = 750;
     SoundSystem.playPlayerHurt();
     this.cameras.main.shake(130, 0.015);
-    this.playerSprite.setTint(0xff5d8f);
-    this.time.delayedCall(150, () => {
+    this.playerSprite.setTint(0xffffff).setTintMode(Phaser.TintModes.FILL);
+    this.time.delayedCall(120, () => {
       if (this.playerSprite.active) this.playerSprite.clearTint();
     });
 
@@ -3956,6 +4716,23 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private spawnSlimeDropParticle(x: number, y: number): void {
+    const sx = x + Phaser.Math.FloatBetween(-5, 5);
+    const sy = y + Phaser.Math.FloatBetween(-2, 4);
+    const colors = [0x55ff88, 0x80ed99, 0x38b000];
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    const drop = this.add.circle(sx, sy, Phaser.Math.FloatBetween(1.1, 1.8), color, 0.9).setDepth(13);
+    this.tweens.add({
+      targets: drop,
+      y: sy + Phaser.Math.FloatBetween(5, 9),
+      scale: 0.4,
+      alpha: 0,
+      duration: Phaser.Math.Between(260, 380),
+      ease: 'Quad.easeIn',
+      onComplete: () => drop.destroy(),
+    });
+  }
+
   private spawnFireParticles(x: number, y: number, count = 2): void {
     const fireColors = [0xff4500, 0xff6b35, 0xff9f1c, 0xffe066];
     for (let i = 0; i < count; i++) {
@@ -4070,11 +4847,16 @@ export class GameScene extends Phaser.Scene {
 
     this.updatePlayerMovement(time, delta);
     this.updateLevel7Events(delta);
+    this.updateTestRoomDungeon(delta);
     this.updateBeamWeapon(delta);
+    this.updatePrismBeams(delta);
+    this.updateFlamethrowerWeapon(delta);
+    this.updateAuroraHarpHoldFire();
     this.updateSummonedSkeletons(time, delta);
     this.updateEnemies(time, delta);
     this.updateProjectiles(delta);
     this.updateSlimeSplatters(delta);
+    this.updateCometTrail(delta);
     this.updateHazardsAndLoot(delta);
     this.updatePuzzlePlates();
     this.updatePuzzleBlocks();
@@ -4200,19 +4982,8 @@ export class GameScene extends Phaser.Scene {
         const cometIdx = hasArtifact(this.playerState.inventory, 'tiny_comet');
         if (cometIdx !== -1) {
           consumeUse(this.playerState.inventory, cometIdx, 1);
-          this.createPlayerProjectile(
-            this.playerSprite.x,
-            this.playerSprite.y,
-            Math.atan2(-dashDirY, -dashDirX),
-            90,
-            2,
-            0xffe066,
-            false,
-            false,
-            0,
-            false,
-            false
-          );
+          this.cometTrailActiveMs = 240;
+          this.cometTrailAccumMs = 20;
         }
       }
     }
@@ -4245,6 +5016,388 @@ export class GameScene extends Phaser.Scene {
 
     const hasWard = StatusEffectManager.has(this.playerState.statusEffects, 'starward');
     this.wardRing.setPosition(this.playerSprite.x, this.playerSprite.y).setVisible(hasWard);
+  }
+
+  private spawnObsidianAxeSlam(originX: number, originY: number, angle: number, isLocal: boolean): void {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const slamX = originX + cos * 24;
+    const slamY = originY + sin * 24;
+
+    const axe = this.add
+      .image(originX + cos * 8, originY + sin * 8, 'item_obsidian_axe')
+      .setOrigin(0.35, 0.75)
+      .setScale(1.65)
+      .setRotation(angle + Math.PI / 4)
+      .setDepth(12);
+    this.roomGroup.add(axe);
+
+    // Phase 1: Slam down onto the floor
+    this.tweens.add({
+      targets: axe,
+      x: slamX,
+      y: slamY,
+      scale: 1.25,
+      duration: 110,
+      ease: 'Quad.In',
+      onComplete: () => {
+        if (!axe.active) return;
+        this.cameras.main.shake(95, 0.007);
+        this.spawnParticles(slamX, slamY, 0xa855f7, 6);
+
+        const impact = this.add.circle(slamX, slamY, 12, 0xa855f7, 0.45).setStrokeStyle(1.5, 0xe9d5ff, 0.9).setDepth(3);
+        this.roomGroup.add(impact);
+        this.tweens.add({
+          targets: impact,
+          scale: 1.6,
+          alpha: 0,
+          duration: 220,
+          ease: 'Quad.Out',
+          onComplete: () => impact.destroy(),
+        });
+
+        const dragTrail = this.add.graphics().setDepth(3);
+        this.roomGroup.add(dragTrail);
+
+        // Phase 2: Slowly drag the axe back to the player
+        const dragState = { t: 0 };
+        this.tweens.add({
+          targets: dragState,
+          t: 1,
+          duration: 370,
+          ease: 'Sine.easeInOut',
+          onUpdate: () => {
+            const px = isLocal && this.playerSprite.active ? this.playerSprite.x : originX;
+            const py = isLocal && this.playerSprite.active ? this.playerSprite.y : originY;
+            const curX = Phaser.Math.Linear(slamX, px + cos * 6, dragState.t);
+            const curY = Phaser.Math.Linear(slamY, py + sin * 6, dragState.t);
+            if (axe.active) {
+              axe.setPosition(curX, curY);
+              axe.setAlpha(1 - dragState.t * 0.4);
+            }
+            if (dragTrail.active) {
+              dragTrail.clear();
+              dragTrail.lineStyle(2.5, 0x4a4e69, 0.6 * (1 - dragState.t * 0.5));
+              dragTrail.lineBetween(slamX, slamY, curX, curY);
+              dragTrail.lineStyle(1, 0xa855f7, 0.5 * (1 - dragState.t * 0.5));
+              dragTrail.lineBetween(slamX, slamY, curX, curY);
+            }
+          },
+          onComplete: () => {
+            if (axe.active) {
+              this.tweens.add({
+                targets: [axe, dragTrail],
+                alpha: 0,
+                duration: 90,
+                onComplete: () => {
+                  axe.destroy();
+                  dragTrail.destroy();
+                },
+              });
+            } else {
+              dragTrail.destroy();
+            }
+          },
+        });
+      },
+    });
+  }
+
+  private spawnCrescentKatanaSwipe(
+    originX: number,
+    originY: number,
+    angle: number,
+    isLocal: boolean,
+    textureKey = 'item_crescent_katana',
+    trailColor = 0xc084fc,
+    coreColor = 0xffffff
+  ): void {
+    const isScythe = textureKey === 'fx_vine_scythe';
+    const isGreatsword = textureKey === 'item_astral_greatsword';
+    const scale = isGreatsword ? 2.2 : isScythe ? 1.58 : 1.15;
+    const radialOffset = isGreatsword ? 12 : isScythe ? 9 : 6;
+    const trailInnerR = isGreatsword ? 42 : isScythe ? 30 : 20;
+    const trailOuterR = isGreatsword ? 46 : isScythe ? 33 : 22;
+    const rotOffset = isScythe ? Math.PI / 2 : Math.PI / 4;
+    const swipeDuration = isGreatsword ? 145 : 105;
+    const startA = angle - Math.PI / 8;
+    const endA = angle + Math.PI / 8; // 45-degree clockwise arc
+    const katana = this.add
+      .image(originX, originY, textureKey)
+      .setOrigin(isScythe ? 0.38 : 0.25, isScythe ? 0.92 : 0.75)
+      .setScale(scale)
+      .setRotation(startA + rotOffset)
+      .setDepth(12);
+    const trailGfx = this.add.graphics().setDepth(11);
+    this.roomGroup.add(katana);
+    this.roomGroup.add(trailGfx);
+
+    const state = { a: startA, alpha: 1 };
+    this.tweens.add({
+      targets: state,
+      a: endA,
+      duration: swipeDuration,
+      ease: 'Cubic.Out',
+      onUpdate: () => {
+        const px = isLocal && this.playerSprite.active ? this.playerSprite.x : originX;
+        const py = isLocal && this.playerSprite.active ? this.playerSprite.y : originY;
+        if (katana.active) {
+          katana.setPosition(px + Math.cos(state.a) * radialOffset, py + Math.sin(state.a) * radialOffset);
+          katana.setRotation(state.a + rotOffset);
+        }
+        if (trailGfx.active) {
+          trailGfx.clear();
+          trailGfx.lineStyle(3.5, trailColor, 0.75);
+          trailGfx.beginPath();
+          trailGfx.arc(px, py, trailInnerR, startA, state.a, false);
+          trailGfx.strokePath();
+          trailGfx.lineStyle(1.5, coreColor, 0.9);
+          trailGfx.beginPath();
+          trailGfx.arc(px, py, trailOuterR, startA, state.a, false);
+          trailGfx.strokePath();
+        }
+      },
+      onComplete: () => {
+        if (katana.active) {
+          this.tweens.add({
+            targets: [katana, trailGfx],
+            alpha: 0,
+            duration: 75,
+            onComplete: () => {
+              katana.destroy();
+              trailGfx.destroy();
+            },
+          });
+        } else {
+          trailGfx.destroy();
+        }
+      },
+    });
+  }
+
+  private spawnThornWhipAnim(originX: number, originY: number, angle: number, range: number): void {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const perpX = -sin;
+    const perpY = cos;
+    const maxLen = range + 12;
+    const gfx = this.add.graphics().setDepth(12);
+    this.roomGroup.add(gfx);
+
+    const drawWhip = (len: number, waveAmp: number, alpha: number) => {
+      if (!gfx.active) return;
+      gfx.clear();
+      const px0 = this.playerSprite.active ? this.playerSprite.x : originX;
+      const py0 = this.playerSprite.active ? this.playerSprite.y : originY;
+      const segments = 8;
+      const pts: Array<{ x: number; y: number }> = [];
+      for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const along = 6 + len * t;
+        const wave = Math.sin(t * Math.PI * 2) * waveAmp * (1 - t * 0.25);
+        pts.push({
+          x: px0 + cos * along + perpX * wave,
+          y: py0 + sin * along + perpY * wave,
+        });
+      }
+
+      gfx.lineStyle(3, 0x15803d, alpha);
+      gfx.beginPath();
+      gfx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y);
+      gfx.strokePath();
+
+      gfx.lineStyle(1.4, 0x34d399, alpha);
+      gfx.beginPath();
+      gfx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) gfx.lineTo(pts[i].x, pts[i].y);
+      gfx.strokePath();
+
+      // Thorns along the whip & tip
+      gfx.fillStyle(0xa7f3d0, alpha);
+      for (let i = 2; i < pts.length; i += 2) {
+        const side = i % 4 === 0 ? 1 : -1;
+        gfx.fillCircle(pts[i].x + perpX * side * 2, pts[i].y + perpY * side * 2, 1.1);
+      }
+      const tip = pts[pts.length - 1];
+      gfx.fillStyle(0x6ee7b7, alpha);
+      gfx.fillCircle(tip.x, tip.y, 2.2);
+    };
+
+    const whipState = { len: 4, wave: 5, alpha: 1 };
+    this.tweens.add({
+      targets: whipState,
+      len: maxLen,
+      wave: 0,
+      duration: 85,
+      ease: 'Cubic.Out',
+      onUpdate: () => drawWhip(whipState.len, whipState.wave, whipState.alpha),
+      onComplete: () => {
+        if (!gfx.active) return;
+        const tipX = (this.playerSprite.active ? this.playerSprite.x : originX) + cos * maxLen;
+        const tipY = (this.playerSprite.active ? this.playerSprite.y : originY) + sin * maxLen;
+        this.spawnParticles(tipX, tipY, 0x34d399, 3);
+        this.tweens.add({
+          targets: whipState,
+          len: 6,
+          alpha: 0,
+          duration: 125,
+          ease: 'Quad.In',
+          onUpdate: () => drawWhip(whipState.len, 0, whipState.alpha),
+          onComplete: () => gfx.destroy(),
+        });
+      },
+    });
+  }
+
+  private spawnEchoSonicWave(originX: number, originY: number, angle: number, isLocal: boolean): void {
+    const halfArc = Math.PI / 8; // 45-degree total arc centered on attack angle
+    const maxRadius = 88;
+    const startAngle = angle - halfArc;
+    const endAngle = angle + halfArc;
+
+    for (let ringIdx = 0; ringIdx < 3; ringIdx++) {
+      this.time.delayedCall(ringIdx * 90, () => {
+        if (!this.scene.isActive('GameScene')) return;
+        const gfx = this.add.graphics().setDepth(12);
+        this.roomGroup.add(gfx);
+        const state = { r: 14, alpha: 0.9 - ringIdx * 0.15 };
+        this.tweens.add({
+          targets: state,
+          r: maxRadius,
+          alpha: 0,
+          duration: 480,
+          ease: 'Cubic.Out',
+          onUpdate: () => {
+            if (!gfx.active) return;
+            gfx.clear();
+            gfx.lineStyle(2.5, 0xc084fc, state.alpha);
+            gfx.beginPath();
+            gfx.arc(originX, originY, state.r, startAngle, endAngle, false);
+            gfx.strokePath();
+            gfx.lineStyle(1.2, 0xe9d5ff, state.alpha);
+            gfx.beginPath();
+            gfx.arc(originX, originY, Math.max(4, state.r - 2), startAngle, endAngle, false);
+            gfx.strokePath();
+          },
+          onComplete: () => gfx.destroy(),
+        });
+      });
+    }
+
+    if (isLocal) {
+      const minX = this.isTestRoom ? 21 * 16 + 8 : 22;
+      const maxX = Math.max(minX, this.roomWidthPx - 22);
+      const maxY = Math.max(22, this.roomHeightPx - 22);
+      for (const e of this.activeEnemies) {
+        if (!e.sprite.active || e.isBoss) continue;
+        const dist = Phaser.Math.Distance.Between(originX, originY, e.sprite.x, e.sprite.y);
+        if (dist > maxRadius) continue;
+        const enemyAngle = Phaser.Math.Angle.Between(originX, originY, e.sprite.x, e.sprite.y);
+        const diff = Math.abs(Phaser.Math.Angle.Wrap(enemyAngle - angle));
+        if (diff <= halfArc) {
+          const pushAngle = dist < 4 ? angle : enemyAngle;
+          e.sprite.x = Phaser.Math.Clamp(e.sprite.x + Math.cos(pushAngle) * 11, minX, maxX);
+          e.sprite.y = Phaser.Math.Clamp(e.sprite.y + Math.sin(pushAngle) * 11, 22, maxY);
+          this.spawnParticles(e.sprite.x, e.sprite.y, 0xc084fc, 3);
+        }
+      }
+    }
+  }
+
+  private spawnCloudbreakerPulse(
+    originX: number,
+    originY: number,
+    angle: number,
+    isLocal: boolean,
+    alreadyConsumed: boolean
+  ): void {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const perpX = -sin;
+    const perpY = cos;
+    const stepDist = 16;
+    const maxSteps = 9;
+    const pulseDmg = 2;
+    const hitUids = new Set<string>();
+    let consumed = alreadyConsumed;
+    let stopped = false;
+
+    const walls = (this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[]).filter((w) => w.active);
+    this.cameras.main.shake(110, 0.006);
+
+    for (let step = 1; step <= maxSteps; step++) {
+      const px = originX + cos * (step * stepDist);
+      const py = originY + sin * (step * stepDist);
+
+      if (px < 17 || px > this.roomWidthPx - 17 || py < 17 || py > this.roomHeightPx - 17) break;
+      let hitsWall = false;
+      for (const wall of walls) {
+        if (Math.abs(px - wall.x) < 9 && Math.abs(py - wall.y) < 9) {
+          hitsWall = true;
+          break;
+        }
+      }
+      if (hitsWall) break;
+
+      this.time.delayedCall((step - 1) * 28, () => {
+        if (!this.scene.isActive('GameScene') || stopped) return;
+
+        // Underground fissure & ground tremor animation
+        const tremor = this.add.circle(px, py, 8, 0x7c65d6, 0.38).setStrokeStyle(1.5, 0xb8a1ff, 0.9).setDepth(3);
+        const crack = this.add.graphics().setDepth(3);
+        crack.lineStyle(2, 0x1e1633, 0.95);
+        crack.lineBetween(px - cos * 6 + perpX * 2, py - sin * 6 + perpY * 2, px + cos * 6 - perpX * 2, py + sin * 6 - perpY * 2);
+        crack.lineStyle(1, 0xb8a1ff, 0.85);
+        crack.lineBetween(px - perpX * 5, py - perpY * 5, px + perpX * 5, py + perpY * 5);
+
+        this.roomGroup.add(tremor);
+        this.roomGroup.add(crack);
+        this.spawnParticles(px, py, step % 2 === 0 ? 0xb8a1ff : 0x94a3b8, 2);
+
+        this.tweens.add({
+          targets: tremor,
+          scale: 1.55,
+          alpha: 0,
+          duration: 280,
+          ease: 'Quad.easeOut',
+          onComplete: () => tremor.destroy(),
+        });
+        this.tweens.add({
+          targets: crack,
+          alpha: 0,
+          duration: 360,
+          ease: 'Quad.easeOut',
+          onComplete: () => crack.destroy(),
+        });
+
+        if (isLocal) {
+          let hitPulse = false;
+          for (const e of [...this.activeEnemies]) {
+            if (!e.sprite.active || hitUids.has(e.uid)) continue;
+            if (Phaser.Math.Distance.Between(px, py, e.sprite.x, e.sprite.y) <= (e.isBoss ? 18 : 15)) {
+              hitUids.add(e.uid);
+              this.damageEnemy(e, pulseDmg);
+              hitPulse = true;
+            }
+          }
+          if (this.hitNyarlathotepArm(px, py, 15, pulseDmg)) {
+            hitPulse = true;
+          }
+          if (hitPulse && !consumed) {
+            const activeItem = this.playerState.inventory[this.playerState.activeSlot];
+            if (activeItem?.id === 'cloudbreaker') {
+              consumed = true;
+              const broke = consumeUse(this.playerState.inventory, this.playerState.activeSlot, 1);
+              if (broke) {
+                SoundSystem.playBreak();
+                this.ui.showToast('Cloudbreaker broke!', '#ffe066');
+              }
+            }
+          }
+        }
+      });
+    }
   }
 
   private drawLightningBolt(x1: number, y1: number, x2: number, y2: number): void {
@@ -4325,9 +5478,16 @@ export class GameScene extends Phaser.Scene {
     let endX = startX + cos * w.range;
     let endY = startY + sin * w.range;
     let hitEnemy: ActiveEnemy | null = null;
+    let hitCrate: Phaser.Physics.Arcade.Sprite | null = null;
 
-    const walls = this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[];
-    const crates = this.crateGroup.getChildren() as Phaser.Physics.Arcade.Sprite[];
+    const maxWallDistSq = (w.range + 16) * (w.range + 16);
+    const walls = (this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[]).filter((wall) => {
+      if (!wall.active) return false;
+      const dx = wall.x - startX;
+      const dy = wall.y - startY;
+      return dx * dx + dy * dy <= maxWallDistSq;
+    });
+    const crates = (this.crateGroup.getChildren() as Phaser.Physics.Arcade.Sprite[]).filter((c) => c.active);
 
     for (let dist = 8; dist <= w.range; dist += step) {
       const px = startX + cos * dist;
@@ -4352,6 +5512,7 @@ export class GameScene extends Phaser.Scene {
           if (!crate.active) continue;
           if (Math.abs(px - crate.x) < 8.5 && Math.abs(py - crate.y) < 8.5) {
             hitWall = true;
+            hitCrate = crate;
             break;
           }
         }
@@ -4375,21 +5536,45 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Draw continuous solid glowing beam
-    this.beamGfx.lineStyle(6, 0xff8c1a, 0.32);
+    this.beamGfx.lineStyle(9, 0xff8c1a, 0.32);
     this.beamGfx.lineBetween(startX, startY, endX, endY);
-    this.beamGfx.lineStyle(3.2, 0xffe066, 0.85);
+    this.beamGfx.lineStyle(4.8, 0xffe066, 0.85);
     this.beamGfx.lineBetween(startX, startY, endX, endY);
-    this.beamGfx.lineStyle(1.4, 0xffffff, 1);
+    this.beamGfx.lineStyle(2.1, 0xffffff, 1);
     this.beamGfx.lineBetween(startX, startY, endX, endY);
     this.beamGfx.fillStyle(0xffe066, 0.8);
-    this.beamGfx.fillCircle(endX, endY, 3.5);
+    this.beamGfx.fillCircle(endX, endY, 5.25);
     this.beamGfx.fillStyle(0xffffff, 1);
-    this.beamGfx.fillCircle(endX, endY, 1.8);
+    this.beamGfx.fillCircle(endX, endY, 2.7);
 
     this.beamFxAccumMs += delta;
     if (this.beamFxAccumMs >= 95) {
       this.beamFxAccumMs = 0;
       this.spawnFireParticles(endX, endY, 1);
+    }
+
+    if (hitCrate) {
+      const ck = hitCrate.getData('crateKey') as string | undefined;
+      if (ck) {
+        if (!this.currentRoom.brokenCrates) this.currentRoom.brokenCrates = [];
+        if (!this.currentRoom.brokenCrates.includes(ck)) {
+          this.currentRoom.brokenCrates.push(ck);
+        }
+        net.broadcastInteract({
+          peerId: this.playerState.id,
+          gx: this.currentRoom.gx,
+          gy: this.currentRoom.gy,
+          kind: 'crate',
+          targetId: ck,
+        });
+      }
+      this.spawnParticles(hitCrate.x, hitCrate.y, 0xb08968, 5);
+      if (Math.random() < 0.4) {
+        const uid = `cr_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
+        this.spawnRoomLoot(uid, 'shard', hitCrate.x, hitCrate.y, undefined, 1);
+      }
+      hitCrate.destroy();
+      this.cameras.main.shake(100, 0.008);
     }
 
     if (hitEnemy) {
@@ -4398,6 +5583,9 @@ export class GameScene extends Phaser.Scene {
       if (this.beamDamageTickMs >= 180) {
         this.beamDamageTickMs -= 180;
         this.damageEnemy(hitEnemy, w.damage);
+        if (!hitEnemy.sprite.active || hitEnemy.hp <= 0) {
+          this.cameras.main.shake(100, 0.008);
+        }
       }
     } else {
       this.beamDamageTickMs = 120;
@@ -4415,7 +5603,9 @@ export class GameScene extends Phaser.Scene {
           Math.abs(endY - 88) <= 12 &&
           endX >= this.roomWidthPx - 20;
         if (hitSecretNorth || hitSecretSouth || hitSecretWest || hitSecretEast) {
-          this.tryOpenAdjacentSecretWall(endX, endY);
+          if (this.tryOpenAdjacentSecretWall(endX, endY)) {
+            this.cameras.main.shake(100, 0.008);
+          }
         }
       }
     }
@@ -4426,6 +5616,275 @@ export class GameScene extends Phaser.Scene {
       const broke = consumeUse(this.playerState.inventory, this.playerState.activeSlot, 1);
       if (broke) {
         this.beamGfx.clear();
+        SoundSystem.playBreak();
+        this.ui.showToast(`${w.name} broke!`, '#ffe066');
+        break;
+      }
+    }
+  }
+
+  private updatePrismBeams(delta: number): void {
+    for (let i = this.prismBeams.length - 1; i >= 0; i--) {
+      const b = this.prismBeams[i];
+      if (!b.gfx.active) {
+        this.prismBeams.splice(i, 1);
+        continue;
+      }
+
+      let startX = this.playerSprite.x;
+      let startY = this.playerSprite.y;
+      if (!b.isLocal) {
+        const remote = this.remoteSprites.get(b.ownerId);
+        if (!remote?.sprite.active) {
+          b.gfx.destroy();
+          this.prismBeams.splice(i, 1);
+          continue;
+        }
+        startX = remote.sprite.x;
+        startY = remote.sprite.y;
+      } else if (this.playerState.downed) {
+        b.gfx.destroy();
+        this.prismBeams.splice(i, 1);
+        continue;
+      }
+
+      const cos = Math.cos(b.angle);
+      const sin = Math.sin(b.angle);
+
+      // Raycast against walls & room bounds only (pierces straight through enemies)
+      let endX = startX + cos * b.range;
+      let endY = startY + sin * b.range;
+      const maxWallDistSq = (b.range + 16) * (b.range + 16);
+      const walls = (this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[]).filter((wall) => {
+        if (!wall.active) return false;
+        const dx = wall.x - startX;
+        const dy = wall.y - startY;
+        return dx * dx + dy * dy <= maxWallDistSq;
+      });
+      for (let dist = 8; dist <= b.range; dist += 3) {
+        const px = startX + cos * dist;
+        const py = startY + sin * dist;
+        if (px < 17 || px > this.roomWidthPx - 17 || py < 17 || py > this.roomHeightPx - 17) {
+          endX = px;
+          endY = py;
+          break;
+        }
+        if (walls.some((wall) => Math.abs(px - wall.x) < 8.5 && Math.abs(py - wall.y) < 8.5)) {
+          endX = px;
+          endY = py;
+          break;
+        }
+      }
+
+      b.gfx.clear();
+
+      if (b.chargeMs > 0) {
+        b.chargeMs -= delta;
+        const chargeProgress = 1 - Math.max(0, b.chargeMs) / 500;
+        b.gfx.lineStyle(1, 0xffffff, 0.25 + chargeProgress * 0.35);
+        b.gfx.lineBetween(startX, startY, endX, endY);
+        b.gfx.fillStyle(0xffffff, 0.4 + chargeProgress * 0.5);
+        b.gfx.fillCircle(startX + cos * 8, startY + sin * 8, 2 + chargeProgress * 2.5);
+        continue;
+      }
+
+      b.activeMs -= delta;
+      if (b.activeMs <= 0) {
+        b.gfx.destroy();
+        this.prismBeams.splice(i, 1);
+        continue;
+      }
+
+      // White laser beam (half width of Haunter's Eye)
+      b.gfx.lineStyle(4.5, 0xffffff, 0.28);
+      b.gfx.lineBetween(startX, startY, endX, endY);
+      b.gfx.lineStyle(2.4, 0xf8fafc, 0.85);
+      b.gfx.lineBetween(startX, startY, endX, endY);
+      b.gfx.lineStyle(1.05, 0xffffff, 1);
+      b.gfx.lineBetween(startX, startY, endX, endY);
+      b.gfx.fillStyle(0xffffff, 0.8);
+      b.gfx.fillCircle(endX, endY, 2.6);
+      b.gfx.fillStyle(0xffffff, 1);
+      b.gfx.fillCircle(endX, endY, 1.35);
+
+      b.fxAccumMs += delta;
+      if (b.fxAccumMs >= 95) {
+        b.fxAccumMs = 0;
+        this.spawnParticles(endX, endY, 0xffffff, 2);
+      }
+
+      if (b.isLocal) {
+        const beamLen = Phaser.Math.Distance.Between(startX, startY, endX, endY);
+        for (const e of [...this.activeEnemies]) {
+          if (!e.sprite.active || b.hitUids.has(e.uid)) continue;
+          const dx = e.sprite.x - startX;
+          const dy = e.sprite.y - startY;
+          const along = dx * cos + dy * sin;
+          const pad = e.isBoss ? 14 : 9;
+          if (along < 0 || along > beamLen + pad) continue;
+          const perp = Math.abs(-sin * dx + cos * dy);
+          if (perp <= pad) {
+            b.hitUids.add(e.uid);
+            this.damageEnemy(e, b.damage);
+          }
+        }
+      }
+    }
+  }
+
+  private updateAuroraHarpHoldFire(): void {
+    if (this.playerState.downed || this.dodgeMs > 0 || this.ui.isOverlayOpen() || this.attackCooldownMs > 0) {
+      return;
+    }
+    const activeItem = this.playerState.inventory[this.playerState.activeSlot];
+    if (!activeItem || activeItem.id !== 'aurora_harp') return;
+    const holdingShoot = isMobileMode()
+      ? mobileInput.dpadActive
+      : this.input.activePointer.leftButtonDown();
+    if (holdingShoot) {
+      this.handlePrimaryAttack();
+    }
+  }
+
+  private updateFlamethrowerWeapon(delta: number): void {
+    if (this.playerState.downed || this.dodgeMs > 0 || this.ui.isOverlayOpen()) {
+      this.flameDamageTickMs = 0;
+      return;
+    }
+
+    const activeItem = this.playerState.inventory[this.playerState.activeSlot];
+    const w = activeItem?.category === 'weapon' ? WEAPONS[activeItem.id] : undefined;
+    if (!activeItem || !w || w.style !== 'flamethrower') {
+      this.flameDamageTickMs = 0;
+      return;
+    }
+
+    const holdingShoot = isMobileMode()
+      ? mobileInput.dpadActive
+      : this.input.activePointer.leftButtonDown();
+
+    if (!holdingShoot) {
+      this.flameDamageTickMs = 0;
+      return;
+    }
+
+    const angle = isMobileMode()
+      ? mobileInput.dpadDirX !== 0 || mobileInput.dpadDirY !== 0
+        ? mobileInput.dpadAngle
+        : this.playerState.aimAngle
+      : this.getAimAngle();
+    this.playerState.aimAngle = angle;
+
+    const startX = this.playerSprite.x;
+    const startY = this.playerSprite.y;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const maxWallDistSq = (w.range + 16) * (w.range + 16);
+    const walls = (this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[]).filter((wall) => {
+      if (!wall.active) return false;
+      const dx = wall.x - startX;
+      const dy = wall.y - startY;
+      return dx * dx + dy * dy <= maxWallDistSq;
+    });
+    const crates = (this.crateGroup.getChildren() as Phaser.Physics.Arcade.Sprite[]).filter((c) => c.active);
+
+    let maxReach = w.range;
+    for (let dist = 8; dist <= w.range; dist += 4) {
+      const px = startX + cos * dist;
+      const py = startY + sin * dist;
+      if (px < 17 || px > this.roomWidthPx - 17 || py < 17 || py > this.roomHeightPx - 17) {
+        maxReach = dist;
+        break;
+      }
+      let blocked = false;
+      for (const wall of walls) {
+        if (Math.abs(px - wall.x) < 8.5 && Math.abs(py - wall.y) < 8.5) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) {
+        for (const crate of crates) {
+          if (Math.abs(px - crate.x) < 8.5 && Math.abs(py - crate.y) < 8.5) {
+            blocked = true;
+            break;
+          }
+        }
+      }
+      if (blocked) {
+        maxReach = dist;
+        break;
+      }
+    }
+
+    // Continuous visual stream of fire particles
+    this.flameFxAccumMs += delta;
+    if (this.flameFxAccumMs >= 38) {
+      this.flameFxAccumMs = 0;
+      const flameColors = [0xff4500, 0xff6b35, 0xff9f1c, 0xffe066];
+      for (let i = 0; i < 2; i++) {
+        const spread = Phaser.Math.FloatBetween(-0.2, 0.2);
+        const a = angle + spread;
+        const travel = Math.max(12, maxReach * Phaser.Math.FloatBetween(0.75, 1.0));
+        const sx = startX + Math.cos(a) * 8;
+        const sy = startY + Math.sin(a) * 8;
+        const color = flameColors[Math.floor(Math.random() * flameColors.length)];
+        const p = this.add
+          .image(sx, sy, i === 0 ? 'particle_spark' : 'particle_star')
+          .setTint(color)
+          .setScale(Phaser.Math.FloatBetween(1.1, 1.5))
+          .setDepth(13)
+          .setAlpha(0.95);
+        this.tweens.add({
+          targets: p,
+          x: startX + Math.cos(a) * travel,
+          y: startY + Math.sin(a) * travel,
+          scale: 0.45,
+          alpha: 0,
+          duration: Phaser.Math.Between(200, 310),
+          ease: 'Quad.easeOut',
+          onComplete: () => p.destroy(),
+        });
+      }
+    }
+
+    // Set enemies in the stream on fire and tick reduced continuous damage
+    const hitEnemies: ActiveEnemy[] = [];
+    for (const e of this.activeEnemies) {
+      if (!e.sprite.active) continue;
+      const dx = e.sprite.x - startX;
+      const dy = e.sprite.y - startY;
+      const along = dx * cos + dy * sin;
+      const pad = e.isBoss ? 14 : 9;
+      if (along < 0 || along > maxReach + pad) continue;
+      const perp = Math.abs(-sin * dx + cos * dy);
+      const halfWidth = (e.isBoss ? 18 : 13) + (along / w.range) * 8;
+      if (perp <= halfWidth) {
+        e.burningMs = 3000;
+        hitEnemies.push(e);
+      }
+    }
+
+    if (hitEnemies.length > 0) {
+      this.flameDamageTickMs += delta;
+      if (this.flameDamageTickMs >= 250) {
+        this.flameDamageTickMs -= 250;
+        for (const e of hitEnemies) {
+          if (e.sprite.active) {
+            this.damageEnemy(e, w.damage);
+          }
+        }
+      }
+    } else {
+      this.flameDamageTickMs = 150;
+    }
+
+    // Drain 1 use per 100ms (maxUses: 600 = 60 seconds total)
+    this.flameDrainAccumMs += delta;
+    while (this.flameDrainAccumMs >= 100) {
+      this.flameDrainAccumMs -= 100;
+      const broke = consumeUse(this.playerState.inventory, this.playerState.activeSlot, 1);
+      if (broke) {
         SoundSystem.playBreak();
         this.ui.showToast(`${w.name} broke!`, '#ffe066');
         break;
@@ -4699,6 +6158,9 @@ export class GameScene extends Phaser.Scene {
 
     for (const e of [...this.activeEnemies]) {
       if (!e.sprite.active) continue;
+      if (this.isTestRoom && e.sprite.x < 21 * 16 + 8) {
+        e.sprite.x = 21 * 16 + 8;
+      }
 
       let px = hostX;
       let py = hostY;
@@ -4718,12 +6180,19 @@ export class GameScene extends Phaser.Scene {
         e.hitFlashMs -= delta;
         if (e.hitFlashMs <= 0) {
           e.sprite.clearTint();
-          if (e.isElite) e.sprite.setTint(0xffd275);
+          if (e.slowedMs > 0) e.sprite.setTint(0x55ff88);
+          else if (e.frostSlowMs && e.frostSlowMs > 0) e.sprite.setTint(0x7dd3fc);
+          else if (e.isElite) e.sprite.setTint(0xffd275);
         }
       }
 
       if (e.burningMs > 0) {
         e.burningMs -= delta;
+        e.burnFxMs += delta;
+        if (e.burnFxMs >= 85) {
+          e.burnFxMs = 0;
+          this.spawnFireParticles(e.sprite.x, e.sprite.y, 2);
+        }
         e.burnTickMs += delta;
         if (e.burnTickMs >= 1000) {
           e.burnTickMs = 0;
@@ -4731,16 +6200,86 @@ export class GameScene extends Phaser.Scene {
           this.damageEnemy(e, 1);
           if (!e.sprite.active) continue;
         }
+      } else {
+        e.burnFxMs = 0;
+      }
+
+      if (e.frozenMs && e.frozenMs > 0) {
+        e.frozenMs -= delta;
+        if (!e.iceGfx || !e.iceGfx.active) {
+          this.drawEnemyIceCube(e, (e.iceHits ?? 0) >= 1);
+        }
+        e.iceGfx?.setPosition(e.sprite.x, e.sprite.y);
+        if (e.frozenMs <= 0) {
+          this.shatterEnemyIce(e);
+        } else {
+          e.sprite.setVelocity(0, 0);
+          continue;
+        }
       }
 
       if (e.bubbledMs > 0) {
         e.bubbledMs -= delta;
-        e.sprite.setVelocity(0, 0);
-        continue;
+        if (!e.bubbleGfx || !e.bubbleGfx.active) {
+          e.bubbleGfx = this.add.graphics().setDepth(11);
+          e.bubbleGfx.fillStyle(0x6ef3ff, 0.24);
+          e.bubbleGfx.fillCircle(0, 0, e.isBoss ? 16 : 11);
+          e.bubbleGfx.lineStyle(1.3, 0xa5f3fc, 0.9);
+          e.bubbleGfx.strokeCircle(0, 0, e.isBoss ? 16 : 11);
+          e.bubbleGfx.fillStyle(0xffffff, 0.75);
+          e.bubbleGfx.fillCircle(-3, -4, 2);
+          this.roomGroup.add(e.bubbleGfx);
+        }
+        e.bubbleGfx.setPosition(e.sprite.x, e.sprite.y);
+        if (e.bubbledMs <= 0) {
+          this.popEnemyBubble(e);
+        } else {
+          e.sprite.setVelocity(e.bubbleDriftVx ?? 0, e.bubbleDriftVy ?? 0);
+          continue;
+        }
       }
 
-      const slowFactor = e.slowedMs > 0 ? 0.5 : 1;
-      if (e.slowedMs > 0) e.slowedMs -= delta;
+      let slowFactor = e.slowedMs > 0 ? 0.5 : 1;
+      if (e.frostSlowMs && e.frostSlowMs > 0) {
+        e.frostSlowMs -= delta;
+        if (e.frostSlowMs <= 0) {
+          e.frostSlowMs = 0;
+          if (e.hitFlashMs <= 0 && e.slowedMs <= 0) {
+            e.sprite.clearTint();
+            if (e.isElite) e.sprite.setTint(0xffd275);
+          }
+        } else {
+          slowFactor *= 0.5;
+          if (e.hitFlashMs <= 0 && e.windupMs <= 0 && e.slowedMs <= 0) {
+            e.sprite.setTint(0x7dd3fc);
+          }
+        }
+      }
+      if (e.slowedMs > 0) {
+        e.slowedMs -= delta;
+        if (e.slowedMs <= 0) {
+          e.slowedMs = 0;
+          e.slowFxMs = 0;
+          if (e.hitFlashMs <= 0) {
+            e.sprite.clearTint();
+            if (e.isElite) e.sprite.setTint(0xffd275);
+          }
+        } else {
+          if (e.hitFlashMs <= 0 && e.windupMs <= 0) {
+            e.sprite.setTint(0x55ff88);
+          }
+          const body = e.sprite.body as Phaser.Physics.Arcade.Body | null;
+          const isMoving =
+            e.dashingMs > 0 || (body !== null && (Math.abs(body.velocity.x) > 4 || Math.abs(body.velocity.y) > 4));
+          if (isMoving) {
+            e.slowFxMs = (e.slowFxMs ?? 0) + delta;
+            if (e.slowFxMs >= 140) {
+              e.slowFxMs = 0;
+              this.spawnSlimeDropParticle(e.sprite.x, e.sprite.y);
+            }
+          }
+        }
+      }
 
       e.sprite.setFrame(Math.floor(time / 280) % 2);
 
@@ -5920,9 +7459,18 @@ export class GameScene extends Phaser.Scene {
       const p = this.projectiles[i];
       p.lifeMs -= delta;
       if (p.lifeMs <= 0 || !p.sprite.active) {
+        if (p.starBomb && p.sprite.active) {
+          this.triggerStarBomb(p.sprite.x, p.sprite.y);
+        } else if (p.bubbled && p.sprite.active) {
+          this.spawnParticles(p.sprite.x, p.sprite.y, 0x6ef3ff, 4);
+        }
+        p.bubbleGfx?.destroy();
         p.sprite.destroy();
         this.projectiles.splice(i, 1);
         continue;
+      }
+      if (p.bubbled && p.bubbleGfx) {
+        p.bubbleGfx.setPosition(p.sprite.x, p.sprite.y);
       }
 
       if (p.homing && p.fromPlayer && this.activeEnemies.length > 0) {
@@ -5937,19 +7485,40 @@ export class GameScene extends Phaser.Scene {
         }
         if (nearest?.sprite.active) {
           const targetA = Phaser.Math.Angle.Between(p.sprite.x, p.sprite.y, nearest.sprite.x, nearest.sprite.y);
-          p.vx = Phaser.Math.Linear(p.vx, Math.cos(targetA) * 145, 0.08);
-          p.vy = Phaser.Math.Linear(p.vy, Math.sin(targetA) * 145, 0.08);
+          const homingSpd = p.shockBlast ? 240 : 145;
+          p.vx = Phaser.Math.Linear(p.vx, Math.cos(targetA) * homingSpd, 0.08);
+          p.vy = Phaser.Math.Linear(p.vy, Math.sin(targetA) * homingSpd, 0.08);
         }
       }
 
+      if (p.boomerang || p.starShatter || p.starBomb) {
+        p.sprite.angle += delta * (p.boomerang ? 1.1 : 0.6);
+      }
+      if (p.lunarDisc) {
+        p.lunarSliceMs = (p.lunarSliceMs ?? 0) + delta;
+        if (p.lunarSliceMs >= 200) {
+          p.lunarSliceMs = 0;
+          p.hitUids.clear();
+        }
+      }
+      if (p.isMusicNote) {
+        p.floatPhase = (p.floatPhase ?? 0) + delta * 0.014;
+        p.sprite.y += Math.cos(p.floatPhase) * 0.45;
+      }
       if (p.boomerang && !p.returning && p.lifeMs < 600) {
         p.returning = true;
         p.hitUids.clear();
       }
       if (p.boomerang && p.returning) {
+        const distToOwner = Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, this.playerSprite.x, this.playerSprite.y);
+        if (distToOwner < 14) {
+          p.sprite.destroy();
+          this.projectiles.splice(i, 1);
+          continue;
+        }
         const retA = Phaser.Math.Angle.Between(p.sprite.x, p.sprite.y, this.playerSprite.x, this.playerSprite.y);
-        p.vx = Math.cos(retA) * 205;
-        p.vy = Math.sin(retA) * 205;
+        p.vx = Math.cos(retA) * 300;
+        p.vy = Math.sin(retA) * 300;
       }
 
       if (p.netSynced && p.targetX !== undefined && p.targetY !== undefined) {
@@ -5961,39 +7530,109 @@ export class GameScene extends Phaser.Scene {
         const ny = Phaser.Math.Linear(p.sprite.y, p.targetY, t);
         p.sprite.setVelocity(0, 0);
         p.sprite.setPosition(nx, ny);
-      } else {
-        p.sprite.setVelocity(p.vx, p.vy);
       }
 
       // Wall & solid block bounce or destroy
       let hitSolid = false;
       const maxBoundX = Math.max(16, this.roomWidthPx - 16);
       const maxBoundY = Math.max(16, this.roomHeightPx - 16);
-      if (p.sprite.x < 16 || p.sprite.x > maxBoundX || p.sprite.y < 16 || p.sprite.y > maxBoundY) {
-        if (p.bouncesLeft > 0) {
+      const minB = p.boomerang ? 18 : 16;
+      const maxBX = p.boomerang ? Math.max(18, this.roomWidthPx - 18) : maxBoundX;
+      const maxBY = p.boomerang ? Math.max(18, this.roomHeightPx - 18) : maxBoundY;
+
+      if (p.boomerang && p.returning) {
+        // Returning boomerang homes straight back to the player without getting stuck on walls
+      } else if (p.sprite.x < minB || p.sprite.x > maxBX || p.sprite.y < minB || p.sprite.y > maxBY) {
+        if (p.splitSpore) {
+          let rvx = p.vx;
+          let rvy = p.vy;
+          if (p.sprite.x < minB) {
+            rvx = Math.abs(p.vx);
+            p.sprite.x = minB;
+          } else if (p.sprite.x > maxBX) {
+            rvx = -Math.abs(p.vx);
+            p.sprite.x = maxBX;
+          }
+          if (p.sprite.y < minB) {
+            rvy = Math.abs(p.vy);
+            p.sprite.y = minB;
+          } else if (p.sprite.y > maxBY) {
+            rvy = -Math.abs(p.vy);
+            p.sprite.y = maxBY;
+          }
+          this.spawnMushroomSplitSpores(p.sprite.x, p.sprite.y, Math.atan2(rvy, rvx), p.color, p.ownerId);
+          hitSolid = true;
+        } else if (p.bouncesLeft > 0) {
           p.bouncesLeft--;
-          if (p.sprite.x < 16 || p.sprite.x > maxBoundX) p.vx *= -1;
-          if (p.sprite.y < 16 || p.sprite.y > maxBoundY) p.vy *= -1;
+          if (p.sprite.x < minB) {
+            p.vx = Math.abs(p.vx);
+            p.sprite.x = minB;
+          } else if (p.sprite.x > maxBX) {
+            p.vx = -Math.abs(p.vx);
+            p.sprite.x = maxBX;
+          }
+          if (p.sprite.y < minB) {
+            p.vy = Math.abs(p.vy);
+            p.sprite.y = minB;
+          } else if (p.sprite.y > maxBY) {
+            p.vy = -Math.abs(p.vy);
+            p.sprite.y = maxBY;
+          }
+          if (p.boomerang && p.bouncesLeft <= 0) {
+            p.returning = true;
+            p.hitUids.clear();
+          }
+        } else if (p.boomerang) {
+          p.returning = true;
+          p.hitUids.clear();
         } else {
           hitSolid = true;
         }
-      } else if (!p.boomerang) {
+      } else {
         for (const obj of this.wallGroup.getChildren()) {
           const w = obj as Phaser.GameObjects.Rectangle;
-          const hw = (w.width || 16) * 0.5 + 1;
-          const hh = (w.height || 16) * 0.5 + 1;
+          if (!w.active) continue;
+          const hw = (w.width || 16) * 0.5 + (p.boomerang ? 3 : 1);
+          const hh = (w.height || 16) * 0.5 + (p.boomerang ? 3 : 1);
           const dx = p.sprite.x - w.x;
           const dy = p.sprite.y - w.y;
           if (Math.abs(dx) < hw && Math.abs(dy) < hh) {
-            if (p.bouncesLeft > 0) {
-              p.bouncesLeft--;
-              if (Math.abs(dx) > Math.abs(dy)) {
-                p.vx *= -1;
-                p.sprite.x = w.x + Math.sign(dx || 1) * (hw + 0.5);
+            if (p.splitSpore) {
+              const penX = hw - Math.abs(dx);
+              const penY = hh - Math.abs(dy);
+              let rvx = p.vx;
+              let rvy = p.vy;
+              if (penX < penY) {
+                const dir = Math.sign(dx || (p.vx < 0 ? 1 : -1));
+                rvx = dir * Math.abs(p.vx);
+                p.sprite.x = w.x + dir * (hw + 1);
               } else {
-                p.vy *= -1;
-                p.sprite.y = w.y + Math.sign(dy || 1) * (hh + 0.5);
+                const dir = Math.sign(dy || (p.vy < 0 ? 1 : -1));
+                rvy = dir * Math.abs(p.vy);
+                p.sprite.y = w.y + dir * (hh + 1);
               }
+              this.spawnMushroomSplitSpores(p.sprite.x, p.sprite.y, Math.atan2(rvy, rvx), p.color, p.ownerId);
+              hitSolid = true;
+            } else if (p.bouncesLeft > 0) {
+              p.bouncesLeft--;
+              const penX = hw - Math.abs(dx);
+              const penY = hh - Math.abs(dy);
+              if (penX < penY) {
+                const dir = Math.sign(dx || (p.vx < 0 ? 1 : -1));
+                p.vx = dir * Math.abs(p.vx);
+                p.sprite.x = w.x + dir * (hw + 1);
+              } else {
+                const dir = Math.sign(dy || (p.vy < 0 ? 1 : -1));
+                p.vy = dir * Math.abs(p.vy);
+                p.sprite.y = w.y + dir * (hh + 1);
+              }
+              if (p.boomerang && p.bouncesLeft <= 0) {
+                p.returning = true;
+                p.hitUids.clear();
+              }
+            } else if (p.boomerang) {
+              p.returning = true;
+              p.hitUids.clear();
             } else {
               hitSolid = true;
               if (!p.fromPlayer && p.shooterUid && w.x >= 16 && w.x <= maxBoundX && w.y >= 16 && w.y <= maxBoundY) {
@@ -6013,8 +7652,19 @@ export class GameScene extends Phaser.Scene {
         }
       }
 
+      if (!p.netSynced) {
+        p.sprite.setVelocity(p.vx, p.vy);
+      }
+
       if (hitSolid) {
-        this.spawnParticles(p.sprite.x, p.sprite.y, p.color, 3);
+        if (p.starBomb) {
+          this.triggerStarBomb(p.sprite.x, p.sprite.y);
+        } else {
+          if (p.slimeSplatter) {
+            this.spawnSlimeSplatter(p.sprite.x, p.sprite.y);
+          }
+          this.spawnParticles(p.sprite.x, p.sprite.y, p.color, 3);
+        }
         p.sprite.destroy();
         this.projectiles.splice(i, 1);
         continue;
@@ -6087,12 +7737,58 @@ export class GameScene extends Phaser.Scene {
         }
         if (reflected) continue;
 
+        if (p.bubbles) {
+          let trappedBullet = false;
+          for (const ep of this.projectiles) {
+            if (ep.fromPlayer || !ep.sprite.active || ep.bubbled) continue;
+            if (Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, ep.sprite.x, ep.sprite.y) < 12) {
+              ep.bubbled = true;
+              ep.vx = 0;
+              ep.vy = 0;
+              ep.lifeMs = 2000;
+              ep.sprite.setVelocity(0, 0);
+              const bgfx = this.add.graphics().setDepth(12);
+              bgfx.fillStyle(0x6ef3ff, 0.28);
+              bgfx.fillCircle(0, 0, 7);
+              bgfx.lineStyle(1.2, 0xa5f3fc, 0.95);
+              bgfx.strokeCircle(0, 0, 7);
+              bgfx.fillStyle(0xffffff, 0.8);
+              bgfx.fillCircle(-2, -2.5, 1.4);
+              bgfx.setPosition(ep.sprite.x, ep.sprite.y);
+              this.roomGroup.add(bgfx);
+              ep.bubbleGfx = bgfx;
+              this.spawnParticles(ep.sprite.x, ep.sprite.y, 0x6ef3ff, 4);
+              p.sprite.destroy();
+              this.projectiles.splice(i, 1);
+              trappedBullet = true;
+              break;
+            }
+          }
+          if (trappedBullet) continue;
+        }
+
         for (const e of [...this.activeEnemies]) {
           if (!e.sprite.active || p.hitUids.has(e.uid)) continue;
           if (Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, e.sprite.x, e.sprite.y) < (e.isBoss ? 18 : 11)) {
             p.hitUids.add(e.uid);
-            if (p.slows) e.slowedMs = 3000;
-            if (p.bubbles && !e.isBoss) e.bubbledMs = 1500;
+            if (p.slows) {
+              e.slowedMs = 3000;
+            }
+            if (p.freezes) {
+              if (e.isBoss) {
+                e.frostSlowMs = 2500;
+              } else {
+                e.frozenMs = 1000;
+                e.iceHits = 0;
+                this.drawEnemyIceCube(e, false);
+              }
+            }
+            if (p.bubbles && !e.isBoss) {
+              e.bubbledMs = 1500;
+              const pushA = Math.atan2(p.vy, p.vx);
+              e.bubbleDriftVx = Math.cos(pushA) * 14;
+              e.bubbleDriftVy = Math.sin(pushA) * 14;
+            }
             if (p.burns) {
               e.burningMs = 3000;
               e.burnTickMs = 0;
@@ -6106,7 +7802,31 @@ export class GameScene extends Phaser.Scene {
               const traveled = Phaser.Math.Distance.Between(p.startX, p.startY, p.sprite.x, p.sprite.y);
               finalDmg += Math.floor(traveled / 45);
             }
-            this.damageEnemy(e, finalDmg);
+            if (p.starBomb) {
+              this.triggerStarBomb(p.sprite.x, p.sprite.y);
+            } else {
+              this.damageEnemy(e, finalDmg);
+            }
+            if (p.starShatter) {
+              this.spawnStarShatterParticles(p.sprite.x, p.sprite.y);
+            }
+            if (p.voidRift) {
+              this.spawnVoidUnderneathAnim(e.sprite.x, e.sprite.y, e.isBoss ? 22 : 15);
+            }
+            if (p.shockBlast) {
+              this.spawnCelestialShockExplosion(p.sprite.x, p.sprite.y, e.uid);
+            }
+            if (p.splitSpore) {
+              const nx = p.sprite.x - e.sprite.x;
+              const ny = p.sprite.y - e.sprite.y;
+              const nLen = Math.hypot(nx, ny) || 1;
+              const ux = nx / nLen;
+              const uy = ny / nLen;
+              const dot = p.vx * ux + p.vy * uy;
+              const rvx = dot < 0 ? p.vx - 2 * dot * ux : -p.vx;
+              const rvy = dot < 0 ? p.vy - 2 * dot * uy : -p.vy;
+              this.spawnMushroomSplitSpores(p.sprite.x, p.sprite.y, Math.atan2(rvy, rvx), p.color, p.ownerId, e.uid);
+            }
             if (!p.boomerang) {
               p.sprite.destroy();
               this.projectiles.splice(i, 1);
@@ -6122,6 +7842,7 @@ export class GameScene extends Phaser.Scene {
           }
         }
       } else if (!p.fromPlayer) {
+        if (p.bubbled) continue;
         const distToPlayer = Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, this.playerSprite.x, this.playerSprite.y);
         if (StatusEffectManager.has(this.playerState.statusEffects, 'starward') && distToPlayer < 15) {
           p.fromPlayer = true;
@@ -6196,14 +7917,62 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private updateCometTrail(delta: number): void {
+    if (this.cometTrailActiveMs > 0 && this.dodgeMs > 0 && this.playerSprite.active) {
+      this.cometTrailActiveMs -= delta;
+      this.cometTrailAccumMs += delta;
+      while (this.cometTrailAccumMs >= 20) {
+        this.cometTrailAccumMs -= 20;
+        const cx = this.playerSprite.x + Phaser.Math.FloatBetween(-2, 2);
+        const cy = this.playerSprite.y + Phaser.Math.FloatBetween(-2, 2);
+        const g = this.add.graphics().setDepth(3);
+        g.fillStyle(0xffd275, 0.35);
+        g.fillCircle(cx, cy, 2.8);
+        g.fillStyle(0xffe066, 0.9);
+        g.fillCircle(cx, cy, 1.6);
+        g.fillStyle(0xffffff, 0.95);
+        g.fillCircle(cx + Phaser.Math.FloatBetween(-1, 1), cy + Phaser.Math.FloatBetween(-1, 1), 0.8);
+        this.roomGroup.add(g);
+        this.cometTrailNodes.push({ x: cx, y: cy, gfx: g, lifeMs: 1100, hitUids: new Set() });
+      }
+    } else if (this.dodgeMs <= 0) {
+      this.cometTrailActiveMs = 0;
+    }
+
+    for (let i = this.cometTrailNodes.length - 1; i >= 0; i--) {
+      const node = this.cometTrailNodes[i];
+      node.lifeMs -= delta;
+      if (node.lifeMs <= 0 || !node.gfx.active) {
+        node.gfx.destroy();
+        this.cometTrailNodes.splice(i, 1);
+        continue;
+      }
+      if (node.lifeMs < 400) {
+        node.gfx.setAlpha(node.lifeMs / 400);
+      }
+      for (const e of [...this.activeEnemies]) {
+        if (!e.sprite.active || node.hitUids.has(e.uid)) continue;
+        if (Phaser.Math.Distance.Between(node.x, node.y, e.sprite.x, e.sprite.y) <= (e.isBoss ? 18 : 13)) {
+          node.hitUids.add(e.uid);
+          this.spawnParticles(e.sprite.x, e.sprite.y, 0xffe066, 3);
+          this.damageEnemy(e, 2);
+        }
+      }
+    }
+  }
+
   private updateHazardsAndLoot(delta: number): void {
     const px = this.playerSprite.x;
     const py = this.playerSprite.y;
     const now = this.time.now;
     const lavaFrame = Math.floor(now / 260) % 3;
+    const lavaFrameChanged = lavaFrame !== this.lastLavaFrame;
+    this.lastLavaFrame = lavaFrame;
 
     for (const h of this.hazards) {
-      h.sprite.setTexture(`tile_lava_${lavaFrame}`);
+      if (lavaFrameChanged) {
+        h.sprite.setTexture(`tile_lava_${lavaFrame}`);
+      }
       h.glow.setAlpha(0.24 + Math.sin(now * 0.004 + h.phase) * 0.08);
       h.tickMs = Math.max(0, h.tickMs - delta);
       if (Phaser.Math.Distance.Between(px, py, h.x, h.y) < h.radius) {
@@ -6578,6 +8347,292 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private spawnCelestialShockExplosion(x: number, y: number, directHitUid: string): void {
+    const shockRadius = 38;
+    const ring = this.add.circle(x, y, 8, 0x6ef3ff, 0.35).setStrokeStyle(2, 0xffffff, 0.95).setDepth(13);
+    this.roomGroup.add(ring);
+    this.spawnParticles(x, y, 0x6ef3ff, 7);
+    this.tweens.add({
+      targets: ring,
+      radius: shockRadius,
+      alpha: 0,
+      duration: 210,
+      ease: 'Cubic.Out',
+      onComplete: () => ring.destroy(),
+    });
+
+    for (const other of [...this.activeEnemies]) {
+      if (!other.sprite.active || other.uid === directHitUid) continue;
+      if (Phaser.Math.Distance.Between(x, y, other.sprite.x, other.sprite.y) <= shockRadius) {
+        this.spawnParticles(other.sprite.x, other.sprite.y, 0x6ef3ff, 3);
+        this.damageEnemy(other, 1);
+      }
+    }
+  }
+
+  private spawnVoidUnderneathAnim(x: number, y: number, radius: number): void {
+    const voidPool = this.add.circle(x, y + 3, radius, 0x070412, 0.92).setStrokeStyle(2, 0xff47b6, 0.9).setScale(0.15).setDepth(3);
+    const innerRing = this.add.circle(x, y + 3, radius * 0.65, 0x3b0764, 0.55).setStrokeStyle(1.2, 0xc084fc, 0.85).setScale(0.15).setDepth(3);
+    this.roomGroup.add(voidPool);
+    this.roomGroup.add(innerRing);
+    this.spawnParticles(x, y + 3, 0xff47b6, 6);
+
+    // Open up beneath the enemy, hold briefly, then close shut
+    this.tweens.add({
+      targets: [voidPool, innerRing],
+      scale: 1,
+      duration: 110,
+      ease: 'Back.Out',
+      onComplete: () => {
+        if (!voidPool.active) return;
+        this.tweens.add({
+          targets: innerRing,
+          scale: 0.78,
+          duration: 150,
+          yoyo: true,
+          ease: 'Sine.easeInOut',
+        });
+        this.tweens.add({
+          targets: [voidPool, innerRing],
+          scale: 0.05,
+          alpha: 0,
+          delay: 160,
+          duration: 160,
+          ease: 'Quad.In',
+          onComplete: () => {
+            voidPool.destroy();
+            innerRing.destroy();
+          },
+        });
+      },
+    });
+  }
+
+  private spawnStarShatterParticles(x: number, y: number): void {
+    const colors = [0xffe066, 0xffd275, 0xffffff, 0xff9f1c];
+    for (let i = 0; i < 12; i++) {
+      const a = (Math.PI * 2 * i) / 12 + Phaser.Math.FloatBetween(-0.2, 0.2);
+      const dist = Phaser.Math.Between(14, 30);
+      const p = this.add
+        .image(x, y, i % 2 === 0 ? 'particle_star' : 'particle_spark')
+        .setTint(colors[i % colors.length])
+        .setScale(Phaser.Math.FloatBetween(0.9, 1.35))
+        .setDepth(14);
+      this.tweens.add({
+        targets: p,
+        x: x + Math.cos(a) * dist,
+        y: y + Math.sin(a) * dist,
+        angle: Phaser.Math.Between(-180, 180),
+        scale: 0.25,
+        alpha: 0,
+        duration: Phaser.Math.Between(240, 360),
+        ease: 'Quad.Out',
+        onComplete: () => p.destroy(),
+      });
+    }
+  }
+
+  private spawnMushroomSplitSpores(
+    x: number,
+    y: number,
+    bounceAngle: number,
+    color: number,
+    ownerId: string,
+    excludeUid?: string
+  ): void {
+    this.spawnParticles(x, y, color, 5);
+    for (const offset of [-0.28, 0, 0.28]) {
+      this.createPlayerProjectile(x, y, bounceAngle + offset, 175, 1, color, false, false, 1, false, false, ownerId, false, false, 900);
+      const child = this.projectiles[this.projectiles.length - 1];
+      if (child) {
+        child.sprite.setScale(0.65);
+        if (excludeUid) child.hitUids.add(excludeUid);
+      }
+    }
+  }
+
+  private drawEnemyIceCube(enemy: ActiveEnemy, cracked: boolean): void {
+    if (!enemy.iceGfx || !enemy.iceGfx.active) {
+      enemy.iceGfx = this.add.graphics().setDepth(11);
+      this.roomGroup.add(enemy.iceGfx);
+    }
+    const g = enemy.iceGfx;
+    const half = enemy.isBoss ? 15 : 10;
+    g.clear();
+    g.fillStyle(0x7dd3fc, 0.36);
+    g.fillRect(-half, -half, half * 2, half * 2);
+    g.lineStyle(1.4, 0xe0f2fe, 0.9);
+    g.strokeRect(-half, -half, half * 2, half * 2);
+    // Inner frost highlight
+    g.lineStyle(1, 0xffffff, 0.65);
+    g.lineBetween(-half + 2, -half + 2, -half + 6, -half + 2);
+    g.lineBetween(-half + 2, -half + 2, -half + 2, -half + 6);
+    if (cracked) {
+      g.lineStyle(1.4, 0x0c4a6e, 0.9);
+      g.lineBetween(-half + 2, -half + 2, 1, -1);
+      g.lineBetween(1, -1, half - 2, half - 3);
+      g.lineBetween(1, -1, -2, half - 2);
+      g.lineStyle(1, 0xffffff, 0.85);
+      g.lineBetween(-half + 3, -half + 2, 2, -1);
+    }
+    if (enemy.sprite.active) {
+      g.setPosition(enemy.sprite.x, enemy.sprite.y);
+    }
+  }
+
+  private shatterEnemyIce(enemy: ActiveEnemy): void {
+    enemy.frozenMs = 0;
+    enemy.iceHits = 0;
+    if (enemy.iceGfx) {
+      enemy.iceGfx.destroy();
+      enemy.iceGfx = undefined;
+    }
+    if (enemy.sprite.active) {
+      this.spawnParticles(enemy.sprite.x, enemy.sprite.y, 0xbae6fd, 8);
+    }
+  }
+
+  private popEnemyBubble(enemy: ActiveEnemy): void {
+    enemy.bubbledMs = 0;
+    enemy.bubbleDriftVx = 0;
+    enemy.bubbleDriftVy = 0;
+    if (enemy.bubbleGfx) {
+      enemy.bubbleGfx.destroy();
+      enemy.bubbleGfx = undefined;
+    }
+    if (enemy.sprite.active) {
+      this.spawnParticles(enemy.sprite.x, enemy.sprite.y, 0x6ef3ff, 6);
+    }
+  }
+
+  private despawnAllTestEnemies(): void {
+    for (const e of this.activeEnemies) {
+      if (e.shieldOrbs) {
+        for (const orb of e.shieldOrbs) orb.destroy();
+        e.shieldOrbs = undefined;
+      }
+      if (e.bubbleGfx) {
+        e.bubbleGfx.destroy();
+        e.bubbleGfx = undefined;
+      }
+      if (e.iceGfx) {
+        e.iceGfx.destroy();
+        e.iceGfx = undefined;
+      }
+      if (e.sprite.active) e.sprite.destroy();
+    }
+    this.activeEnemies = [];
+    this.enemyGroup?.clear(true, true);
+    if (this.currentRoom) {
+      this.currentRoom.enemies = [];
+    }
+  }
+
+  private updateTestRoomDungeon(delta: number): void {
+    if (!this.isTestRoom || !this.currentRoom?.isTestRoom) return;
+
+    // Respawn broken test crates after 3.5 seconds
+    const crateChildren = this.crateGroup.getChildren() as Phaser.Physics.Arcade.Sprite[];
+    for (const tx of [3, 4, 5]) {
+      const ck = `${tx},26`;
+      const isPresent = crateChildren.some((c) => c.active && c.getData('crateKey') === ck);
+      if (isPresent) {
+        this.testCrateRespawnTimers.delete(ck);
+        continue;
+      }
+      const remaining = this.testCrateRespawnTimers.get(ck);
+      if (remaining === undefined) {
+        this.testCrateRespawnTimers.set(ck, 3500);
+      } else if (remaining - delta <= 0) {
+        this.testCrateRespawnTimers.delete(ck);
+        if (this.currentRoom.brokenCrates) {
+          this.currentRoom.brokenCrates = this.currentRoom.brokenCrates.filter((k) => k !== ck);
+        }
+        const cx = tx * 16 + 8;
+        const cy = 26 * 16 + 8;
+        const crate = this.crateGroup.create(cx, cy, 'obj_crate') as Phaser.Physics.Arcade.Sprite;
+        crate.setData('crateKey', ck);
+        crate.setDepth(5);
+        this.roomGroup.add(crate);
+        this.spawnParticles(cx, cy, 0xb08968, 4);
+      } else {
+        this.testCrateRespawnTimers.set(ck, remaining - delta);
+      }
+    }
+
+    // Healing pad outside the dungeon section
+    if (this.testHealingPad) {
+      if (this.testHealingPad.cooldownMs > 0) {
+        this.testHealingPad.cooldownMs -= delta;
+      }
+      if (
+        !this.playerState.downed &&
+        Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, this.testHealingPad.x, this.testHealingPad.y) <= 14 &&
+        this.playerState.hp < this.playerState.maxHp
+      ) {
+        this.playerState.hp = this.playerState.maxHp;
+        if (this.testHealingPad.cooldownMs <= 0) {
+          this.testHealingPad.cooldownMs = 800;
+          SoundSystem.playHeal();
+          this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x66ffd9, 10);
+          this.ui.showToast('Fully healed!', '#66ffd9');
+        }
+      }
+    }
+
+    if (this.playerState.downed) return;
+    if (!this.isRoomAuthority()) return;
+
+    if (this.playerSprite.x < 20 * 16) {
+      this.testSpawnCooldownMs = 0;
+      this.testWaveCount = 4;
+      if (this.activeEnemies.length > 0) {
+        this.despawnAllTestEnemies();
+      }
+      return;
+    }
+
+    if (this.playerSprite.x < 21 * 16) {
+      return;
+    }
+
+    if (this.activeEnemies.length > 0) return;
+
+    if (this.testSpawnCooldownMs > 0) {
+      this.testSpawnCooldownMs -= delta;
+      if (this.testSpawnCooldownMs > 0) return;
+    }
+
+    const enemyKeys = Object.keys(ENEMIES);
+    if (enemyKeys.length === 0) return;
+    const defId = enemyKeys[Math.floor(Math.random() * enemyKeys.length)];
+    const def = ENEMIES[defId];
+
+    const spawnCount = this.testWaveCount;
+    for (let i = 0; i < spawnCount; i++) {
+      let sx = Phaser.Math.Between(22 * 16 + 8, 30 * 16 + 8);
+      let sy = Phaser.Math.Between(3 * 16 + 8, 29 * 16 + 8);
+      for (let attempt = 0; attempt < 15; attempt++) {
+        const candX = Phaser.Math.Between(22 * 16 + 8, 30 * 16 + 8);
+        const candY = Phaser.Math.Between(3 * 16 + 8, 29 * 16 + 8);
+        const farFromPlayer = Phaser.Math.Distance.Between(candX, candY, this.playerSprite.x, this.playerSprite.y) >= 48;
+        const clearOfPillars = this.pillarObjs.every((p) => Phaser.Math.Distance.Between(candX, candY, p.x, p.y) >= 24);
+        const clearOfLava = this.hazards.every((h) => Phaser.Math.Distance.Between(candX, candY, h.x, h.y) >= 16);
+        if (farFromPlayer && clearOfPillars && clearOfLava) {
+          sx = candX;
+          sy = candY;
+          break;
+        }
+      }
+      const uid = `test_en_${Date.now()}_${i}_${Math.floor(Math.random() * 9999)}`;
+      this.spawnEnemyEntity(uid, defId, sx, sy, def.hp, def.hp, false, false);
+    }
+
+    this.ui.showToast(`Dungeon Wave: ${spawnCount}x ${def.name}`, '#ff8fab');
+    this.testWaveCount += 1;
+    this.testSpawnCooldownMs = 450;
+  }
+
   private checkDoorTransitions(): void {
     if (this.doorCooldownMs > 0 || this.currentRoom.doorsLocked) return;
     const px = this.playerSprite.x;
@@ -6585,6 +8640,19 @@ export class GameScene extends Phaser.Scene {
 
     for (const d of this.doorZones) {
       if (Phaser.Geom.Rectangle.Contains(d.rect, px, py)) {
+        if (d.isTestExit) {
+          this.despawnAllTestEnemies();
+          this.isTestRoom = false;
+          SoundSystem.playUnlock();
+          this.scene.restart({
+            levelIndex: 0,
+            floorSeed: getDailySeed(0),
+            carryPlayer: this.playerState,
+            carrySkeletons: this.getCarriedSkeletons(),
+            exitedTestRoom: true,
+          });
+          return;
+        }
         if (d.targetGx !== undefined && d.targetGy !== undefined && d.spawnX !== undefined && d.spawnY !== undefined) {
           if (this.floor.rooms[d.targetGy]?.[d.targetGx]) {
             this.loadRoom(d.targetGx, d.targetGy, d.spawnX, d.spawnY);

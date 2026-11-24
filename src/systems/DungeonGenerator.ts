@@ -14,6 +14,75 @@ export interface GeneratedFloor {
 }
 
 export class DungeonGenerator {
+  static generateTestFloor(floorSeed: number): GeneratedFloor {
+    const rooms: RoomData[][] = Array.from({ length: 6 }, (_, gy) =>
+      Array.from({ length: 6 }, (_, gx) => ({
+        gx,
+        gy,
+        type: 'combat' as RoomType,
+        seed: deriveSeed(floorSeed, gx + 1, gy + 1),
+        templateId: 0,
+        connections: { north: false, south: false, east: false, west: false },
+        visited: false,
+        cleared: false,
+        doorsLocked: false,
+        secretRevealed: false,
+        enemies: [],
+        loot: [],
+      }))
+    );
+
+    const allItemIds = Array.from(
+      new Set([...WEAPON_IDS, ...CONSUMABLE_IDS, ...ARTIFACT_IDS])
+    );
+    const cols = 8;
+    const loot = allItemIds.map((itemId, idx) => {
+      const col = idx % cols;
+      const row = Math.floor(idx / cols);
+      const tx = 2 + col * 2;
+      const ty = 3 + row * 2;
+      return {
+        uid: `test_itm_${idx}_${itemId}`,
+        kind: 'item' as const,
+        x: tx * 16 + 8,
+        y: ty * 16 + 8,
+        itemId,
+        collected: false,
+      };
+    });
+
+    rooms[2][0] = {
+      gx: 0,
+      gy: 2,
+      type: 'start',
+      seed: floorSeed,
+      templateId: 0,
+      connections: { north: false, south: false, east: false, west: false },
+      visited: true,
+      cleared: true,
+      doorsLocked: false,
+      secretRevealed: false,
+      enemies: [],
+      loot,
+      widthTiles: 33,
+      heightTiles: 33,
+      isTestRoom: true,
+      pillars: [
+        { tx: 23, ty: 7 },
+        { tx: 28, ty: 7 },
+        { tx: 23, ty: 24 },
+        { tx: 28, ty: 24 },
+      ],
+    };
+
+    return {
+      levelIndex: 0,
+      seed: floorSeed,
+      modifier: 'none',
+      rooms,
+    };
+  }
+
   static generateFloor(levelIndex: number, floorSeed: number, playerCount = 1): GeneratedFloor {
     const rng = new SeededRandom(floorSeed);
     const biome = BIOMES[Math.min(levelIndex, BIOMES.length - 1)];

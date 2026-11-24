@@ -114,7 +114,7 @@ export const CONSUMABLES: Record<string, ConsumableDef> = {
     id: 'pocket_fireworks',
     name: 'Pocket Fireworks',
     rarity: 'uncommon',
-    description: 'Fires 8 sparkling bolts around you.',
+    description: 'Fires 16 sparkling bolts around you.',
     maxUses: 1,
     iconKey: 'item_pocket_fireworks',
     price: 18,
