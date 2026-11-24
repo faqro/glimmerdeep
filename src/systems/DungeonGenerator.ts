@@ -111,76 +111,132 @@ export class DungeonGenerator {
       cy--;
     }
 
-    // Add optional branches for exploration variety until ~22-26 rooms
-    const targetRooms = rng.int(21, 26);
+    // Expand branches until all 36 cells in the 6x6 grid are populated and connected
     const dirs = [
       { dx: 0, dy: -1 },
       { dx: 0, dy: 1 },
       { dx: 1, dy: 0 },
       { dx: -1, dy: 0 },
     ];
-    let safety = 0;
-    while (activeSet.size < targetRooms && safety < 200) {
-      safety++;
-      const coords = Array.from(activeSet).map((s) => s.split(',').map(Number));
-      const [rx, ry] = rng.pick(coords);
-      if (rx === 5 && ry === 2) continue;
-      const d = rng.pick(dirs);
-      const nx = rx + d.dx;
-      const ny = ry + d.dy;
-      if (nx >= 0 && nx < 6 && ny >= 0 && ny < 6) {
-        if (nx === 5 && ny === 2) continue;
-        const already = grid[ny][nx] !== null;
-        if (!already || rng.chance(0.18)) {
-          connect(rx, ry, nx, ny);
-        }
-      }
-    }
-
-    // Fill any remaining uncreated cells with empty/secret rooms if needed, or keep 6x6 sparse
-    // We keep unused cells as null? Wait: GDD says 6x6 grid; let's make sure every cell in 6x6 is either reachable or a secret/unused room.
-    // Let's convert 1-2 unreachable adjacent cells into Secret rooms connected via secret wall!
-    const secretCandidates: Array<{ sx: number; sy: number; fromX: number; fromY: number; dir: 'north' | 'south' | 'east' | 'west' }> = [];
-    for (let y = 0; y < 6; y++) {
-      for (let x = 0; x < 6; x++) {
-        if (grid[y][x]) continue;
-        const neighbors: Array<{ nx: number; ny: number; dir: 'north' | 'south' | 'east' | 'west' }> = [
-          { nx: x, ny: y - 1, dir: 'south' },
-          { nx: x, ny: y + 1, dir: 'north' },
-          { nx: x + 1, ny: y, dir: 'west' },
-          { nx: x - 1, ny: y, dir: 'east' },
-        ];
-        for (const n of neighbors) {
-          if (n.nx >= 0 && n.nx < 6 && n.ny >= 0 && n.ny < 6 && grid[n.ny][n.nx]) {
-            if (!(n.nx === 5 && n.ny === 2) && !(n.nx === 0 && n.ny === 2)) {
-              secretCandidates.push({ sx: x, sy: y, fromX: n.nx, fromY: n.ny, dir: n.dir });
-              break;
-            }
+    while (activeSet.size < 36) {
+      const frontier: Array<{ rx: number; ry: number; nx: number; ny: number }> = [];
+      for (const s of activeSet) {
+        const [rx, ry] = s.split(',').map(Number);
+        if (rx === 5 && ry === 2) continue;
+        for (const d of dirs) {
+          const nx = rx + d.dx;
+          const ny = ry + d.dy;
+          if (nx < 0 || nx >= 6 || ny < 0 || ny >= 6) continue;
+          if (nx === 5 && ny === 2) continue;
+          if (!grid[ny][nx]) {
+            frontier.push({ rx, ry, nx, ny });
           }
         }
       }
+      if (frontier.length === 0) break;
+      const pick = rng.pick(frontier);
+      connect(pick.rx, pick.ry, pick.nx, pick.ny);
+
+      // Occasionally add an extra loop connection to an already-active neighbor
+      if (rng.chance(0.25)) {
+        const d = rng.pick(dirs);
+        const lx = pick.nx + d.dx;
+        const ly = pick.ny + d.dy;
+        if (lx >= 0 && lx < 6 && ly >= 0 && ly < 6 && !(lx === 5 && ly === 2) && grid[ly][lx]) {
+          connect(pick.nx, pick.ny, lx, ly);
+        }
+      }
     }
 
-    rng.shuffle(secretCandidates);
-    const secretCount = Math.min(2, secretCandidates.length);
-    for (let i = 0; i < secretCount; i++) {
-      const c = secretCandidates[i];
-      const secRoom = ensureRoom(c.sx, c.sy);
-      secRoom.type = 'secret';
-      const parent = grid[c.fromY][c.fromX]!;
-      if (c.dir === 'north') {
-        parent.connections.secretNorth = true;
-        secRoom.connections.south = true;
-      } else if (c.dir === 'south') {
-        parent.connections.secretSouth = true;
-        secRoom.connections.north = true;
-      } else if (c.dir === 'east') {
-        parent.connections.secretEast = true;
-        secRoom.connections.west = true;
-      } else if (c.dir === 'west') {
-        parent.connections.secretWest = true;
-        secRoom.connections.east = true;
+    // Convert 2 non-critical rooms into Secret rooms connected only via a secret wall,
+    // ensuring all remaining non-secret rooms stay reachable from (0,2).
+    const isGraphConnectedWithout = (excludedKey: string): boolean => {
+      const visited = new Set<string>();
+      const queue: Array<[number, number]> = [[0, 2]];
+      visited.add(key(0, 2));
+      let expectedCount = 0;
+      for (let y = 0; y < 6; y++) {
+        for (let x = 0; x < 6; x++) {
+          const r = grid[y][x];
+          if (r && r.type !== 'secret' && key(x, y) !== excludedKey) {
+            expectedCount++;
+          }
+        }
       }
+      while (queue.length > 0) {
+        const [x, y] = queue.shift()!;
+        const r = grid[y][x]!;
+        const cardinals: Array<[keyof typeof r.connections, number, number]> = [
+          ['north', 0, -1],
+          ['south', 0, 1],
+          ['east', 1, 0],
+          ['west', -1, 0],
+        ];
+        for (const [dirName, dx, dy] of cardinals) {
+          if (!r.connections[dirName]) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || nx >= 6 || ny < 0 || ny >= 6) continue;
+          const nk = key(nx, ny);
+          if (nk === excludedKey) continue;
+          const nr = grid[ny][nx];
+          if (!nr || nr.type === 'secret' || visited.has(nk)) continue;
+          visited.add(nk);
+          queue.push([nx, ny]);
+        }
+      }
+      return visited.size === expectedCount;
+    };
+
+    const secretCandidates: Array<{ x: number; y: number }> = [];
+    for (let y = 0; y < 6; y++) {
+      for (let x = 0; x < 6; x++) {
+        if ((x === 0 && y === 2) || (x === 5 && y === 2)) continue;
+        if (grid[y][x]) secretCandidates.push({ x, y });
+      }
+    }
+    rng.shuffle(secretCandidates);
+
+    let secretsPlaced = 0;
+    for (const cand of secretCandidates) {
+      if (secretsPlaced >= 2) break;
+      const r = grid[cand.y][cand.x];
+      if (!r || r.type === 'secret') continue;
+      if (!isGraphConnectedWithout(key(cand.x, cand.y))) continue;
+
+      const parentOptions: Array<{
+        nx: number;
+        ny: number;
+        parentSecretField: 'secretNorth' | 'secretSouth' | 'secretEast' | 'secretWest';
+        secBackField: 'north' | 'south' | 'east' | 'west';
+      }> = [
+        { nx: cand.x, ny: cand.y - 1, parentSecretField: 'secretSouth', secBackField: 'north' },
+        { nx: cand.x, ny: cand.y + 1, parentSecretField: 'secretNorth', secBackField: 'south' },
+        { nx: cand.x + 1, ny: cand.y, parentSecretField: 'secretWest', secBackField: 'east' },
+        { nx: cand.x - 1, ny: cand.y, parentSecretField: 'secretEast', secBackField: 'west' },
+      ];
+      const validParents = parentOptions.filter((p) => {
+        if (p.nx < 0 || p.nx >= 6 || p.ny < 0 || p.ny >= 6) return false;
+        if ((p.nx === 0 && p.ny === 2) || (p.nx === 5 && p.ny === 2)) return false;
+        const pr = grid[p.ny][p.nx];
+        return Boolean(pr && pr.type !== 'secret');
+      });
+      if (validParents.length === 0) continue;
+
+      const chosen = rng.pick(validParents);
+      const parent = grid[chosen.ny][chosen.nx]!;
+
+      // Remove normal connections to/from this room before marking it secret
+      if (r.connections.north && grid[cand.y - 1]?.[cand.x]) grid[cand.y - 1][cand.x]!.connections.south = false;
+      if (r.connections.south && grid[cand.y + 1]?.[cand.x]) grid[cand.y + 1][cand.x]!.connections.north = false;
+      if (r.connections.east && grid[cand.y]?.[cand.x + 1]) grid[cand.y][cand.x + 1]!.connections.west = false;
+      if (r.connections.west && grid[cand.y]?.[cand.x - 1]) grid[cand.y][cand.x - 1]!.connections.east = false;
+      r.connections = { north: false, south: false, east: false, west: false };
+
+      r.type = 'secret';
+      parent.connections[chosen.parentSecretField] = true;
+      r.connections[chosen.secBackField] = true;
+      secretsPlaced++;
     }
 
     this.ensureAllRoomsAccessible(grid, connect, rng);
