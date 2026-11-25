@@ -19,7 +19,20 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE_NAME)
-      .then((cache) => cache.addAll(PRECACHE_ASSETS))
+      .then(async (cache) => {
+        const noCacheAssets = new Set(['./', './index.html', './pwa.html', './manifest.webmanifest']);
+        await Promise.all(
+          PRECACHE_ASSETS.map(async (asset) => {
+            const req = noCacheAssets.has(asset)
+              ? new Request(asset, { cache: 'reload' })
+              : asset;
+            const res = await fetch(req);
+            if (res && res.ok) {
+              await cache.put(asset, res);
+            }
+          })
+        );
+      })
       .then(() => self.skipWaiting())
   );
 });
@@ -62,6 +75,37 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
 
+  const isNavigationOrManifest =
+    event.request.mode === 'navigate' ||
+    url.pathname.endsWith('/') ||
+    url.pathname.endsWith('/index.html') ||
+    url.pathname.endsWith('/pwa.html') ||
+    url.pathname.endsWith('/manifest.webmanifest');
+
+  if (isNavigationOrManifest) {
+    event.respondWith(
+      (async () => {
+        try {
+          const networkReq =
+            event.request.mode === 'navigate'
+              ? new Request(event.request.url, { cache: 'no-cache' })
+              : new Request(event.request, { cache: 'no-cache' });
+          const response = await fetch(networkReq);
+          if (response && response.status === 200 && response.type === 'basic') {
+            const cache = await caches.open(CACHE_NAME);
+            cache.put(event.request, response.clone()).catch(() => {});
+          }
+          return response;
+        } catch {
+          const cached = await matchFromCache(event.request);
+          if (cached) return cached;
+          return new Response('Offline', { status: 503, statusText: 'Service Unavailable' });
+        }
+      })()
+    );
+    return;
+  }
+
   event.respondWith(
     (async () => {
       const cached = await matchFromCache(event.request);
@@ -77,10 +121,6 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       } catch {
-        if (event.request.mode === 'navigate') {
-          const fallback = await matchFromCache(event.request);
-          if (fallback) return fallback;
-        }
         return new Response('Offline', { status: 503, statusText: 'Service Unavailable' });
       }
     })()

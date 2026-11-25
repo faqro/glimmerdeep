@@ -147,6 +147,10 @@ export interface SyncedProjectile {
   ownerId: string;
   damage: number;
   burns?: boolean;
+  textureKey?: string;
+  scale?: number;
+  spinSpeed?: number;
+  rotateToVelocity?: boolean;
 }
 
 export interface NetRoomSync {

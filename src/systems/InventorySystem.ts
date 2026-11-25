@@ -1,6 +1,6 @@
 import { ARTIFACTS, ARTIFACT_IDS, CONSUMABLES, CONSUMABLE_IDS } from '../data/items';
 import { WEAPONS, WEAPON_IDS } from '../data/weapons';
-import { InventoryItem } from '../types/game';
+import { InventoryItem, ItemRarity } from '../types/game';
 import { SeededRandom } from '../utils/SeededGenerator';
 import { JournalSystem } from './JournalSystem';
 
@@ -92,6 +92,22 @@ export function rollRandomItemId(rng: SeededRandom, includeWeapons = true): stri
     );
   }
   return rng.pick(pool);
+}
+
+export function rollItemIdByRarities(rng: SeededRandom, rarities: ItemRarity[], includeWeapons = true): string {
+  const allowed = new Set(rarities);
+  const pool: string[] = [
+    ...CONSUMABLE_IDS.filter((id) => !CONSUMABLES[id].merchantOnly && allowed.has(CONSUMABLES[id].rarity)),
+    ...ARTIFACT_IDS.filter((id) => !ARTIFACTS[id].merchantOnly && allowed.has(ARTIFACTS[id].rarity)),
+  ];
+  if (includeWeapons) {
+    pool.push(
+      ...WEAPON_IDS.filter(
+        (id) => id !== 'moonblade' && !WEAPONS[id].merchantOnly && allowed.has(WEAPONS[id].rarity)
+      )
+    );
+  }
+  return pool.length > 0 ? rng.pick(pool) : rollRandomItemId(rng, includeWeapons);
 }
 
 const NON_COMBAT_BOSS_DROP_IDS = new Set(['wandering_eye', 'lucky_acorn', 'moth_crown', 'starseed']);

@@ -46,6 +46,8 @@ export class MenuScene extends Phaser.Scene {
   }
 
   create(): void {
+    SoundSystem.stopBossEvilLaughLoop();
+    SoundSystem.setMusicTrack('menu');
     net.disconnect();
     this.fireflies = [];
     this.menuButtons = [];

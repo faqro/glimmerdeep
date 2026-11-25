@@ -198,6 +198,7 @@ export interface LootSpawnState {
   x: number;
   y: number;
   itemId?: string;
+  bonusItemId?: string;
   uses?: number;
   amount?: number;
   collected: boolean;

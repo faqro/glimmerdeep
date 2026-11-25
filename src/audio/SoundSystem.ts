@@ -1,7 +1,24 @@
+import menuBgmUrl from './menutheme.ogg';
 import bgmUrl from './lakeshrine.ogg';
 import bossBgmUrl from './suspicious.ogg';
+import darkCaveBgmUrl from './darkcave.ogg';
+import nyarBossBgmUrl from './bossmusic.ogg';
+import creditsBgmUrl from './credittheme.ogg';
+import bossAwakenSfxUrl from './bossawaken.ogg';
+import bossSpawnSfxUrl from './bossspawn.ogg';
+import bossDeadSfxUrl from './bossdead.ogg';
+import bossEvilLaughSfxUrl from './bossevillaugh.ogg';
 
-type MusicTrack = 'normal' | 'boss';
+export type MusicTrack = 'menu' | 'normal' | 'boss' | 'darkcave' | 'nyar_boss' | 'credits';
+
+const TRACK_URLS: Record<MusicTrack, string> = {
+  menu: menuBgmUrl,
+  normal: bgmUrl,
+  boss: bossBgmUrl,
+  darkcave: darkCaveBgmUrl,
+  nyar_boss: nyarBossBgmUrl,
+  credits: creditsBgmUrl,
+};
 
 /**
  * Lightweight 16-bit Web Audio synthesizer for sound effects and background music.
@@ -10,11 +27,13 @@ type MusicTrack = 'normal' | 'boss';
 class SoundSystemImpl {
   private ctx: AudioContext | null = null;
   private _muted = false;
-  private bgm: HTMLAudioElement | null = null;
-  private bossBgm: HTMLAudioElement | null = null;
-  private activeTrack: MusicTrack = 'normal';
+  private tracks: Partial<Record<MusicTrack, HTMLAudioElement>> = {};
+  private activeTrack: MusicTrack = 'menu';
   private bgmStarted = false;
   private unlockListenerBound = false;
+  private laughLoopActive = false;
+  private laughAudio: HTMLAudioElement | null = null;
+  private laughTimer: number | null = null;
 
   get muted(): boolean {
     return this._muted;
@@ -22,16 +41,19 @@ class SoundSystemImpl {
 
   set muted(val: boolean) {
     this._muted = val;
-    if (this.bgm) {
-      this.bgm.muted = val;
+    for (const audio of Object.values(this.tracks)) {
+      if (audio) audio.muted = val;
     }
-    if (this.bossBgm) {
-      this.bossBgm.muted = val;
+    if (this.laughAudio) {
+      this.laughAudio.muted = val;
     }
   }
 
-  private createLoopingAudio(url: string, track: MusicTrack): HTMLAudioElement {
-    const audio = new Audio(url);
+  private getOrCreateTrack(track: MusicTrack): HTMLAudioElement {
+    const existing = this.tracks[track];
+    if (existing) return existing;
+
+    const audio = new Audio(TRACK_URLS[track]);
     audio.loop = true;
     audio.volume = 0.175;
     audio.muted = this._muted;
@@ -40,16 +62,15 @@ class SoundSystemImpl {
       audio.currentTime = 0;
       audio.play().catch(() => {});
     });
+    this.tracks[track] = audio;
     return audio;
   }
 
   private playActiveTrack(): void {
-    const target = this.activeTrack === 'boss' ? this.bossBgm : this.bgm;
-    if (!target) return;
+    const target = this.getOrCreateTrack(this.activeTrack);
 
     const tryPlay = () => {
-      const current = this.activeTrack === 'boss' ? this.bossBgm : this.bgm;
-      if (!current) return;
+      const current = this.getOrCreateTrack(this.activeTrack);
       current.play().then(() => {
         if (this.unlockListenerBound) {
           window.removeEventListener('pointerdown', tryPlay);
@@ -65,17 +86,12 @@ class SoundSystemImpl {
       });
     };
 
-    tryPlay();
+    if (target) tryPlay();
   }
 
   startMusic(): void {
     if (typeof window === 'undefined') return;
-    if (!this.bgm) {
-      this.bgm = this.createLoopingAudio(bgmUrl, 'normal');
-    }
-    if (!this.bossBgm) {
-      this.bossBgm = this.createLoopingAudio(bossBgmUrl, 'boss');
-    }
+    this.getOrCreateTrack(this.activeTrack);
     if (this.bgmStarted) return;
     this.bgmStarted = true;
     this.playActiveTrack();
@@ -83,7 +99,8 @@ class SoundSystemImpl {
 
   setMusicTrack(track: MusicTrack): void {
     if (typeof window === 'undefined') return;
-    if (this.activeTrack === track) return;
+    if (this.activeTrack === track && this.bgmStarted) return;
+    const prevTrack = this.activeTrack;
     this.activeTrack = track;
 
     if (!this.bgmStarted) {
@@ -91,16 +108,71 @@ class SoundSystemImpl {
       return;
     }
 
-    if (track === 'boss') {
-      this.bgm?.pause();
-      if (this.bossBgm) {
-        this.bossBgm.currentTime = 0;
-      }
-    } else {
-      this.bossBgm?.pause();
+    if (prevTrack !== track) {
+      this.tracks[prevTrack]?.pause();
+    }
+    const nextAudio = this.getOrCreateTrack(track);
+    if (track === 'boss' || track === 'nyar_boss' || track === 'credits') {
+      nextAudio.currentTime = 0;
     }
 
     this.playActiveTrack();
+  }
+
+  private playOggSfx(url: string, volume = 0.38): void {
+    if (typeof window === 'undefined' || this._muted) return;
+    const audio = new Audio(url);
+    audio.volume = volume;
+    audio.play().catch(() => {});
+  }
+
+  playBossAwaken(): void {
+    this.playOggSfx(bossAwakenSfxUrl, 0.4);
+  }
+
+  playBossSpawn(): void {
+    this.playOggSfx(bossSpawnSfxUrl, 0.42);
+  }
+
+  playBossDead(): void {
+    this.playOggSfx(bossDeadSfxUrl, 0.45);
+  }
+
+  startBossEvilLaughLoop(): void {
+    if (typeof window === 'undefined') return;
+    if (this.laughLoopActive) return;
+    this.laughLoopActive = true;
+
+    if (!this.laughAudio) {
+      const audio = new Audio(bossEvilLaughSfxUrl);
+      audio.volume = 0.32;
+      audio.muted = this._muted;
+      audio.addEventListener('ended', () => {
+        if (!this.laughLoopActive) return;
+        this.laughTimer = window.setTimeout(() => {
+          if (!this.laughLoopActive || !this.laughAudio) return;
+          this.laughAudio.currentTime = 0;
+          this.laughAudio.play().catch(() => {});
+        }, 1000);
+      });
+      this.laughAudio = audio;
+    }
+
+    this.laughAudio.muted = this._muted;
+    this.laughAudio.currentTime = 0;
+    this.laughAudio.play().catch(() => {});
+  }
+
+  stopBossEvilLaughLoop(): void {
+    this.laughLoopActive = false;
+    if (this.laughTimer !== null) {
+      window.clearTimeout(this.laughTimer);
+      this.laughTimer = null;
+    }
+    if (this.laughAudio) {
+      this.laughAudio.pause();
+      this.laughAudio.currentTime = 0;
+    }
   }
 
   private ensureContext(): AudioContext | null {

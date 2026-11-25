@@ -18,6 +18,7 @@ import {
   LevelModifierId,
   PlayerStateSnapshot,
   RoomData,
+  StatusEffectId,
 } from '../types/game';
 import { SeededRandom, getDailySeed } from '../utils/SeededGenerator';
 import { UIScene } from './UIScene';
@@ -61,6 +62,13 @@ interface ActiveEnemy {
   blockedShots?: number;
   repositionMs?: number;
   repositionDir?: number;
+  attackBurstLeft?: number;
+  attackBurstTimerMs?: number;
+  attackPhase?: number;
+  telegraphMs?: number;
+  telegraphKind?: string;
+  dashRingOnEnd?: boolean;
+  oozeTrailMs?: number;
   targetX?: number;
   targetY?: number;
   targetVx?: number;
@@ -102,6 +110,17 @@ interface ActiveProjectile {
   floatPhase?: number;
   healsAlly?: boolean;
   healAmount?: number;
+  textureKey?: string;
+  spinSpeed?: number;
+  rotateToVelocity?: boolean;
+  wobbleAmp?: number;
+  wobbleFreq?: number;
+  wobblePhase?: number;
+  accel?: number;
+  curveRate?: number;
+  sporeBurst?: boolean;
+  inflictEffect?: StatusEffectId;
+  inflictDurationMs?: number;
   startX?: number;
   startY?: number;
   hitUids: Set<string>;
@@ -136,6 +155,7 @@ interface ActiveLootObj {
   kind: 'shard' | 'item' | 'heart' | 'chest';
   sprite: Phaser.GameObjects.Image;
   itemId?: string;
+  bonusItemId?: string;
   uses?: number;
   amount?: number;
   collected: boolean;
@@ -216,14 +236,14 @@ export class GameScene extends Phaser.Scene {
   private summonedSkeletons: ActiveSkeleton[] = [];
   private projectiles: ActiveProjectile[] = [];
   private hazards: ActiveHazard[] = [];
-  private slimeSplatters: Array<{ x: number; y: number; radius: number; gfx: Phaser.GameObjects.Graphics; lifeMs: number }> = [];
+  private slimeSplatters: Array<{ x: number; y: number; radius: number; gfx: Phaser.GameObjects.Graphics; lifeMs: number; fromEnemy?: boolean }> = [];
   private cometTrailActiveMs = 0;
   private cometTrailAccumMs = 0;
   private cometTrailNodes: Array<{ x: number; y: number; gfx: Phaser.GameObjects.Graphics; lifeMs: number; hitUids: Set<string> }> = [];
   private pillarObjs: Array<{ idx: number; x: number; y: number; tx: number; ty: number; gfx: Phaser.GameObjects.Graphics }> = [];
   private spikeTraps: ActiveSpikeTrap[] = [];
   private lootObjs: ActiveLootObj[] = [];
-  private fireflies: Array<{ sprite: Phaser.GameObjects.Image; vx: number; vy: number; phase: number }> = [];
+  private fireflies: Array<{ sprite: Phaser.GameObjects.Image; glow?: Phaser.GameObjects.Image; vx: number; vy: number; phase: number }> = [];
   private beamGfx!: Phaser.GameObjects.Graphics;
   private beamDamageTickMs = 0;
   private beamDrainAccumMs = 0;
@@ -266,7 +286,7 @@ export class GameScene extends Phaser.Scene {
   private nyarBeamCooldownMs = 4500;
   private nyarBeamHitCooldownMs = 0;
   private nyarSpawnTimerMs = 3500;
-  private nyarRainTimerMs = 7000;
+  private nyarRainTimerMs = 4000;
   private nyarRainHeartAlt = false;
   private nyarDialogueTimerMs = 5500;
   private nyarDialoguePool: string[] = [];
@@ -370,6 +390,10 @@ export class GameScene extends Phaser.Scene {
     this.paused = false;
     this.testSpawnCooldownMs = 0;
     this.testWaveCount = 4;
+    this.l7WhisperStep = 0;
+    this.l7BossGateUnlockedToastShown = false;
+    this.nyarlathotepSummonPending = false;
+    this.nyarlathotepSummoning = false;
     this.remotePlayers.clear();
     this.remotePlayerLastDirectAt.clear();
     this.remoteSprites.clear();
@@ -521,7 +545,8 @@ export class GameScene extends Phaser.Scene {
     this.ui = this.scene.get('UIScene') as UIScene;
     this.ui.setQuitHandler(() => {
       net.disconnect();
-      SoundSystem.setMusicTrack('normal');
+      SoundSystem.stopBossEvilLaughLoop();
+      SoundSystem.setMusicTrack('menu');
       this.scene.stop('UIScene');
       this.scene.start('MenuScene');
     });
@@ -947,7 +972,13 @@ export class GameScene extends Phaser.Scene {
           }
         }
       } else if (ev.kind === 'game_over') {
-        this.triggerGameOver(false);
+        if (ev.itemId === 'credits') {
+          SoundSystem.stopBossEvilLaughLoop();
+          this.scene.stop('UIScene');
+          this.scene.start('CreditsScene');
+        } else {
+          this.triggerGameOver(false);
+        }
       } else if (ev.kind === 'mirror' && ev.targetId) {
         const targetRoom = this.floor.rooms[ev.gy]?.[ev.gx];
         const mirror = targetRoom?.puzzleBeam?.mirrors.find((m) => m.id === ev.targetId);
@@ -1133,7 +1164,8 @@ export class GameScene extends Phaser.Scene {
           if (r.type === 'boss' && r.bossDefeated) {
             this.spawnExitPortal();
             if (r.gx === this.currentRoom.gx && r.gy === this.currentRoom.gy) {
-              SoundSystem.setMusicTrack('normal');
+              SoundSystem.stopBossEvilLaughLoop();
+              SoundSystem.setMusicTrack(this.getNormalMusicTrack());
             }
           }
           if (prevLocked !== r.doorsLocked || prevSecret !== r.secretRevealed) {
@@ -1183,7 +1215,16 @@ export class GameScene extends Phaser.Scene {
 
         if (r.type === 'boss' && r.bossDefeated) {
           this.spawnExitPortal();
-          SoundSystem.setMusicTrack('normal');
+          SoundSystem.stopBossEvilLaughLoop();
+          SoundSystem.setMusicTrack(this.getNormalMusicTrack());
+        } else if (
+          r.type === 'boss' &&
+          !r.bossDefeated &&
+          this.levelIndex === 6 &&
+          sync.enemies.some((es) => es.alive && es.uid === 'boss')
+        ) {
+          SoundSystem.setMusicTrack('nyar_boss');
+          SoundSystem.startBossEvilLaughLoop();
         }
         if (prevLocked !== r.doorsLocked) {
           this.updateDoorVisuals();
@@ -1300,7 +1341,9 @@ export class GameScene extends Phaser.Scene {
         existing.vy = sp.vy;
         existing.lifeMs = Math.max(existing.lifeMs, 250);
       } else {
-        const sprite = this.physics.add.sprite(sp.x, sp.y, 'proj_orb').setDepth(11).setTint(sp.color);
+        const tex = sp.textureKey || 'proj_orb';
+        const sprite = this.physics.add.sprite(sp.x, sp.y, tex).setDepth(11).setTint(sp.color);
+        if (sp.scale && sp.scale !== 1) sprite.setScale(sp.scale);
         this.projectiles.push({
           uid: sp.uid,
           sprite,
@@ -1318,6 +1361,9 @@ export class GameScene extends Phaser.Scene {
           slows: false,
           bubbles: false,
           burns: !!sp.burns,
+          textureKey: tex,
+          spinSpeed: sp.spinSpeed,
+          rotateToVelocity: sp.rotateToVelocity,
           hitUids: new Set(),
           netSynced: true,
           targetX: sp.x,
@@ -1413,7 +1459,7 @@ export class GameScene extends Phaser.Scene {
     this.nyarThrowMs = 0;
     this.nyarBeamState = 'idle';
     this.nyarSpawnTimerMs = 7000;
-    this.nyarRainTimerMs = 7000;
+    this.nyarRainTimerMs = 4000;
     this.nyarRainHeartAlt = false;
     this.nyarlathotepSummonPending = false;
     this.nyarlathotepSummoning = false;
@@ -1781,11 +1827,12 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
-    // Pillars & Props (skip pillars in boss/merchant/healing/puzzle rooms, hallway, and test room)
-    if (!room.isTestRoom && !room.hallwayDoors && room.type !== 'boss' && room.type !== 'merchant' && room.type !== 'healing' && room.type !== 'puzzle') {
+    // Pillars & Props (skip pillars in boss/healing/puzzle rooms, normal merchant rooms, hallway, and test room)
+    if (!room.isTestRoom && room.type !== 'start' && room.type !== 'boss' && (room.type !== 'merchant' || room.enemies.length > 0) && room.type !== 'healing' && room.type !== 'puzzle') {
       for (const p of template.pillars) {
         const px = p.tx * 16 + 8;
         const py = p.ty * 16 + 8;
+        if (room.type === 'merchant' && Math.abs(px - 88) < 18 && Math.abs(py - 76) < 18) continue;
         gfx.fillStyle(biome.wallDark, 1);
         gfx.fillRect(p.tx * 16, p.ty * 16, 16, 16);
         gfx.fillStyle(biome.wallTop, 1);
@@ -1798,7 +1845,10 @@ export class GameScene extends Phaser.Scene {
       for (const c of template.crates) {
         const ck = `${c.tx},${c.ty}`;
         if (room.brokenCrates?.includes(ck)) continue;
-        const crate = this.crateGroup.create(c.tx * 16 + 8, c.ty * 16 + 8, 'obj_crate') as Phaser.Physics.Arcade.Sprite;
+        const cx = c.tx * 16 + 8;
+        const cy = c.ty * 16 + 8;
+        if (room.type === 'merchant' && Math.abs(cx - 88) < 18 && Math.abs(cy - 76) < 18) continue;
+        const crate = this.crateGroup.create(cx, cy, 'obj_crate') as Phaser.Physics.Arcade.Sprite;
         crate.setData('crateKey', ck);
         crate.setDepth(5);
         this.roomGroup.add(crate);
@@ -1875,23 +1925,36 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // Ambient Fireflies (black void ash particles on Level 7)
+    // Ambient Fireflies (glowing orange ember particles on Level 7)
     const ffCount = wTiles > 11 || hTiles > 11 ? 18 : 6;
     const isLevel7 = this.levelIndex === 6;
     for (let i = 0; i < ffCount; i++) {
+      const fx = Phaser.Math.Between(24, Math.max(28, this.roomWidthPx - 24));
+      const fy = Phaser.Math.Between(24, Math.max(28, this.roomHeightPx - 24));
       const ff = this.add
-        .image(
-          Phaser.Math.Between(24, Math.max(28, this.roomWidthPx - 24)),
-          Phaser.Math.Between(24, Math.max(28, this.roomHeightPx - 24)),
-          'particle_spark'
-        )
-        .setTint(isLevel7 ? 0x05030a : biome.accent)
-        .setScale(isLevel7 ? 1.5 : 1)
-        .setAlpha(isLevel7 ? 0.85 : 0.6)
+        .image(fx, fy, 'particle_spark')
+        .setTint(isLevel7 ? 0xff6b1a : biome.accent)
+        .setScale(isLevel7 ? 1.35 : 1)
+        .setAlpha(isLevel7 ? 0.9 : 0.6)
         .setDepth(16);
+      if (isLevel7) {
+        ff.setBlendMode(Phaser.BlendModes.ADD);
+      }
       this.roomGroup.add(ff);
+      let ffGlow: Phaser.GameObjects.Image | undefined;
+      if (isLevel7) {
+        ffGlow = this.add
+          .image(fx, fy, 'glow_soft')
+          .setScale(0.45)
+          .setTint(0xff6b1a)
+          .setAlpha(0.35)
+          .setBlendMode(Phaser.BlendModes.ADD)
+          .setDepth(15);
+        this.roomGroup.add(ffGlow);
+      }
       this.fireflies.push({
         sprite: ff,
+        glow: ffGlow,
         vx: Phaser.Math.FloatBetween(-10, 10),
         vy: Phaser.Math.FloatBetween(-10, 10),
         phase: Math.random() * 6,
@@ -1899,7 +1962,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Spawn Enemies if room not cleared
-    if (!room.cleared && (room.type === 'combat' || room.type === 'hazard' || room.type === 'elite')) {
+    if (!room.cleared && (room.type === 'combat' || room.type === 'hazard' || room.type === 'elite' || (room.type === 'merchant' && room.enemies.length > 0))) {
       const aliveList = room.enemies.filter((e) => e.alive);
       if (aliveList.length > 0) {
         room.doorsLocked = true;
@@ -1919,7 +1982,8 @@ export class GameScene extends Phaser.Scene {
           // Level 7 boss room starts eerily empty until the player steps inward
           this.nyarlathotepSummonPending = true;
           this.nyarlathotepSummoning = false;
-          SoundSystem.setMusicTrack('normal');
+          SoundSystem.stopBossEvilLaughLoop();
+          SoundSystem.setMusicTrack(this.getNormalMusicTrack());
         } else {
           room.doorsLocked = true;
           const bossDef = BOSSES[biome.bossId];
@@ -1931,10 +1995,12 @@ export class GameScene extends Phaser.Scene {
         }
       } else {
         this.spawnExitPortal();
-        SoundSystem.setMusicTrack('normal');
+        SoundSystem.stopBossEvilLaughLoop();
+        SoundSystem.setMusicTrack(this.getNormalMusicTrack());
       }
     } else {
-      SoundSystem.setMusicTrack('normal');
+      SoundSystem.stopBossEvilLaughLoop();
+      SoundSystem.setMusicTrack(this.getNormalMusicTrack());
     }
 
     // Special Room Objects
@@ -2057,7 +2123,7 @@ export class GameScene extends Phaser.Scene {
     // Spawn Room Loot
     for (const l of room.loot) {
       if (l.collected) continue;
-      this.createLootObject(l.uid, l.kind, l.x, l.y, l.itemId, l.amount, l.uses);
+      this.createLootObject(l.uid, l.kind, l.x, l.y, l.itemId, l.amount, l.uses, l.bonusItemId);
     }
 
     this.updateDoorVisuals();
@@ -2138,7 +2204,8 @@ export class GameScene extends Phaser.Scene {
     y: number,
     itemId?: string,
     amount?: number,
-    uses?: number
+    uses?: number,
+    bonusItemId?: string
   ): void {
     if (this.lootObjs.some((l) => l.uid === uid)) return;
     let key = 'item_shard';
@@ -2148,7 +2215,7 @@ export class GameScene extends Phaser.Scene {
 
     const sp = this.add.image(x, y, this.textures.exists(key) ? key : 'item_shard').setDepth(6);
     this.roomGroup.add(sp);
-    this.lootObjs.push({ uid, kind, sprite: sp, itemId, uses, amount, collected: false });
+    this.lootObjs.push({ uid, kind, sprite: sp, itemId, bonusItemId, uses, amount, collected: false });
   }
 
   private spawnRoomLoot(
@@ -3701,7 +3768,7 @@ export class GameScene extends Phaser.Scene {
         if (lastProj) {
           lastProj.lunarDisc = true;
           lastProj.lunarSliceMs = 0;
-          lastProj.sprite.setTexture('item_lunar_chakram').clearTint();
+          lastProj.sprite.setTexture('proj_lunar_chakram').clearTint();
         }
       } else if (w.id === 'celestial_scepter') {
         const lastProj = this.projectiles[this.projectiles.length - 1];
@@ -3776,9 +3843,33 @@ export class GameScene extends Phaser.Scene {
     damage: number,
     color: number,
     burns = false,
-    shooterUid?: string
+    shooterUid?: string,
+    opts?: {
+      textureKey?: string;
+      scale?: number;
+      lifeMs?: number;
+      bouncesLeft?: number;
+      homing?: boolean;
+      spinSpeed?: number;
+      rotateToVelocity?: boolean;
+      wobbleAmp?: number;
+      wobbleFreq?: number;
+      accel?: number;
+      curveRate?: number;
+      sporeBurst?: boolean;
+      slimeSplatter?: boolean;
+      inflictEffect?: StatusEffectId;
+      inflictDurationMs?: number;
+    }
   ): void {
-    const sp = this.physics.add.sprite(x, y, 'proj_orb').setDepth(11).setTint(color);
+    const tex = opts?.textureKey ?? 'proj_orb';
+    const sp = this.physics.add.sprite(x, y, tex).setDepth(11).setTint(color);
+    if (opts?.scale && opts.scale !== 1) {
+      sp.setScale(opts.scale);
+    }
+    if (opts?.rotateToVelocity) {
+      sp.setRotation(angle);
+    }
     this.projectiles.push({
       uid: `ep_${++this.projSeq}`,
       sprite: sp,
@@ -3789,14 +3880,26 @@ export class GameScene extends Phaser.Scene {
       color,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
-      lifeMs: 2600,
-      homing: false,
+      lifeMs: opts?.lifeMs ?? 2600,
+      homing: !!opts?.homing,
       boomerang: false,
       returning: false,
-      bouncesLeft: 0,
+      bouncesLeft: opts?.bouncesLeft ?? 0,
       slows: false,
       bubbles: false,
       burns,
+      textureKey: tex,
+      spinSpeed: opts?.spinSpeed,
+      rotateToVelocity: opts?.rotateToVelocity,
+      wobbleAmp: opts?.wobbleAmp,
+      wobbleFreq: opts?.wobbleFreq,
+      wobblePhase: 0,
+      accel: opts?.accel,
+      curveRate: opts?.curveRate,
+      sporeBurst: opts?.sporeBurst,
+      slimeSplatter: opts?.slimeSplatter,
+      inflictEffect: opts?.inflictEffect,
+      inflictDurationMs: opts?.inflictDurationMs,
       hitUids: new Set(),
     });
   }
@@ -3864,6 +3967,31 @@ export class GameScene extends Phaser.Scene {
     this.totalEnemiesDefeated++;
     this.spawnParticles(ex, ey, 0xffe066, 10);
 
+    if (!enemy.isBoss) {
+      if (enemy.defId === 'ooze_ling') {
+        this.spawnSlimeSplatter(ex, ey, true);
+        for (let k = 0; k < 2; k++) {
+          const da = Math.random() * Math.PI * 2;
+          this.createEnemyProjectile(ex, ey, da, 85, enemy.damage, 0xa6ff4d, false, undefined, {
+            textureKey: 'proj_glob',
+            scale: 0.8,
+            lifeMs: 650,
+            spinSpeed: 0.4,
+          });
+        }
+      } else if (enemy.defId === 'clockwork_tick') {
+        for (let k = 0; k < 4; k++) {
+          const da = Math.PI / 4 + (Math.PI / 2) * k;
+          this.createEnemyProjectile(ex, ey, da, 115, enemy.damage, 0xffd275, false, undefined, {
+            textureKey: 'proj_gear',
+            scale: 0.85,
+            lifeMs: 900,
+            spinSpeed: 0.65,
+          });
+        }
+      }
+    }
+
     const roomEnemy = this.currentRoom.enemies.find((e) => e.uid === enemy.uid);
     if (roomEnemy) {
       roomEnemy.hp = 0;
@@ -3908,8 +4036,9 @@ export class GameScene extends Phaser.Scene {
       this.currentRoom.cleared = true;
       this.currentRoom.doorsLocked = false;
       this.updateDoorVisuals();
-      SoundSystem.playUnlock();
-      SoundSystem.setMusicTrack('normal');
+      SoundSystem.playBossDead();
+      SoundSystem.stopBossEvilLaughLoop();
+      SoundSystem.setMusicTrack(this.getNormalMusicTrack());
       this.spawnExitPortal();
       this.spawnRoomLoot(`boss_sh_${Date.now()}`, 'shard', ex - 16, ey, undefined, 12);
       this.spawnRoomLoot(`boss_itm_${Date.now()}`, 'item', ex + 16, ey, rollRandomItemId(new SeededRandom(Date.now())));
@@ -3987,6 +4116,9 @@ export class GameScene extends Phaser.Scene {
           const rng = new SeededRandom((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0);
           const itemId = l.itemId ?? rollRandomItemId(rng);
           this.spawnRoomLoot(`ch_itm_${Date.now()}`, 'item', l.sprite.x, l.sprite.y + 14, itemId);
+          if (l.bonusItemId) {
+            this.spawnRoomLoot(`ch_itm2_${Date.now()}`, 'item', l.sprite.x + 14, l.sprite.y + 10, l.bonusItemId);
+          }
           const extra = this.floor.modifier === 'starfall' ? 6 : 3;
           this.spawnRoomLoot(`ch_sh_${Date.now()}`, 'shard', l.sprite.x - 14, l.sprite.y + 8, undefined, extra);
           return;
@@ -4033,6 +4165,32 @@ export class GameScene extends Phaser.Scene {
       this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + heal);
       SoundSystem.playHeal();
       this.spawnParticles(88, 84, 0xff5d8f, 10);
+
+      if (net.mode !== 'solo') {
+        const downedAllies = Array.from(this.remotePlayers.values())
+          .filter((p) => p.downed)
+          .sort((a, b) => a.downedTimerMs - b.downedTimerMs);
+        if (downedAllies.length > 0) {
+          const longestDowned = downedAllies[0];
+          const halfHp = Math.max(1, Math.floor(longestDowned.maxHp / 2));
+          net.broadcastInteract({
+            peerId: this.playerState.id,
+            gx: longestDowned.gx,
+            gy: longestDowned.gy,
+            kind: 'revive',
+            targetId: longestDowned.id,
+            amount: halfHp,
+            itemId: 'revive_totem',
+          });
+          if (longestDowned.gx === this.currentRoom.gx && longestDowned.gy === this.currentRoom.gy) {
+            this.playRipOutAnimationForRemote(longestDowned.id, 0x66ffd9);
+          }
+          this.spawnParticles(88, 84, 0x66ffd9, 10);
+          this.ui.showToast(`Shrine restored +${heal} HP & revived ${longestDowned.name}!`, '#66ffd9');
+          return;
+        }
+      }
+
       this.ui.showToast(`Shrine restored +${heal} HP!`, '#66ffd9');
       return;
     }
@@ -4339,13 +4497,18 @@ export class GameScene extends Phaser.Scene {
     SoundSystem.playUnlock();
 
     if (this.levelIndex >= 6) {
+      if (net.mode === 'host') {
+        net.broadcastInteract({
+          peerId: this.playerState.id,
+          gx: this.currentRoom.gx,
+          gy: this.currentRoom.gy,
+          kind: 'game_over',
+          itemId: 'credits',
+        });
+      }
+      SoundSystem.stopBossEvilLaughLoop();
       this.scene.stop('UIScene');
-      this.scene.start('GameOverScene', {
-        victory: true,
-        levelReached: 7,
-        shardsCollected: this.totalShardsCollected,
-        enemiesDefeated: this.totalEnemiesDefeated,
-      });
+      this.scene.start('CreditsScene');
       return;
     }
 
@@ -4494,9 +4657,14 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private getNormalMusicTrack(): 'normal' | 'darkcave' {
+    return this.levelIndex === 6 ? 'darkcave' : 'normal';
+  }
+
   private triggerGameOver(victory: boolean): void {
     if (this.transitioningLevel) return;
     this.transitioningLevel = true;
+    SoundSystem.stopBossEvilLaughLoop();
     this.scene.stop('UIScene');
     this.scene.start('GameOverScene', {
       victory,
@@ -6289,6 +6457,10 @@ export class GameScene extends Phaser.Scene {
       // Contact damage against local host player
       const hostDist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, hostX, hostY);
       if (hostDist < (e.isBoss ? 20 : 12) && !StatusEffectManager.has(this.playerState.statusEffects, 'giant')) {
+        if (e.defId === 'mycelium_mite' && this.invulnMs <= 0 && this.dodgeMs <= 0 && !this.playerState.downed) {
+          StatusEffectManager.addEffect(this.playerState.statusEffects, 'poisoned', 2500);
+          this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x9ef01a, 4);
+        }
         this.damagePlayer(e.damage);
       }
 
@@ -6306,9 +6478,50 @@ export class GameScene extends Phaser.Scene {
         e.windupMs -= delta;
         e.sprite.setVelocity(0, 0);
         if (e.windupMs <= 0) {
-          e.dashingMs = 340;
-          e.dashVx = Math.cos(angle) * 165 * slowFactor;
-          e.dashVy = Math.sin(angle) * 165 * slowFactor;
+          e.sprite.clearTint();
+          if (e.isElite) e.sprite.setTint(0xffd275);
+          if (e.defId === 'cave_crawler') {
+            e.dashingMs = 260;
+            e.dashVx = Math.cos(angle) * 195 * slowFactor;
+            e.dashVy = Math.sin(angle) * 195 * slowFactor;
+          } else if (e.defId === 'haunted_armour') {
+            e.dashingMs = 340;
+            e.dashVx = Math.cos(angle) * 190 * slowFactor;
+            e.dashVy = Math.sin(angle) * 190 * slowFactor;
+            e.dashRingOnEnd = true;
+          } else if (e.defId === 'moss_hulk') {
+            e.dashingMs = 360;
+            e.dashVx = Math.cos(angle) * 150 * slowFactor;
+            e.dashVy = Math.sin(angle) * 150 * slowFactor;
+            e.dashRingOnEnd = true;
+          } else if (e.defId === 'pendulum_knight') {
+            e.dashingMs = 380;
+            e.dashVx = Math.cos(angle) * 185 * slowFactor;
+            e.dashVy = Math.sin(angle) * 185 * slowFactor;
+            for (const off of [-0.35, 0.35]) {
+              this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 125, e.damage, 0xffd275, false, e.uid, {
+                textureKey: 'proj_needle',
+                rotateToVelocity: true,
+                lifeMs: 1400,
+              });
+            }
+          } else if (e.defId === 'dread_knight') {
+            e.dashingMs = 360;
+            e.dashVx = Math.cos(angle) * 195 * slowFactor;
+            e.dashVy = Math.sin(angle) * 195 * slowFactor;
+            const rangedDmg = Math.max(1, e.damage - 2);
+            for (const off of [-0.28, 0, 0.28]) {
+              this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 145, rangedDmg, 0xc084fc, false, e.uid, {
+                textureKey: 'proj_void_bolt',
+                rotateToVelocity: true,
+                lifeMs: 1500,
+              });
+            }
+          } else {
+            e.dashingMs = 340;
+            e.dashVx = Math.cos(angle) * 165 * slowFactor;
+            e.dashVy = Math.sin(angle) * 165 * slowFactor;
+          }
         }
         continue;
       }
@@ -6316,10 +6529,63 @@ export class GameScene extends Phaser.Scene {
       if (e.dashingMs > 0) {
         e.dashingMs -= delta;
         e.sprite.setVelocity(e.dashVx, e.dashVy);
-        if (e.dashingMs <= 0 && e.defId === 'hollow_stag') {
-          e.sprite.setVelocity(0, 0);
+        if (e.dashingMs <= 0) {
+          if (e.defId === 'hollow_stag') {
+            e.sprite.setVelocity(0, 0);
+            e.sprite.clearTint();
+            e.idleMs = 3000;
+          } else if (e.dashRingOnEnd) {
+            e.dashRingOnEnd = false;
+            if (e.defId === 'haunted_armour') {
+              const dashA = Math.atan2(e.dashVy, e.dashVx);
+              for (const off of [-Math.PI / 2, Math.PI / 2]) {
+                this.createEnemyProjectile(e.sprite.x, e.sprite.y, dashA + off, 120, e.damage, 0xfbbf24, false, e.uid, {
+                  textureKey: 'proj_shard',
+                  rotateToVelocity: true,
+                  lifeMs: 1300,
+                });
+              }
+              this.spawnParticles(e.sprite.x, e.sprite.y, 0xfbbf24, 6);
+            } else if (e.defId === 'moss_hulk') {
+              this.spawnParticles(e.sprite.x, e.sprite.y, 0x66ffd9, 8);
+              for (let k = 0; k < 6; k++) {
+                const a = (Math.PI * 2 * k) / 6;
+                this.createEnemyProjectile(e.sprite.x, e.sprite.y, a, 95, e.damage, 0x66ffd9, false, e.uid, {
+                  textureKey: 'proj_spore',
+                  lifeMs: 900,
+                  spinSpeed: 0.2,
+                });
+              }
+            }
+          } else if (e.defId === 'cave_crawler') {
+            e.idleMs = 450;
+            e.sprite.setVelocity(0, 0);
+          }
+        }
+        continue;
+      }
+
+      // Ranged telegraph windup (spore_eye, abyss_watcher)
+      if (e.telegraphMs && e.telegraphMs > 0) {
+        e.telegraphMs -= delta;
+        e.sprite.setVelocity(0, 0);
+        if (e.telegraphMs <= 0) {
           e.sprite.clearTint();
-          e.idleMs = 3000;
+          if (e.isElite) e.sprite.setTint(0xffd275);
+          if (e.defId === 'spore_eye') {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 65, e.damage, 0x34d399, false, e.uid, {
+              textureKey: 'proj_spore',
+              accel: 120,
+              spinSpeed: 0.3,
+              lifeMs: 2200,
+            });
+          } else if (e.defId === 'abyss_watcher') {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 185, e.damage, 0xc084fc, false, e.uid, {
+              textureKey: 'proj_void_bolt',
+              rotateToVelocity: true,
+              lifeMs: 2200,
+            });
+          }
         }
         continue;
       }
@@ -6341,6 +6607,83 @@ export class GameScene extends Phaser.Scene {
         }
         const flankAngle = angle + (e.repositionDir ?? 1) * 0.55;
         e.sprite.setVelocity(Math.cos(flankAngle) * spd * 1.15, Math.sin(flankAngle) * spd * 1.15);
+      } else if (e.defId === 'prism_mite') {
+        // Skittering zig-zag pursuit with micro-lunge close-up
+        const zig = Math.sin(time * 0.011 + e.sprite.x * 0.05) * 0.75;
+        const moveA = angle + zig;
+        const mult = dist < 48 ? 1.35 : 1;
+        e.sprite.setVelocity(Math.cos(moveA) * spd * mult, Math.sin(moveA) * spd * mult);
+      } else if (e.defId === 'copper_scarab') {
+        // Dart-and-pause scuttling
+        const cycle = (time + e.uid.charCodeAt(e.uid.length - 1) * 90) % 900;
+        const mult = cycle < 550 ? 1.4 : 0.15;
+        e.sprite.setVelocity(Math.cos(angle) * spd * mult, Math.sin(angle) * spd * mult);
+      } else if (e.defId === 'clockwork_tick') {
+        // Rhythmic tick-tock steps
+        const cycle = time % 400;
+        const mult = cycle < 180 ? 1.55 : 0.25;
+        e.sprite.setVelocity(Math.cos(angle) * spd * mult, Math.sin(angle) * spd * mult);
+      } else if (e.defId === 'pendulum_knight') {
+        // Swings in wide pendulum arcs before charging
+        const swing = Math.sin(time * 0.005) * 0.85;
+        e.sprite.setVelocity(Math.cos(angle + swing) * spd * 0.8, Math.sin(angle + swing) * spd * 0.8);
+        if (e.aiTimerMs <= 0 && dist < 135) {
+          e.aiTimerMs = e.attackCooldownMs;
+          e.windupMs = 450;
+          e.sprite.setTint(0xffd275);
+        }
+      } else if (e.defId === 'ooze_ling') {
+        e.sprite.setVelocity(Math.cos(angle) * spd, Math.sin(angle) * spd);
+        e.oozeTrailMs = (e.oozeTrailMs ?? 0) + delta;
+        if (e.oozeTrailMs >= 1600) {
+          e.oozeTrailMs = 0;
+          this.spawnSlimeSplatter(e.sprite.x, e.sprite.y, true);
+        }
+      } else if (e.defId === 'cave_crawler') {
+        if (dist < 115) {
+          e.sprite.setVelocity(Math.cos(angle) * spd * 0.75, Math.sin(angle) * spd * 0.75);
+          if (e.aiTimerMs <= 0) {
+            e.aiTimerMs = e.attackCooldownMs;
+            e.windupMs = 280;
+            e.sprite.setTint(0x6ef3ff);
+          }
+        } else {
+          e.sprite.setVelocity(0, 0);
+        }
+      } else if (e.defId === 'button_doll') {
+        if (dist < 115) {
+          e.sprite.setVelocity(Math.cos(angle) * spd * 1.1, Math.sin(angle) * spd * 1.1);
+          if (e.aiTimerMs <= 0 && dist > 38) {
+            e.aiTimerMs = e.attackCooldownMs;
+            this.spawnParticles(e.sprite.x, e.sprite.y, 0xc084fc, 5);
+            const flankA = angle + (Math.random() < 0.5 ? 0.9 : -0.9);
+            const bx = Phaser.Math.Clamp(e.sprite.x + Math.cos(flankA) * 32, 22, Math.max(22, this.roomWidthPx - 22));
+            const by = Phaser.Math.Clamp(e.sprite.y + Math.sin(flankA) * 32, 22, Math.max(22, this.roomHeightPx - 22));
+            e.sprite.setPosition(bx, by);
+            this.spawnParticles(bx, by, 0xffd275, 5);
+          }
+        } else {
+          e.sprite.setVelocity(0, 0);
+        }
+      } else if (e.defId === 'night_weaver') {
+        if (dist < 130) {
+          const strafeA = dist < 60 ? angle + Math.PI : angle + (Math.sin(time * 0.004) > 0 ? 1.15 : -1.15);
+          e.sprite.setVelocity(Math.cos(strafeA) * spd, Math.sin(strafeA) * spd);
+          if (e.aiTimerMs <= 0) {
+            e.aiTimerMs = e.attackCooldownMs;
+            for (const off of [-0.26, 0, 0.26]) {
+              this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 125, e.damage, 0xc084fc, false, e.uid, {
+                textureKey: 'proj_needle',
+                rotateToVelocity: true,
+                inflictEffect: 'sluggish',
+                inflictDurationMs: 2500,
+                lifeMs: 1700,
+              });
+            }
+          }
+        } else {
+          e.sprite.setVelocity(0, 0);
+        }
       } else if (e.behavior === 'chase' || e.behavior === 'shielded') {
         e.sprite.setVelocity(Math.cos(angle) * spd, Math.sin(angle) * spd);
       } else if (e.behavior === 'orbit') {
@@ -6353,8 +6696,8 @@ export class GameScene extends Phaser.Scene {
         e.sprite.setVelocity(Math.cos(angle) * spd * 0.6, Math.sin(angle) * spd * 0.6);
         if (e.aiTimerMs <= 0 && dist < 130) {
           e.aiTimerMs = e.attackCooldownMs;
-          e.windupMs = 420;
-          e.sprite.setTint(0xffe066);
+          e.windupMs = e.defId === 'moss_hulk' ? 500 : e.defId === 'haunted_armour' || e.defId === 'dread_knight' ? 450 : 420;
+          e.sprite.setTint(e.defId === 'dread_knight' ? 0xc084fc : e.defId === 'moss_hulk' ? 0x66ffd9 : 0xffe066);
         }
       } else if (e.behavior === 'ambush') {
         if (dist < 110) {
@@ -6366,12 +6709,210 @@ export class GameScene extends Phaser.Scene {
         e.sprite.setVelocity(Math.cos(angle) * spd, Math.sin(angle) * spd);
       }
 
+      // Multi-shot burst follow-ups (wisp_bat, velvet_moth)
+      if (e.attackBurstLeft && e.attackBurstLeft > 0) {
+        e.attackBurstTimerMs = (e.attackBurstTimerMs ?? 0) - delta;
+        if (e.attackBurstTimerMs <= 0) {
+          e.attackBurstLeft--;
+          e.attackBurstTimerMs = e.defId === 'velvet_moth' ? 130 : 160;
+          const isVelvet = e.defId === 'velvet_moth';
+          const spread = isVelvet ? (e.attackBurstLeft - 0.5) * 0.14 : 0;
+          this.createEnemyProjectile(
+            e.sprite.x,
+            e.sprite.y,
+            angle + spread,
+            isVelvet ? 135 : 145,
+            e.damage,
+            isVelvet ? 0xf49ac1 : 0x6ef3ff,
+            false,
+            e.uid,
+            {
+              textureKey: 'proj_needle',
+              rotateToVelocity: true,
+              lifeMs: 1800,
+            }
+          );
+        }
+      }
+
+      // Shielded heavy special attacks (shard_golem, brass_sentinel, gear_golem)
+      if (!e.isBoss && e.aiTimerMs <= 0 && (e.defId === 'shard_golem' || e.defId === 'brass_sentinel' || e.defId === 'gear_golem')) {
+        e.aiTimerMs = e.attackCooldownMs;
+        e.attackPhase = (e.attackPhase ?? 0) + 1;
+        if (e.defId === 'shard_golem') {
+          const baseA = (e.attackPhase % 2) * (Math.PI / 4);
+          this.spawnParticles(e.sprite.x, e.sprite.y, 0x7dd3fc, 5);
+          for (let k = 0; k < 4; k++) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, baseA + (Math.PI / 2) * k, 95, e.damage, 0x7dd3fc, false, e.uid, {
+              textureKey: 'proj_shard',
+              scale: 1.2,
+              rotateToVelocity: true,
+              lifeMs: 1900,
+            });
+          }
+        } else if (e.defId === 'brass_sentinel') {
+          const perp = angle + Math.PI / 2;
+          for (const off of [-5, 5]) {
+            this.createEnemyProjectile(
+              e.sprite.x + Math.cos(perp) * off,
+              e.sprite.y + Math.sin(perp) * off,
+              angle,
+              125,
+              e.damage,
+              0xffd275,
+              false,
+              e.uid,
+              {
+                textureKey: 'proj_gear',
+                spinSpeed: 0.5,
+                lifeMs: 2000,
+              }
+            );
+          }
+        } else if (e.defId === 'gear_golem') {
+          const baseA = e.attackPhase * (Math.PI / 4);
+          for (let k = 0; k < 4; k++) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, baseA + (Math.PI / 2) * k, 105, e.damage, 0xffd275, false, e.uid, {
+              textureKey: 'proj_gear',
+              scale: 1.2,
+              spinSpeed: 0.55,
+              lifeMs: 2000,
+            });
+          }
+        }
+      }
+
       // Ranged / Spore attacks
       const def = ENEMIES[e.defId];
       if (def?.projectileColor && e.aiTimerMs <= 0) {
         e.aiTimerMs = e.attackCooldownMs;
-        const burns = e.defId === 'voidling';
-        this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 115, e.damage, def.projectileColor, burns, e.uid);
+        if (e.defId === 'tiny_moth' || e.defId === 'glimmer_eye' || e.defId === 'puffcap') {
+          // Level 1 & Level 1 Elite Pool: keep original behavior untouched
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 115, e.damage, def.projectileColor, false, e.uid);
+        } else if (e.defId === 'wisp_bat') {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 145, e.damage, def.projectileColor, false, e.uid, {
+            textureKey: 'proj_needle',
+            rotateToVelocity: true,
+            lifeMs: 1800,
+          });
+          e.attackBurstLeft = 1;
+          e.attackBurstTimerMs = 160;
+        } else if (e.defId === 'echo_wisp') {
+          for (const off of [-0.22, 0.22]) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 120, e.damage, def.projectileColor, false, e.uid, {
+              textureKey: 'proj_shard',
+              rotateToVelocity: true,
+              bouncesLeft: 1,
+              lifeMs: 2200,
+            });
+          }
+        } else if (e.defId === 'spore_spirit') {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 105, e.damage, def.projectileColor, false, e.uid, {
+            textureKey: 'proj_spore',
+            wobbleAmp: 1.4,
+            wobbleFreq: 0.012,
+            spinSpeed: 0.2,
+            inflictEffect: 'sluggish',
+            inflictDurationMs: 2000,
+          });
+        } else if (e.defId === 'glow_toadstool') {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 75, e.damage, def.projectileColor, false, e.uid, {
+            textureKey: 'proj_spore',
+            scale: 1.25,
+            lifeMs: 1100,
+            spinSpeed: 0.18,
+            sporeBurst: true,
+          });
+        } else if (e.defId === 'rot_moth') {
+          for (const off of [-0.28, 0, 0.28]) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 100, e.damage, def.projectileColor, false, e.uid, {
+              textureKey: 'proj_spore',
+              spinSpeed: 0.25,
+              inflictEffect: 'poisoned',
+              inflictDurationMs: 3000,
+              lifeMs: 1800,
+            });
+          }
+        } else if (e.defId === 'spore_eye') {
+          e.telegraphMs = 280;
+          e.sprite.setTint(0x34d399);
+        } else if (e.defId === 'corrupted_flower') {
+          e.attackPhase = (e.attackPhase ?? 0) + 1;
+          if (e.attackPhase % 2 === 1) {
+            for (let k = 0; k < 5; k++) {
+              const a = angle + (Math.PI * 2 * k) / 5;
+              this.createEnemyProjectile(e.sprite.x, e.sprite.y, a, 100, e.damage, def.projectileColor, false, e.uid, {
+                textureKey: 'proj_glob',
+                spinSpeed: 0.3,
+                lifeMs: 2000,
+              });
+            }
+          } else {
+            for (const off of [-0.25, 0, 0.25]) {
+              this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 120, e.damage, def.projectileColor, false, e.uid, {
+                textureKey: 'proj_glob',
+                spinSpeed: 0.35,
+                lifeMs: 2000,
+              });
+            }
+          }
+        } else if (e.defId === 'acid_blob') {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 105, e.damage, def.projectileColor, false, e.uid, {
+            textureKey: 'proj_glob',
+            scale: 1.15,
+            spinSpeed: 0.3,
+            slimeSplatter: true,
+            lifeMs: 1700,
+          });
+        } else if (e.defId === 'brine_wraith') {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 95, e.damage, def.projectileColor, false, e.uid, {
+            textureKey: 'proj_glob',
+            homing: true,
+            spinSpeed: 0.35,
+            inflictEffect: 'fragile',
+            inflictDurationMs: 3000,
+            lifeMs: 2400,
+          });
+        } else if (e.defId === 'porcelain_mask') {
+          for (const off of [-0.22, 0.22]) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 125, e.damage, def.projectileColor, false, e.uid, {
+              textureKey: 'proj_gear',
+              bouncesLeft: 1,
+              spinSpeed: 0.5,
+              lifeMs: 2100,
+            });
+          }
+        } else if (e.defId === 'velvet_moth') {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 135, e.damage, def.projectileColor, false, e.uid, {
+            textureKey: 'proj_needle',
+            rotateToVelocity: true,
+            lifeMs: 1800,
+          });
+          e.attackBurstLeft = 2;
+          e.attackBurstTimerMs = 130;
+        } else if (e.defId === 'voidling') {
+          for (const off of [-0.24, 0, 0.24]) {
+            this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle + off, 125, e.damage, def.projectileColor, true, e.uid, {
+              textureKey: 'proj_void_bolt',
+              rotateToVelocity: true,
+              lifeMs: 2000,
+            });
+          }
+        } else if (e.defId === 'shadow_mote') {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle - 0.3, 115, e.damage, def.projectileColor, false, e.uid, {
+            textureKey: 'proj_shadow_wisp',
+            curveRate: 0.55,
+            spinSpeed: 0.45,
+            inflictEffect: 'blinded',
+            inflictDurationMs: 2000,
+            lifeMs: 2200,
+          });
+        } else if (e.defId === 'abyss_watcher') {
+          e.telegraphMs = 350;
+          e.sprite.setTint(0xc084fc);
+        } else {
+          this.createEnemyProjectile(e.sprite.x, e.sprite.y, angle, 115, e.damage, def.projectileColor, false, e.uid);
+        }
       }
     }
 
@@ -6437,6 +6978,7 @@ export class GameScene extends Phaser.Scene {
       const px = this.playerSprite.x;
       if (px > 140 && this.l7WhisperStep < 1) {
         this.l7WhisperStep = 1;
+        SoundSystem.playBossAwaken();
         this.ui.showToast('Something ancient shifts behind the far gate...', '#b8a1ff');
       } else if (px > 290 && this.l7WhisperStep < 2) {
         this.l7WhisperStep = 2;
@@ -6542,7 +7084,7 @@ export class GameScene extends Phaser.Scene {
     this.nyarlathotepSummoning = true;
     this.currentRoom.doorsLocked = true;
     this.updateDoorVisuals();
-    SoundSystem.setMusicTrack('boss');
+    SoundSystem.playBossSpawn();
     this.cameras.main.shake(1100, 0.01);
 
     const prevHistory = this.getNyarHistory();
@@ -6596,6 +7138,8 @@ export class GameScene extends Phaser.Scene {
           this.spawnParticles(cx, cy, 0xff8c1a, 24);
           this.spawnParticles(cx, cy, 0x7e22ce, 20);
           SoundSystem.playExplosion();
+          SoundSystem.setMusicTrack('nyar_boss');
+          SoundSystem.startBossEvilLaughLoop();
           this.ui.showToast(dialogue.opening, '#ff8c1a');
         }
       },
@@ -6981,7 +7525,7 @@ export class GameScene extends Phaser.Scene {
     if (this.isRoomAuthority()) {
       this.nyarRainTimerMs -= delta;
       if (this.nyarRainTimerMs <= 0) {
-        this.nyarRainTimerMs = 7000;
+        this.nyarRainTimerMs = 4000;
         let floorItemCount = this.currentRoom.loot.filter((l) => !l.collected && l.kind === 'item').length;
         const playerCount = net.mode === 'solo' ? 1 : Math.max(1, net.players.size);
         const anyLowHp =
@@ -7461,6 +8005,10 @@ export class GameScene extends Phaser.Scene {
       if (p.lifeMs <= 0 || !p.sprite.active) {
         if (p.starBomb && p.sprite.active) {
           this.triggerStarBomb(p.sprite.x, p.sprite.y);
+        } else if (p.sporeBurst && p.sprite.active) {
+          this.spawnEnemySporeBurst(p.sprite.x, p.sprite.y, p.damage, p.color);
+        } else if (p.slimeSplatter && !p.fromPlayer && p.sprite.active) {
+          this.spawnSlimeSplatter(p.sprite.x, p.sprite.y, true);
         } else if (p.bubbled && p.sprite.active) {
           this.spawnParticles(p.sprite.x, p.sprite.y, 0x6ef3ff, 4);
         }
@@ -7471,6 +8019,48 @@ export class GameScene extends Phaser.Scene {
       }
       if (p.bubbled && p.bubbleGfx) {
         p.bubbleGfx.setPosition(p.sprite.x, p.sprite.y);
+      }
+
+      if (p.homing && !p.fromPlayer && !p.bubbled && this.playerSprite.active) {
+        const curSpd = Math.hypot(p.vx, p.vy) || 95;
+        const targetA = Phaser.Math.Angle.Between(p.sprite.x, p.sprite.y, this.playerSprite.x, this.playerSprite.y);
+        p.vx = Phaser.Math.Linear(p.vx, Math.cos(targetA) * curSpd, 0.035);
+        p.vy = Phaser.Math.Linear(p.vy, Math.sin(targetA) * curSpd, 0.035);
+      }
+
+      if (p.accel && !p.bubbled) {
+        const curSpd = Math.hypot(p.vx, p.vy);
+        if (curSpd > 0 && curSpd < 175) {
+          const factor = (curSpd + p.accel * (delta / 1000)) / curSpd;
+          p.vx *= factor;
+          p.vy *= factor;
+        }
+      }
+
+      if (p.curveRate && !p.bubbled) {
+        const rot = p.curveRate * (delta / 1000);
+        const c = Math.cos(rot);
+        const s = Math.sin(rot);
+        const nvx = p.vx * c - p.vy * s;
+        const nvy = p.vx * s + p.vy * c;
+        p.vx = nvx;
+        p.vy = nvy;
+      }
+
+      if (p.wobbleAmp && !p.bubbled) {
+        p.wobblePhase = (p.wobblePhase ?? 0) + delta * (p.wobbleFreq ?? 0.012);
+        const spd = Math.hypot(p.vx, p.vy) || 1;
+        const perpX = -p.vy / spd;
+        const perpY = p.vx / spd;
+        const offset = Math.cos(p.wobblePhase) * p.wobbleAmp * (delta / 16.67);
+        p.sprite.x += perpX * offset;
+        p.sprite.y += perpY * offset;
+      }
+
+      if (p.spinSpeed) {
+        p.sprite.angle += delta * p.spinSpeed;
+      } else if (p.rotateToVelocity && (p.vx !== 0 || p.vy !== 0)) {
+        p.sprite.setRotation(Math.atan2(p.vy, p.vx));
       }
 
       if (p.homing && p.fromPlayer && this.activeEnemies.length > 0) {
@@ -7650,6 +8240,46 @@ export class GameScene extends Phaser.Scene {
             break;
           }
         }
+        if (!hitSolid && !p.fromPlayer) {
+          for (const obj of this.crateGroup.getChildren()) {
+            const crate = obj as Phaser.Physics.Arcade.Sprite;
+            if (!crate.active) continue;
+            const hw = (crate.width || 16) * 0.5 + 1;
+            const hh = (crate.height || 16) * 0.5 + 1;
+            const dx = p.sprite.x - crate.x;
+            const dy = p.sprite.y - crate.y;
+            if (Math.abs(dx) < hw && Math.abs(dy) < hh) {
+              if (p.bouncesLeft > 0) {
+                p.bouncesLeft--;
+                const penX = hw - Math.abs(dx);
+                const penY = hh - Math.abs(dy);
+                if (penX < penY) {
+                  const dir = Math.sign(dx || (p.vx < 0 ? 1 : -1));
+                  p.vx = dir * Math.abs(p.vx);
+                  p.sprite.x = crate.x + dir * (hw + 1);
+                } else {
+                  const dir = Math.sign(dy || (p.vy < 0 ? 1 : -1));
+                  p.vy = dir * Math.abs(p.vy);
+                  p.sprite.y = crate.y + dir * (hh + 1);
+                }
+              } else {
+                hitSolid = true;
+                if (p.shooterUid) {
+                  const shooter = this.activeEnemies.find((e) => e.uid === p.shooterUid && e.sprite.active);
+                  if (shooter && !shooter.isBoss) {
+                    shooter.blockedShots = (shooter.blockedShots ?? 0) + 1;
+                    if (shooter.blockedShots >= 2) {
+                      shooter.blockedShots = 0;
+                      shooter.repositionMs = 1600;
+                      shooter.repositionDir = shooter.repositionDir ?? (Math.random() < 0.5 ? 1 : -1);
+                    }
+                  }
+                }
+              }
+              break;
+            }
+          }
+        }
       }
 
       if (!p.netSynced) {
@@ -7659,9 +8289,11 @@ export class GameScene extends Phaser.Scene {
       if (hitSolid) {
         if (p.starBomb) {
           this.triggerStarBomb(p.sprite.x, p.sprite.y);
+        } else if (p.sporeBurst) {
+          this.spawnEnemySporeBurst(p.sprite.x, p.sprite.y, p.damage, p.color);
         } else {
           if (p.slimeSplatter) {
-            this.spawnSlimeSplatter(p.sprite.x, p.sprite.y);
+            this.spawnSlimeSplatter(p.sprite.x, p.sprite.y, !p.fromPlayer);
           }
           this.spawnParticles(p.sprite.x, p.sprite.y, p.color, 3);
         }
@@ -7862,6 +8494,15 @@ export class GameScene extends Phaser.Scene {
           if (p.burns) {
             StatusEffectManager.addEffect(this.playerState.statusEffects, 'burning', 3000);
           }
+          if (p.inflictEffect) {
+            StatusEffectManager.addEffect(this.playerState.statusEffects, p.inflictEffect, p.inflictDurationMs ?? 2500);
+          }
+          if (p.slimeSplatter) {
+            this.spawnSlimeSplatter(p.sprite.x, p.sprite.y, true);
+          }
+          if (p.sporeBurst) {
+            this.spawnEnemySporeBurst(p.sprite.x, p.sprite.y, p.damage, p.color);
+          }
           this.damagePlayer(p.damage);
           p.sprite.destroy();
           this.projectiles.splice(i, 1);
@@ -7880,20 +8521,41 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private spawnSlimeSplatter(x: number, y: number): void {
+  private spawnEnemySporeBurst(x: number, y: number, damage: number, color: number): void {
+    this.spawnParticles(x, y, color, 5);
+    const baseAngle = Math.random() * Math.PI * 2;
+    for (let k = 0; k < 3; k++) {
+      const a = baseAngle + (Math.PI * 2 * k) / 3;
+      this.createEnemyProjectile(x, y, a, 95, damage, color, false, undefined, {
+        textureKey: 'proj_spore',
+        scale: 0.78,
+        lifeMs: 650,
+        spinSpeed: 0.25,
+      });
+    }
+  }
+
+  private spawnSlimeSplatter(x: number, y: number, fromEnemy = false): void {
     const sx = Phaser.Math.Clamp(x, 24, Math.max(24, this.roomWidthPx - 24));
     const sy = Phaser.Math.Clamp(y, 24, Math.max(24, this.roomHeightPx - 24));
     const gfx = this.add.graphics().setDepth(2);
-    gfx.fillStyle(0x65a30d, 0.72);
-    gfx.fillCircle(sx, sy, 13);
-    gfx.fillCircle(sx - 7, sy + 4, 7);
-    gfx.fillCircle(sx + 8, sy - 3, 6);
-    gfx.fillCircle(sx + 3, sy + 8, 5);
+    gfx.fillStyle(fromEnemy ? 0x4d7c0f : 0x65a30d, 0.72);
+    gfx.fillCircle(sx, sy, fromEnemy ? 11 : 13);
+    gfx.fillCircle(sx - 6, sy + 3, fromEnemy ? 5 : 7);
+    gfx.fillCircle(sx + 7, sy - 2, fromEnemy ? 5 : 6);
+    gfx.fillCircle(sx + 2, sy + 7, fromEnemy ? 4 : 5);
     gfx.fillStyle(0xa6ff4d, 0.55);
-    gfx.fillCircle(sx - 3, sy - 3, 6);
-    gfx.fillCircle(sx + 5, sy + 2, 4);
+    gfx.fillCircle(sx - 3, sy - 3, fromEnemy ? 4 : 6);
+    gfx.fillCircle(sx + 4, sy + 2, fromEnemy ? 3 : 4);
     this.roomGroup.add(gfx);
-    this.slimeSplatters.push({ x: sx, y: sy, radius: 17, gfx, lifeMs: 5000 });
+    this.slimeSplatters.push({
+      x: sx,
+      y: sy,
+      radius: fromEnemy ? 14 : 17,
+      gfx,
+      lifeMs: fromEnemy ? 3400 : 5000,
+      fromEnemy,
+    });
   }
 
   private updateSlimeSplatters(delta: number): void {
@@ -7908,10 +8570,20 @@ export class GameScene extends Phaser.Scene {
       if (s.lifeMs < 1000) {
         s.gfx.setAlpha(s.lifeMs / 1000);
       }
-      for (const e of this.activeEnemies) {
-        if (!e.sprite.active) continue;
-        if (Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, s.x, s.y) <= s.radius) {
-          e.slowedMs = Math.max(e.slowedMs, 600);
+      if (s.fromEnemy) {
+        if (
+          this.playerSprite.active &&
+          !this.playerState.downed &&
+          Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, s.x, s.y) <= s.radius
+        ) {
+          StatusEffectManager.addEffect(this.playerState.statusEffects, 'sluggish', 800);
+        }
+      } else {
+        for (const e of this.activeEnemies) {
+          if (!e.sprite.active) continue;
+          if (Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, s.x, s.y) <= s.radius) {
+            e.slowedMs = Math.max(e.slowedMs, 600);
+          }
         }
       }
     }
@@ -8697,11 +9369,16 @@ export class GameScene extends Phaser.Scene {
       f.sprite.x += f.vx * dt;
       f.sprite.y += f.vy * dt;
       const baseAlpha = this.levelIndex === 6 ? 0.55 : 0.3;
-      f.sprite.setAlpha(baseAlpha + 0.4 * Math.abs(Math.sin(f.phase)));
+      const pulse = Math.abs(Math.sin(f.phase));
+      f.sprite.setAlpha(baseAlpha + 0.4 * pulse);
       if (f.sprite.x < 20) f.sprite.x = maxX;
       if (f.sprite.x > maxX) f.sprite.x = 20;
       if (f.sprite.y < 20) f.sprite.y = maxY;
       if (f.sprite.y > maxY) f.sprite.y = 20;
+      if (f.glow) {
+        f.glow.setPosition(f.sprite.x, f.sprite.y);
+        f.glow.setAlpha(0.22 + 0.25 * pulse);
+      }
     }
   }
 
@@ -8841,6 +9518,10 @@ export class GameScene extends Phaser.Scene {
               ownerId: p.ownerId,
               damage: p.damage,
               burns: p.burns,
+              textureKey: p.textureKey,
+              scale: p.sprite.scaleX !== 1 ? p.sprite.scaleX : undefined,
+              spinSpeed: p.spinSpeed,
+              rotateToVelocity: p.rotateToVelocity,
             })),
         });
       }

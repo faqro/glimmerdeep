@@ -47,8 +47,19 @@
     <script type="module" src="/src/main.ts"></script>
     <script>
       if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+        var hadController = !!navigator.serviceWorker.controller;
+        var swReloading = false;
+        navigator.serviceWorker.addEventListener('controllerchange', function () {
+          if (hadController && !swReloading) {
+            swReloading = true;
+            window.location.reload();
+          }
+        });
         window.addEventListener('load', function () {
           navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(function (reg) {
+            if (navigator.onLine) {
+              reg.update().catch(function () {});
+            }
             document.addEventListener('visibilitychange', function () {
               if (document.visibilityState === 'visible' && navigator.onLine) {
                 reg.update().catch(function () {});

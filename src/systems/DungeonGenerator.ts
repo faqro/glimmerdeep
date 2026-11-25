@@ -2,7 +2,7 @@ import { BIOMES, LEVEL_MODIFIERS } from '../data/biomes';
 import { ARTIFACT_IDS, CONSUMABLES, CONSUMABLE_IDS, ARTIFACTS } from '../data/items';
 import { ENEMIES } from '../data/enemies';
 import { WEAPONS, WEAPON_IDS } from '../data/weapons';
-import { SUPER_RARE_MERCHANT_IDS } from './InventorySystem';
+import { rollItemIdByRarities, SUPER_RARE_MERCHANT_IDS } from './InventorySystem';
 import { LevelModifierId, RoomData, RoomType, ShopStockItem } from '../types/game';
 import { deriveSeed, SeededRandom } from '../utils/SeededGenerator';
 
@@ -557,7 +557,7 @@ export class DungeonGenerator {
       const strengthBase =
         primaryDef.hp <= 4 ? 4 : primaryDef.hp <= 6 ? 3 : primaryDef.hp <= 9 ? 2 : 1;
       const levelBonus = Math.floor(levelIndex / 2);
-      const playerMult = 1 + (Math.max(1, playerCount) - 1) * 0.35; // 1p=1.0, 2p=1.35, 3p=1.7, 4p=2.05
+      const playerMult = 1 + (Math.max(1, playerCount) - 1) * 0.5; // 1p=1.0, 2p=1.5, 3p=2.0, 4p=2.5
       const rawCount = Math.round((strengthBase + rng.int(0, 1) + levelBonus) * playerMult);
       const count = Math.max(1, Math.min(9, rawCount));
 
@@ -621,39 +621,7 @@ export class DungeonGenerator {
 
     if (room.type === 'merchant') {
       room.cleared = true;
-      const stock: ShopStockItem[] = [];
-      const normalWeapons = WEAPON_IDS.filter(
-        (id) => id !== 'moonblade' && !WEAPONS[id].merchantOnly && WEAPONS[id].rarity !== 'secret'
-      );
-      const normalConsumables = CONSUMABLE_IDS.filter(
-        (id) => !CONSUMABLES[id].merchantOnly && CONSUMABLES[id].rarity !== 'secret'
-      );
-      const normalArtifacts = ARTIFACT_IDS.filter(
-        (id) => !ARTIFACTS[id].merchantOnly && ARTIFACTS[id].rarity !== 'secret'
-      );
-
-      const wId = rng.pick(normalWeapons);
-      const cId = rng.pick(normalConsumables);
-      const forceWanderingEye =
-        levelIndex === 1 && normalArtifacts.includes('wandering_eye') && rng.chance(0.25);
-      const aId = forceWanderingEye ? 'wandering_eye' : rng.pick(normalArtifacts);
-      stock.push({ itemId: wId, price: rng.int(22, 34), sold: false });
-      stock.push({ itemId: cId, price: CONSUMABLES[cId].price, sold: false });
-      stock.push({ itemId: aId, price: ARTIFACTS[aId].price, sold: false });
-
-      // ~1 in 10 merchants sells a single super rare merchant-only item (~46-55 shards)
-      if (SUPER_RARE_MERCHANT_IDS.length > 0 && rng.chance(0.1)) {
-        const srId = rng.pick(SUPER_RARE_MERCHANT_IDS);
-        const srDef = WEAPONS[srId] ?? CONSUMABLES[srId] ?? ARTIFACTS[srId];
-        const slotIdx = forceWanderingEye ? rng.int(0, 1) : rng.int(0, 2);
-        stock[slotIdx] = {
-          itemId: srId,
-          price: srDef?.price ?? 50,
-          sold: false,
-        };
-      }
-
-      room.shopStock = stock;
+      room.shopStock = this.generateMerchantStock(levelIndex, rng);
       return;
     }
 
@@ -1068,6 +1036,41 @@ export class DungeonGenerator {
     }
   }
 
+  private static generateMerchantStock(levelIndex: number, rng: SeededRandom): ShopStockItem[] {
+    const stock: ShopStockItem[] = [];
+    const normalWeapons = WEAPON_IDS.filter(
+      (id) => id !== 'moonblade' && !WEAPONS[id].merchantOnly && WEAPONS[id].rarity !== 'secret'
+    );
+    const normalConsumables = CONSUMABLE_IDS.filter(
+      (id) => !CONSUMABLES[id].merchantOnly && CONSUMABLES[id].rarity !== 'secret'
+    );
+    const normalArtifacts = ARTIFACT_IDS.filter(
+      (id) => !ARTIFACTS[id].merchantOnly && ARTIFACTS[id].rarity !== 'secret'
+    );
+
+    const wId = rng.pick(normalWeapons);
+    const cId = rng.pick(normalConsumables);
+    const forceWanderingEye =
+      levelIndex === 1 && normalArtifacts.includes('wandering_eye') && rng.chance(0.25);
+    const aId = forceWanderingEye ? 'wandering_eye' : rng.pick(normalArtifacts);
+    stock.push({ itemId: wId, price: rng.int(22, 34), sold: false });
+    stock.push({ itemId: cId, price: CONSUMABLES[cId].price, sold: false });
+    stock.push({ itemId: aId, price: ARTIFACTS[aId].price, sold: false });
+
+    // ~1 in 10 merchants sells a single super rare merchant-only item (~46-55 shards)
+    if (SUPER_RARE_MERCHANT_IDS.length > 0 && rng.chance(0.1)) {
+      const srId = rng.pick(SUPER_RARE_MERCHANT_IDS);
+      const srDef = WEAPONS[srId] ?? CONSUMABLES[srId] ?? ARTIFACTS[srId];
+      const slotIdx = forceWanderingEye ? rng.int(0, 1) : rng.int(0, 2);
+      stock[slotIdx] = {
+        itemId: srId,
+        price: srDef?.price ?? 50,
+        sold: false,
+      };
+    }
+    return stock;
+  }
+
   private static generateLevel7Floor(
     levelIndex: number,
     floorSeed: number,
@@ -1108,16 +1111,95 @@ export class DungeonGenerator {
     hallway.connections.east = true;
     hallway.hallwayDoors = [];
 
-    const bonusKinds = ['chest', 'chest', 'heart', 'heart', 'shards', 'shards', 'none', 'none'];
-    rng.shuffle(bonusKinds);
-    let bonusIdx = 0;
+    // 2 random merchant rooms + 2 hazard, 2 combat, 2 elite rooms
+    const chamberTypes: RoomType[] = [
+      'merchant',
+      'merchant',
+      'hazard',
+      'hazard',
+      'combat',
+      'combat',
+      'elite',
+      'elite',
+    ];
+    rng.shuffle(chamberTypes);
+    let chamberIdx = 0;
+    const necroChestIdx = rng.int(0, 5);
+    let chestIdx = 0;
+
+    const populateLevel7Chamber = (room: RoomData, assignedType: RoomType, lootY: number, isTop: boolean): void => {
+      if (assignedType === 'merchant') {
+        room.type = 'combat';
+        this.populateRoom(room, biome, levelIndex, rng, playerCount);
+        room.type = 'merchant';
+        room.cleared = false;
+        room.shopStock = this.generateMerchantStock(levelIndex, rng);
+      } else {
+        this.populateRoom(room, biome, levelIndex, rng, playerCount);
+      }
+
+      if (room.enemies.length === 0) {
+        room.enemies.push({
+          uid: `l7_${isTop ? 'top' : 'bot'}_${room.gx}_${room.gy}`,
+          defId: rng.pick(biome.enemyPool),
+          x: 88,
+          y: isTop ? 72 : 104,
+          hp: 10,
+          maxHp: 10,
+          isElite: false,
+          alive: true,
+        });
+      }
+
+      if (assignedType !== 'merchant') {
+        let chestItemId: string;
+        if (chestIdx === necroChestIdx) {
+          chestItemId = 'necromancy_altar';
+        } else {
+          chestItemId = rollItemIdByRarities(rng, ['rare', 'super_rare']);
+          for (let tries = 0; tries < 5 && chestItemId === 'necromancy_altar'; tries++) {
+            chestItemId = rollItemIdByRarities(rng, ['rare', 'super_rare']);
+          }
+        }
+        chestIdx++;
+        room.loot.push({
+          uid: `l7_ch_${room.gx}_${room.gy}`,
+          kind: 'chest',
+          x: 88,
+          y: lootY,
+          itemId: chestItemId,
+          bonusItemId: rng.chance(0.5) ? rollItemIdByRarities(rng, ['common', 'uncommon']) : undefined,
+          collected: false,
+        });
+        if (rng.chance(0.45)) {
+          room.loot.push({
+            uid: `l7_sh_${room.gx}_${room.gy}`,
+            kind: 'shard',
+            x: 68,
+            y: lootY,
+            amount: 4,
+            collected: false,
+          });
+        }
+        if (rng.chance(0.35)) {
+          room.loot.push({
+            uid: `l7_ht_${room.gx}_${room.gy}`,
+            kind: 'heart',
+            x: 108,
+            y: lootY,
+            collected: false,
+          });
+        }
+      }
+    };
 
     for (let i = 0; i < 4; i++) {
       const tx = doorTxs[i];
       const doorCenterX = tx * 16 + 8;
 
       // Top room (gx: i+1, gy: 0)
-      const topRoom = makeRoom(i + 1, 0, i % 2 === 1 ? 'hazard' : i === 3 ? 'elite' : 'combat');
+      const topType = chamberTypes[chamberIdx++];
+      const topRoom = makeRoom(i + 1, 0, topType);
       topRoom.connections.south = true;
       topRoom.hallwayDoors = [
         {
@@ -1132,27 +1214,7 @@ export class DungeonGenerator {
           returnY: 150,
         },
       ];
-      this.populateRoom(topRoom, biome, levelIndex, rng, playerCount);
-      if (topRoom.enemies.length === 0) {
-        topRoom.enemies.push({
-          uid: `l7_top_${i}_0`,
-          defId: rng.pick(biome.enemyPool),
-          x: 88,
-          y: 72,
-          hp: 10,
-          maxHp: 10,
-          isElite: false,
-          alive: true,
-        });
-      }
-      const topBonus = bonusKinds[bonusIdx++];
-      if (topBonus === 'chest') {
-        topRoom.loot.push({ uid: `l7_ch_${i}_0`, kind: 'chest', x: 88, y: 52, collected: false });
-      } else if (topBonus === 'heart') {
-        topRoom.loot.push({ uid: `l7_ht_${i}_0`, kind: 'heart', x: 88, y: 52, collected: false });
-      } else if (topBonus === 'shards') {
-        topRoom.loot.push({ uid: `l7_sh_${i}_0`, kind: 'shard', x: 88, y: 52, amount: 4, collected: false });
-      }
+      populateLevel7Chamber(topRoom, topType, 52, true);
 
       hallway.hallwayDoors.push({
         dir: 'north',
@@ -1167,7 +1229,8 @@ export class DungeonGenerator {
       });
 
       // Bottom room (gx: i+1, gy: 2)
-      const botRoom = makeRoom(i + 1, 2, i % 2 === 0 ? 'hazard' : i === 2 ? 'elite' : 'combat');
+      const botType = chamberTypes[chamberIdx++];
+      const botRoom = makeRoom(i + 1, 2, botType);
       botRoom.connections.north = true;
       botRoom.hallwayDoors = [
         {
@@ -1182,27 +1245,7 @@ export class DungeonGenerator {
           returnY: 26,
         },
       ];
-      this.populateRoom(botRoom, biome, levelIndex, rng, playerCount);
-      if (botRoom.enemies.length === 0) {
-        botRoom.enemies.push({
-          uid: `l7_bot_${i}_0`,
-          defId: rng.pick(biome.enemyPool),
-          x: 88,
-          y: 104,
-          hp: 10,
-          maxHp: 10,
-          isElite: false,
-          alive: true,
-        });
-      }
-      const botBonus = bonusKinds[bonusIdx++];
-      if (botBonus === 'chest') {
-        botRoom.loot.push({ uid: `l7_ch_${i}_2`, kind: 'chest', x: 88, y: 124, collected: false });
-      } else if (botBonus === 'heart') {
-        botRoom.loot.push({ uid: `l7_ht_${i}_2`, kind: 'heart', x: 88, y: 124, collected: false });
-      } else if (botBonus === 'shards') {
-        botRoom.loot.push({ uid: `l7_sh_${i}_2`, kind: 'shard', x: 88, y: 124, amount: 4, collected: false });
-      }
+      populateLevel7Chamber(botRoom, botType, 124, false);
 
       hallway.hallwayDoors.push({
         dir: 'south',

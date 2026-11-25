@@ -189,6 +189,122 @@ export class PixelArtGenerator {
       '..........',
     ], notePal);
     note3.tex.refresh();
+
+    // Lunar Chakram projectile (12x12 circular ring)
+    const lunarChakram = this.createCanvas('proj_lunar_chakram', 12, 12);
+    this.drawGrid(lunarChakram.ctx, 0, 0, [
+      '...oooooo...',
+      '.ooBBBBBBoo.',
+      '.oBwoooowBo.',
+      'oBBo....oBBo',
+      'oBwo....oBBo',
+      'oBBo....oBBo',
+      'oBBo....oBBo',
+      'oBBo....owBo',
+      'oBBo....oBBo',
+      '.oBwoooowBo.',
+      '.ooBBBBBBoo.',
+      '...oooooo...',
+    ], { o: '#100d24', B: '#a0c4ff', w: '#e0f2fe' });
+    lunarChakram.tex.refresh();
+
+    // Enemy projectile: crystal shard 8x8 (pointing right)
+    const shard = this.createCanvas('proj_shard', 8, 8);
+    this.drawGrid(shard.ctx, 0, 0, [
+      '........',
+      '..oo....',
+      '.owwwo..',
+      'owwwwwwo',
+      'owwwwwwo',
+      '.owwwo..',
+      '..oo....',
+      '........',
+    ], { o: '#bae6fd', w: '#ffffff' });
+    shard.tex.refresh();
+
+    // Enemy projectile: fuzzy spore puff 8x8
+    const spore = this.createCanvas('proj_spore', 8, 8);
+    this.drawGrid(spore.ctx, 0, 0, [
+      '..o..o..',
+      '.owwwwo.',
+      'ow.ww.wo',
+      '.owwwwo.',
+      'ow.ww.wo',
+      '.owwwwo.',
+      '..o..o..',
+      '........',
+    ], { o: '#d9f99d', w: '#ffffff' });
+    spore.tex.refresh();
+
+    // Enemy projectile: bubbling acid/sludge glob 9x9
+    const glob = this.createCanvas('proj_glob', 9, 9);
+    this.drawGrid(glob.ctx, 0, 0, [
+      '...ooo...',
+      '..owwwo..',
+      '.owwwww..',
+      'owwwwwooo',
+      'owwwwwwwo',
+      '.owwwwwo.',
+      '..ooooo..',
+      '....oo...',
+      '.........',
+    ], { o: '#bef264', w: '#ffffff' });
+    glob.tex.refresh();
+
+    // Enemy projectile: clockwork gear 9x9
+    const gear = this.createCanvas('proj_gear', 9, 9);
+    this.drawGrid(gear.ctx, 0, 0, [
+      '..o...o..',
+      '.owowowo.',
+      'owwwwwwo.',
+      '.ow.o.wo.',
+      'owwwwwwo.',
+      '.owowowo.',
+      '..o...o..',
+      '.........',
+      '.........',
+    ], { o: '#fde68a', w: '#ffffff' });
+    gear.tex.refresh();
+
+    // Enemy projectile: sleek needle/dart 10x5 (pointing right)
+    const needle = this.createCanvas('proj_needle', 10, 5);
+    this.drawGrid(needle.ctx, 0, 0, [
+      '......oo..',
+      '.ooooowwo.',
+      'owwwwwwwwo',
+      '.ooooowwo.',
+      '......oo..',
+    ], { o: '#e2e8f0', w: '#ffffff' });
+    needle.tex.refresh();
+
+    // Enemy projectile: jagged void bolt 9x9 (pointing right)
+    const voidBolt = this.createCanvas('proj_void_bolt', 9, 9);
+    this.drawGrid(voidBolt.ctx, 0, 0, [
+      '.oo......',
+      '..owoo...',
+      '.owwwwo..',
+      'oowwwwwwo',
+      '.owwwwo..',
+      '..owoo...',
+      '.oo......',
+      '.........',
+      '.........',
+    ], { o: '#f5d0fe', w: '#ffffff' });
+    voidBolt.tex.refresh();
+
+    // Enemy projectile: crescent shadow wisp 8x8
+    const shadowWisp = this.createCanvas('proj_shadow_wisp', 8, 8);
+    this.drawGrid(shadowWisp.ctx, 0, 0, [
+      '..oooo..',
+      '.owwwwo.',
+      'owwo..oo',
+      'oww.....',
+      'oww.....',
+      'owwo..oo',
+      '.owwwwo.',
+      '..oooo..',
+    ], { o: '#f0abfc', w: '#ffffff' });
+    shadowWisp.tex.refresh();
   }
 
   private generateUIElements(): void {

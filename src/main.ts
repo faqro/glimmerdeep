@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { isMobileMode } from './mobile/MobileInput';
 import { mountMobileShell } from './mobile/MobileShell';
 import { BootScene } from './scenes/BootScene';
+import { CreditsScene } from './scenes/CreditsScene';
 import { GameOverScene } from './scenes/GameOverScene';
 import { GameScene } from './scenes/GameScene';
 import { JournalScene } from './scenes/JournalScene';
@@ -38,7 +39,7 @@ const config: Phaser.Types.Core.GameConfig = {
       debug: false,
     },
   },
-  scene: [BootScene, MenuScene, JournalScene, LobbyScene, GameScene, UIScene, GameOverScene],
+  scene: [BootScene, MenuScene, JournalScene, LobbyScene, GameScene, UIScene, GameOverScene, CreditsScene],
 };
 
 new Phaser.Game(config);
