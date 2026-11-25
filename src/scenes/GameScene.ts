@@ -8289,6 +8289,11 @@ export class GameScene extends Phaser.Scene {
       if (hitSolid) {
         if (p.starBomb) {
           this.triggerStarBomb(p.sprite.x, p.sprite.y);
+        } else if (p.starShatter) {
+          const spd = Math.hypot(p.vx, p.vy) || 1;
+          const sx = p.sprite.x - (p.vx / spd) * 4;
+          const sy = p.sprite.y - (p.vy / spd) * 4;
+          this.spawnStarShatterShards(sx, sy, p.ownerId);
         } else if (p.sporeBurst) {
           this.spawnEnemySporeBurst(p.sprite.x, p.sprite.y, p.damage, p.color);
         } else {
@@ -8440,7 +8445,7 @@ export class GameScene extends Phaser.Scene {
               this.damageEnemy(e, finalDmg);
             }
             if (p.starShatter) {
-              this.spawnStarShatterParticles(p.sprite.x, p.sprite.y);
+              this.spawnStarShatterShards(p.sprite.x, p.sprite.y, p.ownerId, e.uid);
             }
             if (p.voidRift) {
               this.spawnVoidUnderneathAnim(e.sprite.x, e.sprite.y, e.isBoss ? 22 : 15);
@@ -9078,6 +9083,22 @@ export class GameScene extends Phaser.Scene {
         });
       },
     });
+  }
+
+  private spawnStarShatterShards(x: number, y: number, ownerId: string, excludeUid?: string): void {
+    this.spawnStarShatterParticles(x, y);
+    const baseAngle = Math.random() * Math.PI * 2;
+    for (let k = 0; k < 6; k++) {
+      const a = baseAngle + (Math.PI * 2 * k) / 6 + Phaser.Math.FloatBetween(-0.15, 0.15);
+      this.createPlayerProjectile(x, y, a, 175, 1, 0xffe066, false, false, 0, false, false, ownerId, false, false, 340);
+      const shard = this.projectiles[this.projectiles.length - 1];
+      if (shard) {
+        shard.sprite.setTexture('proj_shard').setTint(k % 2 === 0 ? 0xffe066 : 0xffd275).setScale(0.75);
+        shard.rotateToVelocity = true;
+        shard.sprite.setRotation(a);
+        if (excludeUid) shard.hitUids.add(excludeUid);
+      }
+    }
   }
 
   private spawnStarShatterParticles(x: number, y: number): void {
