@@ -124,6 +124,7 @@ export interface NetInteractEvent {
     | 'crate'
     | 'enemy_hit'
     | 'pillar_use'
+    | 'boss_summon'
     | 'game_over';
   targetId?: string;
   lootKind?: 'shard' | 'item' | 'heart' | 'chest';

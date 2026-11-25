@@ -1045,7 +1045,10 @@ export class DungeonGenerator {
       (id) => !CONSUMABLES[id].merchantOnly && CONSUMABLES[id].rarity !== 'secret'
     );
     const normalArtifacts = ARTIFACT_IDS.filter(
-      (id) => !ARTIFACTS[id].merchantOnly && ARTIFACTS[id].rarity !== 'secret'
+      (id) =>
+        !ARTIFACTS[id].merchantOnly &&
+        ARTIFACTS[id].rarity !== 'secret' &&
+        !(levelIndex >= 6 && id === 'wandering_eye')
     );
 
     const wId = rng.pick(normalWeapons);

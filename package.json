@@ -1,6 +1,6 @@
 {
   "name": "glimmerdeep",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "16-bit top-down action roguelike",
   "type": "commonjs",
   "scripts": {

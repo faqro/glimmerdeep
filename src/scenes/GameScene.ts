@@ -269,6 +269,7 @@ export class GameScene extends Phaser.Scene {
   private l7BossGateUnlockedToastShown = false;
   private nyarlathotepSummonPending = false;
   private nyarlathotepSummoning = false;
+  private nyarWaitToastCooldownMs = 0;
   private nyarGfx?: Phaser.GameObjects.Graphics;
   private nyarArmState: 'idle' | 'extending' | 'holding' | 'recoiling' = 'idle';
   private nyarArmAngle = 0;
@@ -394,6 +395,7 @@ export class GameScene extends Phaser.Scene {
     this.l7BossGateUnlockedToastShown = false;
     this.nyarlathotepSummonPending = false;
     this.nyarlathotepSummoning = false;
+    this.nyarWaitToastCooldownMs = 0;
     this.remotePlayers.clear();
     this.remotePlayerLastDirectAt.clear();
     this.remoteSprites.clear();
@@ -971,6 +973,18 @@ export class GameScene extends Phaser.Scene {
             }
           }
         }
+      } else if (ev.kind === 'boss_summon') {
+        if (
+          this.levelIndex === 6 &&
+          this.currentRoom.type === 'boss' &&
+          ev.gx === this.currentRoom.gx &&
+          ev.gy === this.currentRoom.gy &&
+          this.nyarlathotepSummonPending &&
+          !this.nyarlathotepSummoning &&
+          !this.currentRoom.bossDefeated
+        ) {
+          this.startNyarlathotepSummon(false);
+        }
       } else if (ev.kind === 'game_over') {
         if (ev.itemId === 'credits') {
           SoundSystem.stopBossEvilLaughLoop();
@@ -1463,6 +1477,7 @@ export class GameScene extends Phaser.Scene {
     this.nyarRainHeartAlt = false;
     this.nyarlathotepSummonPending = false;
     this.nyarlathotepSummoning = false;
+    this.nyarWaitToastCooldownMs = 0;
 
     if (wTiles > 11 || hTiles > 11) {
       const cam = this.cameras.main;
@@ -2262,6 +2277,33 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private smashCrate(cs: Phaser.Physics.Arcade.Sprite): void {
+    const ck = cs.getData('crateKey') as string | undefined;
+    if (ck) {
+      if (!this.currentRoom.brokenCrates) this.currentRoom.brokenCrates = [];
+      if (!this.currentRoom.brokenCrates.includes(ck)) {
+        this.currentRoom.brokenCrates.push(ck);
+      }
+      net.broadcastInteract({
+        peerId: this.playerState.id,
+        gx: this.currentRoom.gx,
+        gy: this.currentRoom.gy,
+        kind: 'crate',
+        targetId: ck,
+      });
+    }
+    this.spawnParticles(cs.x, cs.y, 0xb08968, 5);
+    const hasMothCrown = hasArtifact(this.playerState.inventory, 'moth_crown') !== -1;
+    if (hasMothCrown && Math.random() < 0.25) {
+      const uid = `cr_ht_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
+      this.spawnRoomLoot(uid, 'heart', cs.x, cs.y);
+    } else if (Math.random() < 0.4) {
+      const uid = `cr_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
+      this.spawnRoomLoot(uid, 'shard', cs.x, cs.y, undefined, 1);
+    }
+    cs.destroy();
+  }
+
   private destroyCrateByKey(crateKey: string, spawnParticles = true): void {
     this.crateGroup.getChildren().forEach((c) => {
       const cs = c as Phaser.Physics.Arcade.Sprite;
@@ -2454,7 +2496,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private isPointInSolidWall(x: number, y: number): boolean {
-    if (x < 22 || x > 154 || y < 22 || y > 154) return true;
+    const maxX = Math.max(154, this.roomWidthPx - 22);
+    const maxY = Math.max(154, this.roomHeightPx - 22);
+    if (x < 22 || x > maxX || y < 22 || y > maxY) return true;
     for (const obj of this.wallGroup.getChildren()) {
       const w = obj as Phaser.GameObjects.Rectangle;
       if (Math.abs(x - w.x) < 13 && Math.abs(y - w.y) < 13) return true;
@@ -2700,20 +2744,36 @@ export class GameScene extends Phaser.Scene {
         : aimAngle;
       const maxPull = bestEnemy
         ? Math.max(12, Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, bestEnemy.sprite.x, bestEnemy.sprite.y) - 10)
-        : 76;
+        : Math.max(160, Math.hypot(this.roomWidthPx, this.roomHeightPx));
       let destX = this.playerSprite.x;
       let destY = this.playerSprite.y;
-      for (let step = 12; step <= maxPull; step += 8) {
-        const cx = Phaser.Math.Clamp(this.playerSprite.x + Math.cos(targetAngle) * step, 20, 156);
-        const cy = Phaser.Math.Clamp(this.playerSprite.y + Math.sin(targetAngle) * step, 20, 156);
-        if (this.isPointInSolidWall(cx, cy)) break;
+      let hookX = destX;
+      let hookY = destY;
+      let wallHit = false;
+      const stepSize = bestEnemy ? 8 : 4;
+      const clampMaxX = Math.max(156, this.roomWidthPx - 20);
+      const clampMaxY = Math.max(156, this.roomHeightPx - 20);
+      for (let step = bestEnemy ? 12 : 4; step <= maxPull; step += stepSize) {
+        const cx = Phaser.Math.Clamp(this.playerSprite.x + Math.cos(targetAngle) * step, 20, clampMaxX);
+        const cy = Phaser.Math.Clamp(this.playerSprite.y + Math.sin(targetAngle) * step, 20, clampMaxY);
+        if (this.isPointInSolidWall(cx, cy)) {
+          wallHit = true;
+          hookX = cx;
+          hookY = cy;
+          break;
+        }
         destX = cx;
         destY = cy;
+        hookX = cx;
+        hookY = cy;
       }
       const hookGfx = this.add.graphics().setDepth(12);
       hookGfx.lineStyle(2, 0xcbd5e1, 0.9);
-      hookGfx.lineBetween(this.playerSprite.x, this.playerSprite.y, destX, destY);
+      hookGfx.lineBetween(this.playerSprite.x, this.playerSprite.y, hookX, hookY);
       this.time.delayedCall(140, () => hookGfx.destroy());
+      if (!bestEnemy && wallHit) {
+        this.spawnParticles(hookX, hookY, 0xcbd5e1, 6);
+      }
 
       this.invulnMs = Math.max(this.invulnMs, 400);
       this.tweens.add({
@@ -2729,7 +2789,7 @@ export class GameScene extends Phaser.Scene {
         },
       });
       SoundSystem.playSwing();
-      this.ui.showToast(bestEnemy ? 'Grapple Slam!' : 'Grappled!', '#cbd5e1');
+      this.ui.showToast(bestEnemy ? 'Grapple Slam!' : wallHit ? 'Grappled to Wall!' : 'Grappled!', '#cbd5e1');
     } else if (item.id === 'gravity_jar') {
       const cx = this.playerSprite.x;
       const cy = this.playerSprite.y;
@@ -3515,26 +3575,7 @@ export class GameScene extends Phaser.Scene {
         this.crateGroup.getChildren().forEach((c) => {
           const cs = c as Phaser.Physics.Arcade.Sprite;
           if (cs.active && Phaser.Math.Distance.Between(sx, sy, cs.x, cs.y) <= range) {
-            const ck = cs.getData('crateKey') as string | undefined;
-            if (ck) {
-              if (!this.currentRoom.brokenCrates) this.currentRoom.brokenCrates = [];
-              if (!this.currentRoom.brokenCrates.includes(ck)) {
-                this.currentRoom.brokenCrates.push(ck);
-              }
-              net.broadcastInteract({
-                peerId: this.playerState.id,
-                gx: this.currentRoom.gx,
-                gy: this.currentRoom.gy,
-                kind: 'crate',
-                targetId: ck,
-              });
-            }
-            this.spawnParticles(cs.x, cs.y, 0xb08968, 5);
-            if (Math.random() < 0.4) {
-              const uid = `cr_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
-              this.spawnRoomLoot(uid, 'shard', cs.x, cs.y, undefined, 1);
-            }
-            cs.destroy();
+            this.smashCrate(cs);
           }
         });
       } else if (weaponId === 'cloudbreaker') {
@@ -5722,26 +5763,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (hitCrate) {
-      const ck = hitCrate.getData('crateKey') as string | undefined;
-      if (ck) {
-        if (!this.currentRoom.brokenCrates) this.currentRoom.brokenCrates = [];
-        if (!this.currentRoom.brokenCrates.includes(ck)) {
-          this.currentRoom.brokenCrates.push(ck);
-        }
-        net.broadcastInteract({
-          peerId: this.playerState.id,
-          gx: this.currentRoom.gx,
-          gy: this.currentRoom.gy,
-          kind: 'crate',
-          targetId: ck,
-        });
-      }
-      this.spawnParticles(hitCrate.x, hitCrate.y, 0xb08968, 5);
-      if (Math.random() < 0.4) {
-        const uid = `cr_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
-        this.spawnRoomLoot(uid, 'shard', hitCrate.x, hitCrate.y, undefined, 1);
-      }
-      hitCrate.destroy();
+      this.smashCrate(hitCrate);
       this.cameras.main.shake(100, 0.008);
     }
 
@@ -6970,8 +6992,24 @@ export class GameScene extends Phaser.Scene {
     return this.countClearedLevel7Chambers() >= 8;
   }
 
-  private updateLevel7Events(_delta: number): void {
+  private areAllPlayersInBossRoom(): boolean {
+    if (net.mode === 'solo') return true;
+    const bossGx = this.currentRoom.gx;
+    const bossGy = this.currentRoom.gy;
+    for (const peerId of net.players.keys()) {
+      if (peerId === this.playerState.id) continue;
+      const st = this.remotePlayers.get(peerId);
+      if (!st) return false;
+      if (!st.downed && (st.gx !== bossGx || st.gy !== bossGy)) return false;
+    }
+    return true;
+  }
+
+  private updateLevel7Events(delta: number): void {
     if (this.levelIndex !== 6) return;
+    if (this.nyarWaitToastCooldownMs > 0) {
+      this.nyarWaitToastCooldownMs = Math.max(0, this.nyarWaitToastCooldownMs - delta);
+    }
 
     // Hallway mystery whispers as the player walks further right
     if (this.currentRoom.gx === 0 && this.currentRoom.gy === 1) {
@@ -6995,10 +7033,27 @@ export class GameScene extends Phaser.Scene {
       this.currentRoom.type === 'boss' &&
       this.nyarlathotepSummonPending &&
       !this.nyarlathotepSummoning &&
-      !this.currentRoom.bossDefeated &&
-      this.playerSprite.x >= 68
+      !this.currentRoom.bossDefeated
     ) {
-      this.startNyarlathotepSummon();
+      const localTriggered = !this.playerState.downed && this.playerSprite.x >= 68;
+      const remoteTriggered =
+        net.mode !== 'solo' &&
+        Array.from(this.remotePlayers.values()).some(
+          (p) =>
+            !p.downed &&
+            p.gx === this.currentRoom.gx &&
+            p.gy === this.currentRoom.gy &&
+            p.x >= 68
+        );
+
+      if (localTriggered || remoteTriggered) {
+        if (this.areAllPlayersInBossRoom()) {
+          this.startNyarlathotepSummon(true);
+        } else if (localTriggered && this.nyarWaitToastCooldownMs <= 0) {
+          this.nyarWaitToastCooldownMs = 3000;
+          this.ui.showToast('Waiting for teammates in Boss Room!', '#ffe066');
+        }
+      }
     }
   }
 
@@ -7079,9 +7134,17 @@ export class GameScene extends Phaser.Scene {
     return { opening, taunts };
   }
 
-  private startNyarlathotepSummon(): void {
+  private startNyarlathotepSummon(broadcast = true): void {
     this.nyarlathotepSummonPending = false;
     this.nyarlathotepSummoning = true;
+    if (broadcast && net.mode !== 'solo') {
+      net.broadcastInteract({
+        peerId: this.playerState.id,
+        gx: this.currentRoom.gx,
+        gy: this.currentRoom.gy,
+        kind: 'boss_summon',
+      });
+    }
     this.currentRoom.doorsLocked = true;
     this.updateDoorVisuals();
     SoundSystem.playBossSpawn();
