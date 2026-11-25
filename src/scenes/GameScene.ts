@@ -237,6 +237,8 @@ export class GameScene extends Phaser.Scene {
   private projectiles: ActiveProjectile[] = [];
   private hazards: ActiveHazard[] = [];
   private slimeSplatters: Array<{ x: number; y: number; radius: number; gfx: Phaser.GameObjects.Graphics; lifeMs: number; fromEnemy?: boolean }> = [];
+  private playerHitFlashMs = 0;
+  private playerSlowTinted = false;
   private cometTrailActiveMs = 0;
   private cometTrailAccumMs = 0;
   private cometTrailNodes: Array<{ x: number; y: number; gfx: Phaser.GameObjects.Graphics; lifeMs: number; hitUids: Set<string> }> = [];
@@ -672,6 +674,8 @@ export class GameScene extends Phaser.Scene {
       this.summonedSkeletons = [];
       this.activeEnemies = [];
       this.slimeSplatters = [];
+      this.playerHitFlashMs = 0;
+      this.playerSlowTinted = false;
       this.pillarObjs = [];
       this.projectiles = [];
       this.remotePlayerLastDirectAt.clear();
@@ -715,6 +719,19 @@ export class GameScene extends Phaser.Scene {
           this.handlePrimaryAttack();
         }
       });
+      this.input.on(
+        'wheel',
+        (
+          _pointer: Phaser.Input.Pointer,
+          _currentlyOver: Phaser.GameObjects.GameObject[],
+          _deltaX: number,
+          deltaY: number
+        ) => {
+          if (this.paused || this.ui.isOverlayOpen() || this.playerState.downed || deltaY === 0) return;
+          const step = deltaY > 0 ? 1 : 2;
+          this.playerState.activeSlot = (this.playerState.activeSlot + step) % 3;
+        }
+      );
     } else {
       const unsubBtn = mobileInput.onButton((btn) => {
         if (btn === 'tab') {
@@ -1528,8 +1545,8 @@ export class GameScene extends Phaser.Scene {
         const off = skOffsets[sk.formationIndex % skOffsets.length];
         sk.sprite
           .setPosition(
-            Phaser.Math.Clamp(spawnX + off.dx, 24, 152),
-            Phaser.Math.Clamp(spawnY + off.dy, 24, 152)
+            Phaser.Math.Clamp(spawnX + off.dx, 24, Math.max(24, this.roomWidthPx - 24)),
+            Phaser.Math.Clamp(spawnY + off.dy, 24, Math.max(24, this.roomHeightPx - 24))
           )
           .setVelocity(0, 0)
           .setVisible(true);
@@ -2783,8 +2800,33 @@ export class GameScene extends Phaser.Scene {
         duration: 110,
         ease: 'Quad.easeOut',
         onComplete: () => {
+          const hitDirectEnemy = Boolean(bestEnemy);
           if (bestEnemy?.sprite.active) {
+            const bx = bestEnemy.sprite.x;
+            const by = bestEnemy.sprite.y;
             this.damageEnemy(bestEnemy, 2, targetAngle);
+            for (const e of [...this.activeEnemies]) {
+              if (e === bestEnemy || !e.sprite.active) continue;
+              const d = Phaser.Math.Distance.Between(bx, by, e.sprite.x, e.sprite.y);
+              if (d <= 26) {
+                const kbAngle = d > 2 ? Phaser.Math.Angle.Between(bx, by, e.sprite.x, e.sprite.y) : targetAngle;
+                this.damageEnemy(e, 2, kbAngle);
+              }
+            }
+          } else if (!hitDirectEnemy && wallHit) {
+            let slammedAny = false;
+            for (const e of [...this.activeEnemies]) {
+              if (!e.sprite.active) continue;
+              const d = Phaser.Math.Distance.Between(hookX, hookY, e.sprite.x, e.sprite.y);
+              if (d <= 28) {
+                const kbAngle = d > 2 ? Phaser.Math.Angle.Between(hookX, hookY, e.sprite.x, e.sprite.y) : targetAngle;
+                this.damageEnemy(e, 2, kbAngle);
+                slammedAny = true;
+              }
+            }
+            if (slammedAny) {
+              this.spawnParticles(destX, destY, 0xcbd5e1, 6);
+            }
           }
         },
       });
@@ -2801,8 +2843,8 @@ export class GameScene extends Phaser.Scene {
         const a = Phaser.Math.Angle.Between(e.sprite.x, e.sprite.y, cx, cy);
         const d = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, cx, cy);
         const pull = Math.max(0, Math.min(54, d - 18));
-        const nx = Phaser.Math.Clamp(e.sprite.x + Math.cos(a) * pull, 22, 154);
-        const ny = Phaser.Math.Clamp(e.sprite.y + Math.sin(a) * pull, 22, 154);
+        const nx = Phaser.Math.Clamp(e.sprite.x + Math.cos(a) * pull, 22, Math.max(22, this.roomWidthPx - 22));
+        const ny = Phaser.Math.Clamp(e.sprite.y + Math.sin(a) * pull, 22, Math.max(22, this.roomHeightPx - 22));
         if (!this.isPointInSolidWall(nx, ny)) {
           e.sprite.setPosition(nx, ny);
         }
@@ -2897,8 +2939,8 @@ export class GameScene extends Phaser.Scene {
       if (nearest) {
         const ox = this.playerSprite.x;
         const oy = this.playerSprite.y;
-        const tx = Phaser.Math.Clamp(nearest.sprite.x, 20, 156);
-        const ty = Phaser.Math.Clamp(nearest.sprite.y, 20, 156);
+        const tx = Phaser.Math.Clamp(nearest.sprite.x, 20, Math.max(20, this.roomWidthPx - 20));
+        const ty = Phaser.Math.Clamp(nearest.sprite.y, 20, Math.max(20, this.roomHeightPx - 20));
         this.playerSprite.setPosition(tx, ty);
         nearest.sprite.setPosition(ox, oy);
         this.invulnMs = Math.max(this.invulnMs, 450);
@@ -2908,8 +2950,8 @@ export class GameScene extends Phaser.Scene {
         SoundSystem.playPickup();
         this.ui.showToast('Swapped & Shocked!', '#6ef3ff');
       } else {
-        const nx = 176 - this.playerSprite.x;
-        const ny = 176 - this.playerSprite.y;
+        const nx = this.roomWidthPx - this.playerSprite.x;
+        const ny = this.roomHeightPx - this.playerSprite.y;
         if (!this.isPointInSolidWall(nx, ny)) this.playerSprite.setPosition(nx, ny);
         this.invulnMs = Math.max(this.invulnMs, 400);
         SoundSystem.playPickup();
@@ -3098,7 +3140,7 @@ export class GameScene extends Phaser.Scene {
 
     for (const e of [...this.activeEnemies]) {
       if (e.sprite.active && Phaser.Math.Distance.Between(x, y, e.sprite.x, e.sprite.y) <= 68) {
-        this.damageEnemy(e, 5);
+        this.damageEnemy(e, 10);
       }
     }
 
@@ -3702,8 +3744,8 @@ export class GameScene extends Phaser.Scene {
       ];
       for (const idx of missingIndices) {
         const off = spawnOffsets[idx];
-        const sx = Phaser.Math.Clamp(x + off.dx, 24, 152);
-        const sy = Phaser.Math.Clamp(y + off.dy, 24, 152);
+        const sx = Phaser.Math.Clamp(x + off.dx, 24, Math.max(24, this.roomWidthPx - 24));
+        const sy = Phaser.Math.Clamp(y + off.dy, 24, Math.max(24, this.roomHeightPx - 24));
         const skSprite = this.physics.add.sprite(sx, sy + 6, 'ally_skeleton', 0).setDepth(9);
         skSprite.setSize(10, 12);
         skSprite.setOffset(3, 4);
@@ -4615,12 +4657,10 @@ export class GameScene extends Phaser.Scene {
 
     this.playerState.hp = Math.max(0, this.playerState.hp - dmg);
     this.invulnMs = 750;
+    this.playerHitFlashMs = 120;
     SoundSystem.playPlayerHurt();
     this.cameras.main.shake(130, 0.015);
     this.playerSprite.setTint(0xffffff).setTintMode(Phaser.TintModes.FILL);
-    this.time.delayedCall(120, () => {
-      if (this.playerSprite.active) this.playerSprite.clearTint();
-    });
 
     if (this.playerState.hp <= 0) {
       this.onPlayerZeroHp();
@@ -5065,6 +5105,28 @@ export class GameScene extends Phaser.Scene {
     this.updateEnemies(time, delta);
     this.updateProjectiles(delta);
     this.updateSlimeSplatters(delta);
+    if (this.playerHitFlashMs > 0) {
+      this.playerHitFlashMs -= delta;
+      if (this.playerHitFlashMs <= 0) {
+        this.playerHitFlashMs = 0;
+        if (this.playerSprite.active) {
+          this.playerSprite.clearTint();
+          this.playerSlowTinted = false;
+        }
+      }
+    }
+    if (this.playerHitFlashMs <= 0 && this.playerSprite.active) {
+      const isSlowed = !this.playerState.downed && StatusEffectManager.has(this.playerState.statusEffects, 'sluggish');
+      if (isSlowed) {
+        if (!this.playerSlowTinted) {
+          this.playerSprite.setTint(0x55ff88);
+          this.playerSlowTinted = true;
+        }
+      } else if (this.playerSlowTinted) {
+        this.playerSprite.clearTint();
+        this.playerSlowTinted = false;
+      }
+    }
     this.updateCometTrail(delta);
     this.updateHazardsAndLoot(delta);
     this.updatePuzzlePlates();
@@ -5780,17 +5842,19 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.beamDamageTickMs = 120;
       if (!this.currentRoom.secretRevealed) {
+        const midX = this.roomWidthPx / 2;
+        const midY = this.roomHeightPx / 2;
         const hitSecretNorth =
-          this.currentRoom.connections.secretNorth && Math.abs(endX - 88) <= 12 && endY <= 20;
+          this.currentRoom.connections.secretNorth && Math.abs(endX - midX) <= 12 && endY <= 20;
         const hitSecretSouth =
           this.currentRoom.connections.secretSouth &&
-          Math.abs(endX - 88) <= 12 &&
+          Math.abs(endX - midX) <= 12 &&
           endY >= this.roomHeightPx - 20;
         const hitSecretWest =
-          this.currentRoom.connections.secretWest && Math.abs(endY - 88) <= 12 && endX <= 20;
+          this.currentRoom.connections.secretWest && Math.abs(endY - midY) <= 12 && endX <= 20;
         const hitSecretEast =
           this.currentRoom.connections.secretEast &&
-          Math.abs(endY - 88) <= 12 &&
+          Math.abs(endY - midY) <= 12 &&
           endX >= this.roomWidthPx - 20;
         if (hitSecretNorth || hitSecretSouth || hitSecretWest || hitSecretEast) {
           if (this.tryOpenAdjacentSecretWall(endX, endY)) {
@@ -6101,11 +6165,13 @@ export class GameScene extends Phaser.Scene {
     const steps = Math.ceil(dist / 6);
     const walls = this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[];
     const crates = this.crateGroup.getChildren() as Phaser.Physics.Arcade.Sprite[];
+    const maxX = this.roomWidthPx - 20;
+    const maxY = this.roomHeightPx - 20;
     for (let s = 1; s < steps; s++) {
       const t = s / steps;
       const px = x1 + (x2 - x1) * t;
       const py = y1 + (y2 - y1) * t;
-      if (px < 20 || px > 156 || py < 20 || py > 156) return false;
+      if (px < 20 || px > maxX || py < 20 || py > maxY) return false;
       for (const w of walls) {
         if (w.active && Math.abs(px - w.x) < 11 && Math.abs(py - w.y) < 11) return false;
       }
@@ -6124,12 +6190,14 @@ export class GameScene extends Phaser.Scene {
       return { x: toX, y: toY };
     }
 
-    const blocked: boolean[][] = Array.from({ length: 11 }, (_, ty) =>
-      Array.from({ length: 11 }, (__, tx) => tx === 0 || tx === 10 || ty === 0 || ty === 10)
+    const cols = Math.max(11, Math.round(this.roomWidthPx / 16));
+    const rows = Math.max(11, Math.round(this.roomHeightPx / 16));
+    const blocked: boolean[][] = Array.from({ length: rows }, (_, ty) =>
+      Array.from({ length: cols }, (__, tx) => tx === 0 || tx === cols - 1 || ty === 0 || ty === rows - 1)
     );
     const markBlocked = (wx: number, wy: number) => {
-      const tx = Phaser.Math.Clamp(Math.floor(wx / 16), 0, 10);
-      const ty = Phaser.Math.Clamp(Math.floor(wy / 16), 0, 10);
+      const tx = Phaser.Math.Clamp(Math.floor(wx / 16), 0, cols - 1);
+      const ty = Phaser.Math.Clamp(Math.floor(wy / 16), 0, rows - 1);
       blocked[ty][tx] = true;
     };
     for (const w of this.wallGroup.getChildren() as Phaser.GameObjects.Rectangle[]) {
@@ -6142,17 +6210,17 @@ export class GameScene extends Phaser.Scene {
       if (b.sprite.active) markBlocked(b.sprite.x, b.sprite.y);
     }
 
-    const sx = Phaser.Math.Clamp(Math.floor(fromX / 16), 1, 9);
-    const sy = Phaser.Math.Clamp(Math.floor(fromY / 16), 1, 9);
-    const gx = Phaser.Math.Clamp(Math.floor(toX / 16), 1, 9);
-    const gy = Phaser.Math.Clamp(Math.floor(toY / 16), 1, 9);
+    const sx = Phaser.Math.Clamp(Math.floor(fromX / 16), 1, cols - 2);
+    const sy = Phaser.Math.Clamp(Math.floor(fromY / 16), 1, rows - 2);
+    const gx = Phaser.Math.Clamp(Math.floor(toX / 16), 1, cols - 2);
+    const gy = Phaser.Math.Clamp(Math.floor(toY / 16), 1, rows - 2);
     if (sx === gx && sy === gy) {
       return { x: toX, y: toY };
     }
 
-    const parent = new Int16Array(121).fill(-1);
-    const startIdx = sy * 11 + sx;
-    const goalIdx = gy * 11 + gx;
+    const parent = new Int16Array(cols * rows).fill(-1);
+    const startIdx = sy * cols + sx;
+    const goalIdx = gy * cols + gx;
     parent[startIdx] = startIdx;
     const queue: number[] = [startIdx];
     let head = 0;
@@ -6177,15 +6245,15 @@ export class GameScene extends Phaser.Scene {
         found = true;
         break;
       }
-      const cx = cur % 11;
-      const cy = Math.floor(cur / 11);
+      const cx = cur % cols;
+      const cy = Math.floor(cur / cols);
       for (const [dx, dy] of dirs) {
         const nx = cx + dx;
         const ny = cy + dy;
-        if (nx < 1 || nx > 9 || ny < 1 || ny > 9) continue;
+        if (nx < 1 || nx > cols - 2 || ny < 1 || ny > rows - 2) continue;
         // Allow stepping into the goal cell even if an obstacle/enemy overlaps its tile,
         // otherwise require unblocked tiles (and both cardinal neighbors for diagonals).
-        const nIdx = ny * 11 + nx;
+        const nIdx = ny * cols + nx;
         if (nIdx !== goalIdx && blocked[ny][nx]) continue;
         if (dx !== 0 && dy !== 0 && (blocked[cy][nx] || blocked[ny][cx])) continue;
         if (parent[nIdx] !== -1) continue;
@@ -6206,8 +6274,8 @@ export class GameScene extends Phaser.Scene {
     while (parent[trace] !== startIdx && parent[trace] !== -1) {
       trace = parent[trace];
     }
-    const nextX = (trace % 11) * 16 + 8;
-    const nextY = Math.floor(trace / 11) * 16 + 8;
+    const nextX = (trace % cols) * 16 + 8;
+    const nextY = Math.floor(trace / cols) * 16 + 8;
     return { x: nextX, y: nextY };
   }
 
@@ -6247,8 +6315,8 @@ export class GameScene extends Phaser.Scene {
         }
 
         const flankAngle = (sk.formationIndex * Math.PI) / 2;
-        const desiredX = Phaser.Math.Clamp(nearest.sprite.x + Math.cos(flankAngle) * 11, 22, 154);
-        const desiredY = Phaser.Math.Clamp(nearest.sprite.y + Math.sin(flankAngle) * 11, 22, 154);
+        const desiredX = Phaser.Math.Clamp(nearest.sprite.x + Math.cos(flankAngle) * 11, 22, Math.max(22, this.roomWidthPx - 22));
+        const desiredY = Phaser.Math.Clamp(nearest.sprite.y + Math.sin(flankAngle) * 11, 22, Math.max(22, this.roomHeightPx - 22));
         const waypoint = this.getSkeletonPathWaypoint(sk.sprite.x, sk.sprite.y, desiredX, desiredY);
         const moveAngle = Phaser.Math.Angle.Between(sk.sprite.x, sk.sprite.y, waypoint.x, waypoint.y);
         const attackAngle = Phaser.Math.Angle.Between(sk.sprite.x, sk.sprite.y, nearest.sprite.x, nearest.sprite.y);
@@ -6266,8 +6334,8 @@ export class GameScene extends Phaser.Scene {
         }
       } else {
         const orbitAngle = (sk.formationIndex * Math.PI) / 2;
-        const targetX = Phaser.Math.Clamp(this.playerSprite.x + Math.cos(orbitAngle) * 18, 22, 154);
-        const targetY = Phaser.Math.Clamp(this.playerSprite.y + Math.sin(orbitAngle) * 18, 22, 154);
+        const targetX = Phaser.Math.Clamp(this.playerSprite.x + Math.cos(orbitAngle) * 18, 22, Math.max(22, this.roomWidthPx - 22));
+        const targetY = Phaser.Math.Clamp(this.playerSprite.y + Math.sin(orbitAngle) * 18, 22, Math.max(22, this.roomHeightPx - 22));
         const dist = Phaser.Math.Distance.Between(sk.sprite.x, sk.sprite.y, targetX, targetY);
         if (dist > 6) {
           const waypoint = this.getSkeletonPathWaypoint(sk.sprite.x, sk.sprite.y, targetX, targetY);

@@ -87,7 +87,7 @@ export const CONSUMABLES: Record<string, ConsumableDef> = {
     id: 'star_bomb',
     name: 'Star Bomb',
     rarity: 'common',
-    description: 'Explodes for 5 AoE dmg & opens secret walls.',
+    description: 'Explodes for 10 AoE dmg & opens secret walls.',
     maxUses: 1,
     iconKey: 'item_star_bomb',
     price: 14,
