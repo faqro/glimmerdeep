@@ -4,7 +4,8 @@ import { SoundSystem } from '../audio/SoundSystem';
 import { BOSSES, ENEMIES } from '../data/enemies';
 import { applyRarityTextStyle, ARTIFACTS, CONSUMABLES, RARITY_ORDER, stopRarityGlow } from '../data/items';
 import { WEAPONS } from '../data/weapons';
-import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { isMobileMode, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { inputSystem } from '../systems/InputSystem';
 import { JournalSystem } from '../systems/JournalSystem';
 import { ItemRarity } from '../types/game';
 
@@ -132,27 +133,27 @@ export class JournalScene extends Phaser.Scene {
       this.input.keyboard?.on('keydown-ESC', onBack);
       this.input.keyboard?.on('keydown-LEFT', onPrev);
       this.input.keyboard?.on('keydown-RIGHT', onNext);
-    } else {
-      this.unsubNav = mobileInput.onNav((dir) => this.handleMobileNav(dir));
-      this.unsubBtn = mobileInput.onButton((btn) => {
-        if (btn === 'esc') {
-          onBack();
-          return;
-        }
-        if (btn !== 'e' && btn !== 'space') return;
-        if (this.mobileArea === 'tabs') {
-          this.selectCategory(this.tabButtons[this.mobileTabIdx].cat);
-        } else if (this.mobileArea === 'nav') {
-          if (this.mobileNavIdx === 0) onPrev();
-          else if (this.mobileNavIdx === 1) onNext();
-          else onBack();
-        }
-      });
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-        this.unsubNav?.();
-        this.unsubBtn?.();
-      });
     }
+
+    this.unsubNav = inputSystem.onNav((dir) => this.handleMobileNav(dir));
+    this.unsubBtn = inputSystem.onButton((btn) => {
+      if (btn === 'esc') {
+        onBack();
+        return;
+      }
+      if (btn !== 'e' && btn !== 'space') return;
+      if (this.mobileArea === 'tabs') {
+        this.selectCategory(this.tabButtons[this.mobileTabIdx].cat);
+      } else if (this.mobileArea === 'nav') {
+        if (this.mobileNavIdx === 0) onPrev();
+        else if (this.mobileNavIdx === 1) onNext();
+        else onBack();
+      }
+    });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.unsubNav?.();
+      this.unsubBtn?.();
+    });
 
     this.loadCategory();
   }
@@ -356,14 +357,15 @@ export class JournalScene extends Phaser.Scene {
   }
 
   private refreshTabsAndFocus(): void {
+    const showFocus = isMobileMode() || inputSystem.controlType === 'gamepad';
     this.tabButtons.forEach((tb, idx) => {
       const active = tb.cat === this.category;
-      const mobileFocused = isMobileMode() && this.mobileArea === 'tabs' && this.mobileTabIdx === idx;
+      const mobileFocused = showFocus && this.mobileArea === 'tabs' && this.mobileTabIdx === idx;
       tb.bg.setTexture(active || mobileFocused ? 'ui_btn_hover' : 'ui_btn');
       tb.txt.setTint(mobileFocused ? 0xffe066 : active ? 0x66ffd9 : 0xffffff);
     });
 
-    if (isMobileMode()) {
+    if (showFocus) {
       this.prevBtn.setTexture(this.mobileArea === 'nav' && this.mobileNavIdx === 0 ? 'ui_btn_hover' : 'ui_btn');
       this.prevTxt.setTint(this.mobileArea === 'nav' && this.mobileNavIdx === 0 ? 0xffe066 : 0xffffff);
       this.nextBtn.setTexture(this.mobileArea === 'nav' && this.mobileNavIdx === 1 ? 'ui_btn_hover' : 'ui_btn');

@@ -1,6 +1,7 @@
 import { BOSSES, ENEMIES } from '../data/enemies';
 import { ARTIFACTS, CONSUMABLES } from '../data/items';
 import { WEAPONS } from '../data/weapons';
+import { steamSystem } from './SteamSystem';
 
 const JOURNAL_STORAGE_KEY = 'glimmerdeep_journal_v1';
 
@@ -45,6 +46,10 @@ class JournalManager {
       localStorage.setItem(JOURNAL_STORAGE_KEY, JSON.stringify(this.data));
     } catch {
       // ignore storage errors
+    }
+    const total = this.data.enemies.length + this.data.bosses.length + this.data.items.length;
+    if (total >= 10) {
+      void steamSystem.unlockAchievement('ACH_LORE_SEEKER');
     }
   }
 

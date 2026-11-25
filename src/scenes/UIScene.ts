@@ -5,11 +5,15 @@ import { BIOMES, LEVEL_MODIFIERS } from '../data/biomes';
 import { applyRarityTextStyle, ARTIFACTS, CONSUMABLES, STATUS_EFFECTS } from '../data/items';
 import { WEAPONS } from '../data/weapons';
 import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { getControlIconTexture } from '../systems/ControlHints';
+import { GameAction, inputSystem, localCoopSession } from '../systems/InputSystem';
+import { settingsSystem } from '../systems/SettingsSystem';
 import { PlayerStateSnapshot, RoomData, ShopStockItem } from '../types/game';
 
 export interface UIStatePayload {
   player: PlayerStateSnapshot;
   allies: PlayerStateSnapshot[];
+  localPlayers?: PlayerStateSnapshot[];
   levelIndex: number;
   modifierId: string;
   rooms: RoomData[][];
@@ -33,17 +37,36 @@ export class UIScene extends Phaser.Scene {
   private slotBgs: Phaser.GameObjects.Image[] = [];
   private slotIcons: Phaser.GameObjects.Image[] = [];
   private slotBars: Phaser.GameObjects.Graphics[] = [];
+  private slotKeyIcons: Phaser.GameObjects.Image[] = [];
+  private slotBumperHints: Phaser.GameObjects.Image[] = [];
   private selectedLabel!: Phaser.GameObjects.BitmapText;
   private selectedDescLabel!: Phaser.GameObjects.BitmapText;
   private lastSelectedRarityKey: string | null = null;
+  private hintRows: Array<{ action: GameAction; icon: Phaser.GameObjects.Image; label: Phaser.GameObjects.BitmapText }> = [];
 
+  private minimapPanel!: Phaser.GameObjects.Image;
   private minimapGfx!: Phaser.GameObjects.Graphics;
   private roomCoordTxt!: Phaser.GameObjects.BitmapText;
+  private shardIcon!: Phaser.GameObjects.Image;
+  private singlePlayerNodes: Phaser.GameObjects.GameObject[] = [];
+  private localCornerHUDs: Array<{
+    container: Phaser.GameObjects.Container;
+    nameTxt: Phaser.GameObjects.BitmapText;
+    shardTxt: Phaser.GameObjects.BitmapText;
+    itemTxt: Phaser.GameObjects.BitmapText;
+    slotBgs: Phaser.GameObjects.Image[];
+    slotIcons: Phaser.GameObjects.Image[];
+    slotBars: Phaser.GameObjects.Graphics[];
+    hearts: Phaser.GameObjects.Image[];
+    shields: Phaser.GameObjects.Image[];
+    stams: Phaser.GameObjects.Image[];
+  }> = [];
   private bossContainer!: Phaser.GameObjects.Container;
   private bossNameTxt!: Phaser.GameObjects.BitmapText;
   private bossBarGfx!: Phaser.GameObjects.Graphics;
 
   private promptBg!: Phaser.GameObjects.Rectangle;
+  private promptIcon!: Phaser.GameObjects.Image;
   private promptTxt!: Phaser.GameObjects.BitmapText;
   private toastTxt!: Phaser.GameObjects.BitmapText;
   private toastTimer?: Phaser.Time.TimerEvent;
@@ -77,6 +100,7 @@ export class UIScene extends Phaser.Scene {
   private shopFocusIndex = 0; // 0..2 = cards, 3 = CLOSE
   private unsubNav?: () => void;
   private unsubBtn?: () => void;
+  private unsubCtrl?: () => void;
 
   constructor() {
     super({ key: 'UIScene' });
@@ -87,23 +111,44 @@ export class UIScene extends Phaser.Scene {
     this.slotBgs = [];
     this.slotIcons = [];
     this.slotBars = [];
+    this.slotKeyIcons = [];
+    this.slotBumperHints = [];
     for (let i = 0; i < 3; i++) {
       const sx = 38;
       const sy = 32 + i * 40;
       const bg = this.add.image(sx, sy, 'ui_slot').setScale(1.5);
       const icon = this.add.image(sx, sy - 2, 'item_moonblade').setScale(1.5).setVisible(false);
       const bar = this.add.graphics();
-      addPixelText(this, sx - 13, sy - 14, `${i + 1}`, 8, 0x9d8ce0, 0, 0);
+      const keyIcon = this.add.image(sx - 15, sy - 11, `key_${i + 1}`).setScale(0.85);
       this.slotBgs.push(bg);
       this.slotIcons.push(icon);
       this.slotBars.push(bar);
+      this.slotKeyIcons.push(keyIcon);
     }
+
+    const lbHint = this.add.image(16, 12, 'pad_lb').setScale(0.85).setVisible(false);
+    const rbHint = this.add.image(16, 132, 'pad_rb').setScale(0.85).setVisible(false);
+    this.slotBumperHints.push(lbHint, rbHint);
 
     this.selectedLabel = addPixelText(this, 38, 138, '', 8, 0xffffff, 0.5, 0, 68);
     this.selectedDescLabel = addPixelText(this, 38, 160, '', 8, 0xb8a1ff, 0.5, 0, 68);
 
+    // Compact live control hints in bottom-left margin
+    this.hintRows = [];
+    const hintDefs: Array<{ action: GameAction; label: string; y: number }> = [
+      { action: 'drop', label: 'DROP', y: 220 },
+      { action: 'dodge', label: 'DASH', y: 235 },
+      { action: 'map', label: 'MAP', y: 250 },
+    ];
+    for (const hd of hintDefs) {
+      const icon = this.add.image(20, hd.y, getControlIconTexture(hd.action)).setScale(0.95);
+      const label = addPixelText(this, 35, hd.y, hd.label, 8, 0x9d8ce0, 0, 0.5);
+      this.hintRows.push({ action: hd.action, icon, label });
+    }
+    this.refreshControlHints();
+
     // Right margin: Compact 6x6 Minimap + Room Coordinate Label (A1..F6)
-    this.add.image(323, 32, 'ui_panel').setDisplaySize(50, 50).setAlpha(0.88);
+    this.minimapPanel = this.add.image(323, 32, 'ui_panel').setDisplaySize(50, 50).setAlpha(0.88);
     this.minimapGfx = this.add.graphics();
     this.roomCoordTxt = addPixelText(this, 323, 61, 'A3', 8, 0xffe066, 0.5, 0);
 
@@ -130,7 +175,7 @@ export class UIScene extends Phaser.Scene {
       this.stamSprites.push(s);
     }
 
-    this.add.image(333, 108, 'item_shard').setScale(0.75);
+    this.shardIcon = this.add.image(333, 108, 'item_shard').setScale(0.75);
     this.shardText = addPixelText(this, 340, 104, '0', 8, 0x6ef3ff, 0, 0);
 
     this.statusContainer = this.add.container(292, 120);
@@ -149,9 +194,30 @@ export class UIScene extends Phaser.Scene {
       this.allyLabels.push(txt);
     }
 
+    this.singlePlayerNodes = [
+      ...this.slotBgs,
+      ...this.slotIcons,
+      ...this.slotBars,
+      ...this.slotKeyIcons,
+      ...this.slotBumperHints,
+      this.selectedLabel,
+      this.selectedDescLabel,
+      ...this.hintRows.flatMap((r) => [r.icon, r.label]),
+      ...this.heartSprites,
+      this.shieldContainer,
+      ...this.stamSprites,
+      this.shardIcon,
+      this.shardText,
+      this.statusContainer,
+      this.allyContainer,
+    ];
+
+    this.buildLocalCornerHUDs();
+
     // Bottom center (below room) for prompts & toasts
-    this.promptBg = this.add.rectangle(180, 254, 180, 12, 0x100d24, 0.85).setVisible(false);
-    this.promptTxt = addPixelText(this, 180, 254, '', 8, 0xffffff, 0.5, 0.5, 220).setVisible(false);
+    this.promptBg = this.add.rectangle(180, 254, 180, 14, 0x100d24, 0.85).setVisible(false);
+    this.promptIcon = this.add.image(180, 254, 'key_e').setScale(0.95).setVisible(false);
+    this.promptTxt = addPixelText(this, 180, 254, '', 8, 0xffffff, 0, 0.5, 220).setVisible(false);
 
     this.toastTxt = addPixelText(this, 180, 12, '', 8, 0x66ffd9, 0.5, 0, 220).setDepth(20).setVisible(false);
 
@@ -167,14 +233,18 @@ export class UIScene extends Phaser.Scene {
     this.buildPauseOverlay();
     this.buildSpectateBar();
 
-    if (isMobileMode()) {
-      this.unsubNav = mobileInput.onNav((dir) => this.handleMobileNav(dir));
-      this.unsubBtn = mobileInput.onButton((btn) => this.handleMobileButton(btn));
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-        this.unsubNav?.();
-        this.unsubBtn?.();
-      });
-    }
+    this.unsubNav = inputSystem.onNav((dir) => this.handleMobileNav(dir));
+    this.unsubBtn = inputSystem.onButton((btn) => this.handleMobileButton(btn));
+    this.unsubCtrl = inputSystem.onControlTypeChange(() => {
+      this.refreshControlHints();
+      this.refreshPauseFocus();
+      this.refreshShopFocus();
+    });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.unsubNav?.();
+      this.unsubBtn?.();
+      this.unsubCtrl?.();
+    });
   }
 
   private buildSpectateBar(): void {
@@ -295,9 +365,9 @@ export class UIScene extends Phaser.Scene {
       this.overlayOpenedFrame = this.game.loop.frame;
       if (isMobileMode()) {
         mobileInput.clearQueuedActions();
-        this.pauseFocusIndex = 0;
-        this.refreshPauseFocus();
       }
+      this.pauseFocusIndex = 0;
+      this.refreshPauseFocus();
     } else if (isMobileMode()) {
       mobileInput.clearQueuedActions();
     }
@@ -316,19 +386,15 @@ export class UIScene extends Phaser.Scene {
     const dim = this.add.rectangle(180, 135, 360, 270, 0x0b0917, 0.78);
     const panel = this.add.image(180, 135, 'ui_panel').setDisplaySize(344, 218);
     const title = addPixelText(this, 180, 38, "MIMI'S MAGICAL WARES", 8, 0xffd275, 0.5, 0.5);
-    const sub = addPixelText(
-      this,
-      180,
-      52,
-      isMobileMode()
-        ? `Shards: ${shards} (Stick/D-Pad Move, E Buy, Esc Close)`
-        : `Shards: ${shards} (Click item, Esc close)`,
-      8,
-      0x6ef3ff,
-      0.5,
-      0.5,
-      320
-    );
+    const shopHint =
+      inputSystem.controlType === 'gamepad'
+        ? inputSystem.gamepadBrand === 'playstation'
+          ? `Shards: ${shards} (Stick/D-Pad Move, Cross Buy, Circle Close)`
+          : `Shards: ${shards} (Stick/D-Pad Move, A Buy, B Close)`
+        : inputSystem.controlType === 'touch'
+          ? `Shards: ${shards} (Stick/D-Pad Move, E Buy, Esc Close)`
+          : `Shards: ${shards} (Click item, Esc close)`;
+    const sub = addPixelText(this, 180, 52, shopHint, 8, 0x6ef3ff, 0.5, 0.5, 320);
 
     this.shopOverlay.add([dim, panel, title, sub]);
 
@@ -364,10 +430,8 @@ export class UIScene extends Phaser.Scene {
     this.shopOverlay.add([this.shopCloseTxt, this.shopFocusRing]);
     this.shopOverlay.setVisible(true);
 
-    if (isMobileMode()) {
-      this.shopFocusIndex = Math.min(this.shopFocusIndex, Math.max(0, this.shopCards.length - 1));
-      this.refreshShopFocus();
-    }
+    this.shopFocusIndex = Math.min(this.shopFocusIndex, Math.max(0, this.shopCards.length - 1));
+    this.refreshShopFocus();
   }
 
   closeShop(): void {
@@ -431,16 +495,22 @@ export class UIScene extends Phaser.Scene {
   }
 
   private refreshPauseFocus(): void {
-    if (!isMobileMode()) return;
+    const showFocus = isMobileMode() || inputSystem.controlType === 'gamepad';
     this.pauseButtons.forEach((b, idx) => {
-      const focused = idx === this.pauseFocusIndex;
+      const focused = showFocus && idx === this.pauseFocusIndex;
       b.bg.setTexture(focused ? 'ui_btn_hover' : 'ui_btn');
       b.txt.setTint(focused ? 0xffe066 : 0xffffff);
     });
   }
 
   private refreshShopFocus(): void {
-    if (!isMobileMode() || !this.shopFocusRing || !this.shopCloseTxt) return;
+    if (!this.shopFocusRing || !this.shopCloseTxt) return;
+    const showFocus = isMobileMode() || inputSystem.controlType === 'gamepad';
+    if (!showFocus) {
+      this.shopFocusRing.setVisible(false);
+      this.shopCloseTxt.setTint(0xf49ac1);
+      return;
+    }
     if (this.shopFocusIndex < 3) {
       const cx = 72 + this.shopFocusIndex * 108;
       this.shopFocusRing.setPosition(cx, 134).setSize(106, 134).setVisible(true);
@@ -448,6 +518,28 @@ export class UIScene extends Phaser.Scene {
     } else {
       this.shopFocusRing.setVisible(false);
       this.shopCloseTxt.setTint(0xffe066);
+    }
+  }
+
+  private refreshControlHints(): void {
+    const isPad = inputSystem.controlType === 'gamepad';
+    const isTouch = inputSystem.controlType === 'touch';
+    const showHints = settingsSystem.current.showControlHints;
+
+    for (const keyIcon of this.slotKeyIcons) {
+      keyIcon.setVisible(showHints && !isPad && !isTouch);
+    }
+    if (this.slotBumperHints.length === 2) {
+      this.slotBumperHints[0].setTexture(getControlIconTexture('prevSlot')).setVisible(showHints && isPad);
+      this.slotBumperHints[1].setTexture(getControlIconTexture('nextSlot')).setVisible(showHints && isPad);
+    }
+
+    for (const row of this.hintRows) {
+      const tex = getControlIconTexture(row.action);
+      row.icon.setTexture(tex).setVisible(showHints);
+      const texW = row.icon.displayWidth;
+      row.icon.setX(Math.round(10 + texW / 2));
+      row.label.setX(Math.round(10 + texW + 4)).setVisible(showHints);
     }
   }
 
@@ -461,8 +553,189 @@ export class UIScene extends Phaser.Scene {
     });
   }
 
+  private buildLocalCornerHUDs(): void {
+    this.localCornerHUDs = [];
+    // P1: Top-Left (4, 4) | P2: Top-Right (254, 4) | P3: Bottom-Left (4, 210) | P4: Bottom-Right (254, 210)
+    const anchors = [
+      { x: 4, y: 4 },
+      { x: 254, y: 4 },
+      { x: 4, y: 210 },
+      { x: 254, y: 210 },
+    ];
+    const tagColors = [0x66ffd9, 0xffe066, 0xf49ac1, 0x6ef3ff];
+
+    for (let pIdx = 0; pIdx < 4; pIdx++) {
+      const { x, y } = anchors[pIdx];
+      const container = this.add.container(x, y).setVisible(false).setDepth(15);
+      const bg = this.add.rectangle(51, 28, 102, 56, 0x100d24, 0.86).setStrokeStyle(1, 0x5d4e9e);
+      const nameTxt = addPixelText(this, 4, 3, `P${pIdx + 1}`, 8, tagColors[pIdx], 0, 0);
+      const shIc = this.add.image(76, 6, 'item_shard').setScale(0.6);
+      const shardTxt = addPixelText(this, 82, 3, '0', 8, 0x6ef3ff, 0, 0);
+
+      const slotBgs: Phaser.GameObjects.Image[] = [];
+      const slotIcons: Phaser.GameObjects.Image[] = [];
+      const slotBars: Phaser.GameObjects.Graphics[] = [];
+      for (let s = 0; s < 3; s++) {
+        const sx = 12 + s * 18;
+        const sy = 20;
+        const sbg = this.add.image(sx, sy, 'ui_slot').setScale(0.72);
+        const sic = this.add.image(sx, sy - 1, 'item_moonblade').setScale(0.72).setVisible(false);
+        const sbar = this.add.graphics();
+        slotBgs.push(sbg);
+        slotIcons.push(sic);
+        slotBars.push(sbar);
+      }
+
+      const itemTxt = addPixelText(this, 4, 31, '', 8, 0xb8a1ff, 0, 0, 96);
+
+      const hearts: Phaser.GameObjects.Image[] = [];
+      for (let h = 0; h < 8; h++) {
+        const hi = this.add.image(7 + h * 7, 42, 'ui_heart_full').setScale(0.75);
+        hearts.push(hi);
+      }
+
+      const shields: Phaser.GameObjects.Image[] = [];
+      for (let sh = 0; sh < 4; sh++) {
+        const si = this.add.image(74 + sh * 6, 42, 'ui_shield').setScale(0.7).setVisible(false);
+        shields.push(si);
+      }
+
+      const stams: Phaser.GameObjects.Image[] = [];
+      for (let st = 0; st < 4; st++) {
+        const sti = this.add.image(7 + st * 7, 50, 'ui_stam_full').setScale(0.8);
+        stams.push(sti);
+      }
+
+      container.add([
+        bg,
+        nameTxt,
+        shIc,
+        shardTxt,
+        ...slotBgs,
+        ...slotIcons,
+        ...slotBars,
+        itemTxt,
+        ...hearts,
+        ...shields,
+        ...stams,
+      ]);
+      this.localCornerHUDs.push({
+        container,
+        nameTxt,
+        shardTxt,
+        itemTxt,
+        slotBgs,
+        slotIcons,
+        slotBars,
+        hearts,
+        shields,
+        stams,
+      });
+    }
+  }
+
   updateState(payload: UIStatePayload): void {
     this.lastPayload = payload;
+    const isLocalCoop = !!payload.localPlayers && payload.localPlayers.length > 0;
+
+    for (const node of this.singlePlayerNodes) {
+      if ('setVisible' in node && typeof (node as Phaser.GameObjects.Image).setVisible === 'function') {
+        (node as Phaser.GameObjects.Image).setVisible(!isLocalCoop);
+      }
+    }
+
+    if (isLocalCoop && payload.localPlayers) {
+      this.updateLocalCornerHUDs(payload.localPlayers);
+    } else {
+      for (const ch of this.localCornerHUDs) {
+        ch.container.setVisible(false);
+      }
+      this.updateSinglePlayerHUD(payload);
+    }
+
+    if (payload.spectating) {
+      this.spectateBar.setVisible(true);
+      this.spectateTxt.setText(`SPEC: ${payload.spectating.targetName.slice(0, 10)}`);
+      const multi = payload.spectating.count > 1;
+      this.spectatePrevBtn.setAlpha(multi ? 1 : 0.45);
+      this.spectateNextBtn.setAlpha(multi ? 1 : 0.45);
+    } else {
+      this.spectateBar.setVisible(false);
+    }
+
+    if (payload.promptText && !payload.spectating) {
+      let label = payload.promptText;
+      let action: GameAction | null = null;
+      if (label.startsWith('[E] ')) {
+        action = 'interact';
+        label = label.slice(4);
+      } else if (label.startsWith('[Q] ')) {
+        action = 'drop';
+        label = label.slice(4);
+      } else if (label.startsWith('[SPACE] ')) {
+        action = 'dodge';
+        label = label.slice(8);
+      } else if (label.startsWith('[TAB] ')) {
+        action = 'map';
+        label = label.slice(6);
+      }
+
+      this.promptTxt.setText(label).setVisible(true);
+      if (action) {
+        this.promptIcon.setTexture(getControlIconTexture(action)).setVisible(true);
+        const iconW = this.promptIcon.displayWidth;
+        const gap = 4;
+        const totalW = iconW + gap + this.promptTxt.width;
+        const leftX = Math.round(180 - totalW / 2);
+        this.promptIcon.setPosition(Math.round(leftX + iconW / 2), 254);
+        this.promptTxt.setOrigin(0, 0.5).setPosition(Math.round(leftX + iconW + gap), 254);
+        this.promptBg.setSize(totalW + 12, Math.max(14, this.promptTxt.height + 6)).setVisible(true);
+      } else {
+        this.promptIcon.setVisible(false);
+        this.promptTxt.setOrigin(0.5, 0.5).setPosition(180, 254);
+        this.promptBg.setSize(this.promptTxt.width + 10, this.promptTxt.height + 6).setVisible(true);
+      }
+    } else {
+      this.promptIcon.setVisible(false);
+      this.promptTxt.setVisible(false);
+      this.promptBg.setVisible(false);
+    }
+
+    if (payload.bossInfo && payload.bossInfo.hp > 0) {
+      this.bossContainer.setVisible(true);
+      this.toastTxt.setY(31);
+      this.bossNameTxt.setText(payload.bossInfo.name.toUpperCase());
+      this.bossBarGfx.clear();
+      const pct = Math.max(0, payload.bossInfo.hp / payload.bossInfo.maxHp);
+      this.bossBarGfx.fillStyle(0x100d24, 1);
+      this.bossBarGfx.fillRect(-84, 5, 168, 5);
+      this.bossBarGfx.fillStyle(payload.bossInfo.accent, 1);
+      this.bossBarGfx.fillRect(-83, 6, Math.floor(166 * pct), 3);
+    } else {
+      this.bossContainer.setVisible(false);
+      this.toastTxt.setY(12);
+    }
+
+    const hasBoss = !!(payload.bossInfo && payload.bossInfo.hp > 0);
+    if (isLocalCoop) {
+      const mapCenterY = hasBoss ? 48 : 26;
+      this.minimapPanel.setPosition(180, mapCenterY).setDisplaySize(44, 44);
+      this.roomCoordTxt.setPosition(208, mapCenterY);
+      this.renderMinimap(payload.rooms, payload.currentRoom, 162, mapCenterY - 18);
+    } else {
+      this.minimapPanel.setPosition(323, 32).setDisplaySize(50, 50);
+      this.roomCoordTxt.setPosition(323, 61);
+      this.renderMinimap(payload.rooms, payload.currentRoom, 305, 14);
+    }
+    const col = String.fromCharCode(65 + payload.currentRoom.gx);
+    const row = payload.currentRoom.gy + 1;
+    this.roomCoordTxt.setText(`${col}${row}`);
+    if (this.mapOverlay.visible) {
+      this.renderFullMap(payload);
+    }
+  }
+
+  private updateSinglePlayerHUD(payload: UIStatePayload): void {
     const p = payload.player;
 
     const numHearts = Math.min(this.heartSprites.length, Math.ceil(p.maxHp / 2));
@@ -549,53 +822,72 @@ export class UIScene extends Phaser.Scene {
     }
     this.selectedDescLabel.setText(activeItem ? activeItem.description : '');
     this.selectedDescLabel.setY(this.selectedLabel.y + this.selectedLabel.height + 3);
+  }
 
-    if (payload.spectating) {
-      this.spectateBar.setVisible(true);
-      this.spectateTxt.setText(`SPEC: ${payload.spectating.targetName.slice(0, 10)}`);
-      const multi = payload.spectating.count > 1;
-      this.spectatePrevBtn.setAlpha(multi ? 1 : 0.45);
-      this.spectateNextBtn.setAlpha(multi ? 1 : 0.45);
-    } else {
-      this.spectateBar.setVisible(false);
-    }
+  private updateLocalCornerHUDs(players: PlayerStateSnapshot[]): void {
+    const tagColors = [0x66ffd9, 0xffe066, 0xf49ac1, 0x6ef3ff];
+    for (let idx = 0; idx < 4; idx++) {
+      const ch = this.localCornerHUDs[idx];
+      const lp = players[idx];
+      if (!lp) {
+        ch.container.setVisible(false);
+        continue;
+      }
+      ch.container.setVisible(true);
+      ch.nameTxt
+        .setText(lp.downed ? `P${idx + 1} DOWN` : `P${idx + 1}`)
+        .setTint(lp.downed ? 0xff5d8f : tagColors[idx]);
+      ch.shardTxt.setText(`${lp.shards}`);
 
-    if (payload.promptText && !payload.spectating) {
-      this.promptTxt.setText(payload.promptText).setVisible(true);
-      this.promptBg.setSize(this.promptTxt.width + 10, this.promptTxt.height + 6).setVisible(true);
-    } else {
-      this.promptTxt.setVisible(false);
-      this.promptBg.setVisible(false);
-    }
+      const activeItem = lp.inventory[lp.activeSlot];
+      ch.itemTxt.setText(activeItem ? activeItem.name : 'Empty');
 
-    if (payload.bossInfo && payload.bossInfo.hp > 0) {
-      this.bossContainer.setVisible(true);
-      this.toastTxt.setY(31);
-      this.bossNameTxt.setText(payload.bossInfo.name.toUpperCase());
-      this.bossBarGfx.clear();
-      const pct = Math.max(0, payload.bossInfo.hp / payload.bossInfo.maxHp);
-      this.bossBarGfx.fillStyle(0x100d24, 1);
-      this.bossBarGfx.fillRect(-84, 5, 168, 5);
-      this.bossBarGfx.fillStyle(payload.bossInfo.accent, 1);
-      this.bossBarGfx.fillRect(-83, 6, Math.floor(166 * pct), 3);
-    } else {
-      this.bossContainer.setVisible(false);
-      this.toastTxt.setY(12);
-    }
+      for (let s = 0; s < 3; s++) {
+        ch.slotBgs[s].setTexture(lp.activeSlot === s ? 'ui_slot_active' : 'ui_slot');
+        const item = lp.inventory[s];
+        const bar = ch.slotBars[s];
+        bar.clear();
+        if (item) {
+          ch.slotIcons[s].setTexture(item.iconKey).setVisible(true);
+          const pct = Math.max(0, Math.min(1, item.uses / item.maxUses));
+          const sx = 12 + s * 18;
+          const sy = 20;
+          bar.fillStyle(0x100d24, 1);
+          bar.fillRect(sx - 6, sy + 6, 12, 2);
+          bar.fillStyle(pct > 0.35 ? 0x66ffd9 : 0xff5d8f, 1);
+          bar.fillRect(sx - 6, sy + 6, Math.ceil(12 * pct), 2);
+        } else {
+          ch.slotIcons[s].setVisible(false);
+        }
+      }
 
-    this.renderMinimap(payload.rooms, payload.currentRoom);
-    const col = String.fromCharCode(65 + payload.currentRoom.gx);
-    const row = payload.currentRoom.gy + 1;
-    this.roomCoordTxt.setText(`${col}${row}`);
-    if (this.mapOverlay.visible) {
-      this.renderFullMap(payload);
+      const numHearts = Math.min(ch.hearts.length, Math.ceil(lp.maxHp / 2));
+      for (let h = 0; h < ch.hearts.length; h++) {
+        if (h >= numHearts) {
+          ch.hearts[h].setVisible(false);
+          continue;
+        }
+        ch.hearts[h].setVisible(true);
+        const hpForHeart = lp.hp - h * 2;
+        if (hpForHeart >= 2) ch.hearts[h].setTexture('ui_heart_full');
+        else if (hpForHeart === 1) ch.hearts[h].setTexture('ui_heart_half');
+        else ch.hearts[h].setTexture('ui_heart_empty');
+      }
+
+      const shCount = Math.min(lp.shield, ch.shields.length);
+      for (let sh = 0; sh < ch.shields.length; sh++) {
+        ch.shields[sh].setVisible(sh < shCount);
+      }
+
+      const fullStam = Math.floor(lp.stamina);
+      for (let st = 0; st < ch.stams.length; st++) {
+        ch.stams[st].setTexture(st < fullStam ? 'ui_stam_full' : 'ui_stam_empty');
+      }
     }
   }
 
-  private renderMinimap(rooms: RoomData[][], current: RoomData): void {
+  private renderMinimap(rooms: RoomData[][], current: RoomData, ox = 305, oy = 14): void {
     this.minimapGfx.clear();
-    const ox = 305;
-    const oy = 14;
     for (let y = 0; y < 6; y++) {
       for (let x = 0; x < 6; x++) {
         const r = rooms[y]?.[x];

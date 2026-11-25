@@ -2,14 +2,17 @@ import Phaser from 'phaser';
 import { version } from '../../package.json';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
-import { pickRandomPaletteId } from '../data/palettes';
-import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { ALL_SELECTABLE_AVATARS, pickRandomPaletteId } from '../data/palettes';
+import { isMobileMode, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { VirtualKeyboard } from '../mobile/VirtualKeyboard';
+import { inputSystem, localCoopSession } from '../systems/InputSystem';
 import { JournalSystem } from '../systems/JournalSystem';
 import { net } from '../systems/MultiplayerSystem';
+import { isDesktopBuild, steamSystem } from '../systems/SteamSystem';
 import { getDailySeed } from '../utils/SeededGenerator';
 
 const USERNAME_STORAGE_KEY = 'glimmerdeep_username';
+const AVATAR_STORAGE_KEY = 'glimmerdeep_selected_avatar';
 
 export class MenuScene extends Phaser.Scene {
   private playerName = 'Wanderer';
@@ -17,6 +20,10 @@ export class MenuScene extends Phaser.Scene {
   private activeField: 'none' | 'name' | 'code' = 'none';
 
   private previewSprite!: Phaser.GameObjects.Sprite;
+  private skinsBtnBg?: Phaser.GameObjects.Image;
+  private skinsBtnTxt?: Phaser.GameObjects.BitmapText;
+  private selectedAvatarIndex = 0;
+  private dlcUnlocked = false;
   private nameBoxBg!: Phaser.GameObjects.Rectangle;
   private nameText!: Phaser.GameObjects.BitmapText;
 
@@ -29,14 +36,13 @@ export class MenuScene extends Phaser.Scene {
   private cancelBtnTxt!: Phaser.GameObjects.BitmapText;
 
   private menuButtons: Array<{ bg: Phaser.GameObjects.Image; txt: Phaser.GameObjects.BitmapText; onClick: () => void }> = [];
-  private netToggleBg!: Phaser.GameObjects.Rectangle;
-  private netToggleIcon!: Phaser.GameObjects.BitmapText;
-  private netToggleLabel!: Phaser.GameObjects.BitmapText;
-  private mobileFocusIndex = 0; // 0: PLAY SOLO, 1: CREATE CO-OP, 2: JOIN CO-OP, 3: JOURNAL, 4: NAME BOX, 5: NET SWITCH
+  private bottomHintTxt!: Phaser.GameObjects.BitmapText;
+  private mobileFocusIndex = 0; // 0..N-1: menu buttons, N: NAME BOX
   private modalFocusIndex = 0; // 0: CODE BOX, 1: JOIN, 2: CANCEL
   private virtualKeyboard?: VirtualKeyboard;
   private unsubNav?: () => void;
   private unsubBtn?: () => void;
+  private unsubCtrl?: () => void;
 
   private cursorBlink = true;
   private fireflies: Array<{ sprite: Phaser.GameObjects.Image; vx: number; vy: number; phase: number }> = [];
@@ -49,6 +55,8 @@ export class MenuScene extends Phaser.Scene {
     SoundSystem.stopBossEvilLaughLoop();
     SoundSystem.setMusicTrack('menu');
     net.disconnect();
+    localCoopSession.active = false;
+    localCoopSession.players = [];
     this.fireflies = [];
     this.menuButtons = [];
     this.activeField = 'none';
@@ -95,7 +103,7 @@ export class MenuScene extends Phaser.Scene {
     this.add.image(96, 148, 'ui_panel').setDisplaySize(124, 126);
 
     const previewPalId = pickRandomPaletteId();
-    this.previewSprite = this.add.sprite(96, 126, `player_${previewPalId}`, 0).setScale(2);
+    this.previewSprite = this.add.sprite(96, 122, `player_${previewPalId}`, 0).setScale(2);
     this.time.addEvent({
       delay: 350,
       loop: true,
@@ -105,6 +113,48 @@ export class MenuScene extends Phaser.Scene {
         }
       },
     });
+
+    this.dlcUnlocked = steamSystem.isAvatarDlcUnlocked();
+    this.skinsBtnBg = this.add.image(96, 152, 'ui_btn').setDisplaySize(76, 16).setVisible(false);
+    this.skinsBtnTxt = addPixelText(this, 96, 152, 'SKINS', 8, 0x66ffd9, 0.5, 0.5).setVisible(false);
+    const openSkinBrowser = () => {
+      if (!this.dlcUnlocked || this.joinModal.visible) return;
+      SoundSystem.playPickup();
+      this.scene.start('SkinScene');
+    };
+    if (!isMobileMode()) {
+      this.skinsBtnBg.setInteractive({ useHandCursor: true }).on('pointerdown', openSkinBrowser);
+      this.skinsBtnBg.on('pointerover', () => {
+        this.skinsBtnBg?.setTexture('ui_btn_hover');
+        this.skinsBtnTxt?.setTint(0xffe066);
+      });
+      this.skinsBtnBg.on('pointerout', () => {
+        this.skinsBtnBg?.setTexture('ui_btn');
+        this.skinsBtnTxt?.setTint(0x66ffd9);
+      });
+      this.previewSprite.setInteractive({ useHandCursor: true }).on('pointerdown', openSkinBrowser);
+    }
+
+    try {
+      const savedAvatar = localStorage.getItem(AVATAR_STORAGE_KEY);
+      if (savedAvatar) {
+        const idx = ALL_SELECTABLE_AVATARS.findIndex((a) => a.id === savedAvatar);
+        if (idx >= 0) this.selectedAvatarIndex = idx;
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    if (this.dlcUnlocked) {
+      this.applyDlcAvatarSelection();
+    } else {
+      void steamSystem.refreshDlcStatus().then((unlocked) => {
+        if (unlocked && this.scene.isActive('MenuScene')) {
+          this.dlcUnlocked = true;
+          this.applyDlcAvatarSelection();
+        }
+      });
+    }
 
     addPixelText(this, 96, 166, 'NAME:', 8, 0x9d8ce0, 0.5, 0);
     this.nameBoxBg = this.add.rectangle(96, 186, 106, 18, 0x100d24).setStrokeStyle(1, 0x6c5bb3);
@@ -120,28 +170,44 @@ export class MenuScene extends Phaser.Scene {
       });
     }
 
-    this.createPixelButton(256, 92, 'PLAY SOLO', () => {
+    const showLocalCoop = isDesktopBuild();
+    const btnStep = showLocalCoop ? 22 : 26;
+    let btnY = showLocalCoop ? 84 : 92;
+
+    this.createPixelButton(256, btnY, 'PLAY SOLO', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
-      net.startSolo(this.playerName.trim() || 'Wanderer', pickRandomPaletteId());
+      net.startSolo(this.playerName.trim() || 'Wanderer', this.getChosenAvatarId());
       const seed = getDailySeed(0);
       this.scene.start('GameScene', { levelIndex: 0, floorSeed: seed, resetRun: true });
     });
+    btnY += btnStep;
 
-    this.createPixelButton(256, 119, 'CREATE CO-OP', () => {
+    this.createPixelButton(256, btnY, 'CREATE CO-OP', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
-      net.hostGame(this.playerName.trim() || 'Host', pickRandomPaletteId());
+      net.hostGame(this.playerName.trim() || 'Host', this.getChosenAvatarId());
       this.scene.start('LobbyScene');
     });
+    btnY += btnStep;
 
-    this.createPixelButton(256, 146, 'JOIN CO-OP', () => {
+    this.createPixelButton(256, btnY, 'JOIN CO-OP', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
       this.openJoinModal();
     });
+    btnY += btnStep;
 
-    this.createPixelButton(256, 173, 'JOURNAL', () => {
+    if (showLocalCoop) {
+      this.createPixelButton(256, btnY, 'LOCAL CO-OP', () => {
+        if (this.joinModal.visible) return;
+        SoundSystem.playPickup();
+        this.scene.start('LocalLobbyScene');
+      });
+      btnY += btnStep;
+    }
+
+    this.createPixelButton(256, btnY, 'JOURNAL', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
       if (this.playerName === 'ADMIN') {
@@ -149,29 +215,19 @@ export class MenuScene extends Phaser.Scene {
       }
       this.scene.start('JournalScene');
     });
+    btnY += btnStep;
 
-    // Tiny square button under JOURNAL to switch between Nostr (default) and MQTT
-    this.netToggleBg = this.add
-      .rectangle(216, 200, 14, 14, 0x100d24)
-      .setStrokeStyle(1, 0x6c5bb3);
-    this.netToggleIcon = addPixelText(this, 216, 200, 'N', 8, 0x66ffd9, 0.5, 0.5);
-    this.netToggleLabel = addPixelText(this, 228, 200, 'NET: NOSTR', 8, 0xb8a1ff, 0, 0.5);
-    this.refreshNetToggle();
+    this.createPixelButton(256, btnY, 'SETTINGS', () => {
+      if (this.joinModal.visible) return;
+      SoundSystem.playPickup();
+      this.scene.start('SettingsScene');
+    });
 
-    if (!isMobileMode()) {
-      this.netToggleBg.setInteractive({ useHandCursor: true });
-      this.netToggleBg.on('pointerover', () => this.netToggleBg.setStrokeStyle(1, 0xffe066));
-      this.netToggleBg.on('pointerout', () => this.netToggleBg.setStrokeStyle(1, 0x6c5bb3));
-      this.netToggleBg.on('pointerdown', () => this.toggleSignalingBackend());
-    }
-
-    addPixelText(
+    this.bottomHintTxt = addPixelText(
       this,
       180,
       248,
-      isMobileMode()
-        ? 'Stick/D-Pad: Navigate | E/Space: Select'
-        : 'WASD Move | Mouse Aim/Attack | Space Dodge | E Interact | Tab Map',
+      this.getBottomHintText(),
       8,
       0x7e71b8,
       0.5,
@@ -185,15 +241,22 @@ export class MenuScene extends Phaser.Scene {
 
     if (isMobileMode()) {
       this.virtualKeyboard = new VirtualKeyboard(this);
-      this.refreshMobileFocus();
-      this.unsubNav = mobileInput.onNav((dir) => this.handleMobileNav(dir));
-      this.unsubBtn = mobileInput.onButton((btn) => this.handleMobileButton(btn));
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-        this.unsubNav?.();
-        this.unsubBtn?.();
-        this.virtualKeyboard?.destroy();
-      });
     }
+    this.refreshMobileFocus();
+    this.unsubNav = inputSystem.onNav((dir) => this.handleMobileNav(dir));
+    this.unsubBtn = inputSystem.onButton((btn) => this.handleMobileButton(btn));
+    this.unsubCtrl = inputSystem.onControlTypeChange(() => {
+      if (this.bottomHintTxt?.active) {
+        this.bottomHintTxt.setText(this.getBottomHintText());
+      }
+      this.refreshMobileFocus();
+    });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.unsubNav?.();
+      this.unsubBtn?.();
+      this.unsubCtrl?.();
+      this.virtualKeyboard?.destroy();
+    });
 
     this.time.addEvent({
       delay: 420,
@@ -364,22 +427,8 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
     SoundSystem.playPickup();
-    net.joinGame(code, this.playerName.trim() || 'Guest', pickRandomPaletteId());
+    net.joinGame(code, this.playerName.trim() || 'Guest', this.getChosenAvatarId());
     this.scene.start('LobbyScene');
-  }
-
-  private toggleSignalingBackend(): void {
-    if (this.joinModal.visible) return;
-    SoundSystem.playSwing();
-    const next = net.signalingBackend === 'nostr' ? 'mqtt' : 'nostr';
-    net.setSignalingBackend(next);
-    this.refreshNetToggle();
-  }
-
-  private refreshNetToggle(): void {
-    const isMqtt = net.signalingBackend === 'mqtt';
-    this.netToggleIcon.setText(isMqtt ? 'M' : 'N').setTint(isMqtt ? 0xffe066 : 0x66ffd9);
-    this.netToggleLabel.setText(isMqtt ? 'NET: MQTT' : 'NET: NOSTR');
   }
 
   private saveUsername(): void {
@@ -419,7 +468,7 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private createPixelButton(x: number, y: number, label: string, onClick: () => void): void {
-    const bg = this.add.image(x, y, 'ui_btn').setDisplaySize(136, 22);
+    const bg = this.add.image(x, y, 'ui_btn').setDisplaySize(136, 19);
     const txt = addPixelText(this, x, y, label, 8, 0xffffff, 0.5, 0.5);
     this.menuButtons.push({ bg, txt, onClick });
 
@@ -435,6 +484,19 @@ export class MenuScene extends Phaser.Scene {
       });
       bg.on('pointerdown', onClick);
     }
+  }
+
+  private getBottomHintText(): string {
+    if (inputSystem.controlType === 'gamepad') {
+      if (inputSystem.gamepadBrand === 'playstation') {
+        return 'Stick/D-Pad: Navigate | Cross: Select | Circle: Back';
+      }
+      return 'Stick/D-Pad: Navigate | A: Select | B: Back';
+    }
+    if (inputSystem.controlType === 'touch') {
+      return 'Stick/D-Pad: Navigate | E/Space: Select';
+    }
+    return 'WASD Move | Mouse Aim/Attack | Space Dodge | E Interact | Tab Map';
   }
 
   private handleMobileNav(dir: NavDir): void {
@@ -458,20 +520,29 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
 
+    const lastBtnIdx = this.menuButtons.length - 1;
+    const nameIdx = this.menuButtons.length;
+
     if (dir === 'up') {
-      if (this.mobileFocusIndex === 4) this.mobileFocusIndex = 3;
-      else if (this.mobileFocusIndex === 5) this.mobileFocusIndex = 3;
-      else if (this.mobileFocusIndex === 0) this.mobileFocusIndex = 5;
+      if (this.mobileFocusIndex === nameIdx) this.mobileFocusIndex = lastBtnIdx;
+      else if (this.mobileFocusIndex === 0) this.mobileFocusIndex = lastBtnIdx;
       else this.mobileFocusIndex = this.mobileFocusIndex - 1;
     } else if (dir === 'down') {
-      if (this.mobileFocusIndex === 4) this.mobileFocusIndex = 0;
-      else if (this.mobileFocusIndex === 3) this.mobileFocusIndex = 5;
-      else if (this.mobileFocusIndex === 5) this.mobileFocusIndex = 0;
+      if (this.mobileFocusIndex === nameIdx) this.mobileFocusIndex = 0;
+      else if (this.mobileFocusIndex === lastBtnIdx) this.mobileFocusIndex = 0;
       else this.mobileFocusIndex = this.mobileFocusIndex + 1;
     } else if (dir === 'left') {
-      this.mobileFocusIndex = 4;
+      if (this.mobileFocusIndex === nameIdx && this.dlcUnlocked) {
+        this.cyclePalette(-1);
+      } else {
+        this.mobileFocusIndex = nameIdx;
+      }
     } else if (dir === 'right') {
-      if (this.mobileFocusIndex === 4) this.mobileFocusIndex = 0;
+      if (this.mobileFocusIndex === nameIdx && this.dlcUnlocked) {
+        this.cyclePalette(1);
+      } else if (this.mobileFocusIndex === nameIdx) {
+        this.mobileFocusIndex = 0;
+      }
     }
     this.refreshMobileFocus();
   }
@@ -527,7 +598,14 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
 
-    if (this.mobileFocusIndex === 4) {
+    const nameIdx = this.menuButtons.length;
+
+    if (this.mobileFocusIndex === nameIdx) {
+      if (!isMobileMode()) {
+        this.activeField = this.activeField === 'name' ? 'none' : 'name';
+        this.refreshTextboxes();
+        return;
+      }
       SoundSystem.playSwing();
       this.virtualKeyboard?.open({
         title: 'ENTER USERNAME',
@@ -553,38 +631,28 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
 
-    if (this.mobileFocusIndex === 5) {
-      this.toggleSignalingBackend();
-      return;
-    }
-
     this.menuButtons[this.mobileFocusIndex]?.onClick();
   }
 
   private refreshMobileFocus(): void {
-    if (!isMobileMode()) return;
+    const showFocus = isMobileMode() || inputSystem.controlType === 'gamepad';
+    const nameIdx = this.menuButtons.length;
 
     this.menuButtons.forEach((b, idx) => {
-      const focused = !this.joinModal.visible && this.mobileFocusIndex === idx;
+      const focused = showFocus && !this.joinModal.visible && this.mobileFocusIndex === idx;
       b.bg.setTexture(focused ? 'ui_btn_hover' : 'ui_btn');
       b.txt.setTint(focused ? 0xffe066 : 0xffffff);
     });
 
-    if (!this.joinModal.visible && this.mobileFocusIndex === 4) {
+    if (showFocus && !this.joinModal.visible && this.mobileFocusIndex === nameIdx) {
       this.nameBoxBg.setStrokeStyle(2, 0xffe066);
       this.nameText.setTint(0xffe066);
-    } else {
+    } else if (this.activeField !== 'name') {
       this.nameBoxBg.setStrokeStyle(1, 0x6c5bb3);
       this.nameText.setTint(0xffffff);
     }
 
-    if (!this.joinModal.visible && this.mobileFocusIndex === 5) {
-      this.netToggleBg.setStrokeStyle(2, 0xffe066);
-    } else {
-      this.netToggleBg.setStrokeStyle(1, 0x6c5bb3);
-    }
-
-    if (this.joinModal.visible) {
+    if (this.joinModal.visible && showFocus) {
       this.codeBoxBg.setStrokeStyle(this.modalFocusIndex === 0 ? 2 : 1, this.modalFocusIndex === 0 ? 0xffe066 : 0x6c5bb3);
       this.joinBtnBg.setTexture(this.modalFocusIndex === 1 ? 'ui_btn_hover' : 'ui_btn');
       this.joinBtnTxt.setTint(this.modalFocusIndex === 1 ? 0xffe066 : 0xffffff);
@@ -593,8 +661,26 @@ export class MenuScene extends Phaser.Scene {
     }
   }
 
+  private getChosenAvatarId(): string {
+    if (this.dlcUnlocked) {
+      return ALL_SELECTABLE_AVATARS[this.selectedAvatarIndex]?.id ?? pickRandomPaletteId();
+    }
+    return pickRandomPaletteId();
+  }
+
+  private applyDlcAvatarSelection(): void {
+    const entry = ALL_SELECTABLE_AVATARS[this.selectedAvatarIndex] ?? ALL_SELECTABLE_AVATARS[0];
+    if (this.previewSprite?.active) {
+      this.previewSprite.setTexture(`player_${entry.id}`, 0);
+    }
+    this.skinsBtnBg?.setVisible(true);
+    this.skinsBtnTxt?.setVisible(true);
+  }
+
   private cyclePalette(_dir: number): void {
-    // Removed manual skin selector; skins are randomized per run.
+    if (!this.dlcUnlocked || this.joinModal.visible) return;
+    SoundSystem.playPickup();
+    this.scene.start('SkinScene');
   }
 
   update(_time: number, delta: number): void {

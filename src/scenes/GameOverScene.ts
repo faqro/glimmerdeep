@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
-import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { isMobileMode, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { inputSystem } from '../systems/InputSystem';
 import { net } from '../systems/MultiplayerSystem';
 
 export interface GameOverData {
@@ -68,21 +69,22 @@ export class GameOverScene extends Phaser.Scene {
         this.scene.start('MenuScene');
       };
 
-      if (isMobileMode()) {
+      if (isMobileMode() || inputSystem.controlType === 'gamepad') {
         btn.setTexture('ui_btn_hover');
         btnTxt.setTint(0xffe066);
-        this.unsubBtn = mobileInput.onButton((b) => {
-          if (b === 'e' || b === 'space' || b === 'esc') goMenu();
-        });
-        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-          this.unsubBtn?.();
-        });
-      } else {
+      }
+      if (!isMobileMode()) {
         btn.setInteractive({ useHandCursor: true });
         btn.on('pointerover', () => btn.setTexture('ui_btn_hover'));
         btn.on('pointerout', () => btn.setTexture('ui_btn'));
         btn.on('pointerdown', goMenu);
       }
+      this.unsubBtn = inputSystem.onButton((b) => {
+        if (b === 'e' || b === 'space' || b === 'esc') goMenu();
+      });
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+        this.unsubBtn?.();
+      });
       return;
     }
 
@@ -144,37 +146,35 @@ export class GameOverScene extends Phaser.Scene {
 
     let focusIdx = playAgainReady ? 1 : 0;
     const refreshFocus = () => {
-      if (!isMobileMode()) return;
+      if (!isMobileMode() && inputSystem.controlType !== 'gamepad') return;
       menuBtn.setTexture(focusIdx === 0 ? 'ui_btn_hover' : 'ui_btn');
       menuTxt.setTint(focusIdx === 0 ? 0xffe066 : 0xffffff);
       playAgainBtn.setTexture(focusIdx === 1 ? 'ui_btn_hover' : 'ui_btn');
       playAgainTxt.setTint(focusIdx === 1 ? 0xffe066 : playAgainReady ? 0xffffff : 0x9d8ce0);
     };
 
-    if (isMobileMode()) {
-      refreshFocus();
-      this.unsubNav = mobileInput.onNav((dir: NavDir) => {
-        if (dir === 'left' || dir === 'right') {
-          SoundSystem.playSwing();
-          focusIdx = focusIdx === 0 ? 1 : 0;
-          refreshFocus();
-        }
-      });
-      this.unsubBtn = mobileInput.onButton((b: VirtualButton) => {
-        if (b === 'esc') {
-          onMenu();
-          return;
-        }
-        if (b === 'e' || b === 'space') {
-          if (focusIdx === 0) onMenu();
-          else onPlayAgain();
-        }
-      });
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-        this.unsubNav?.();
-        this.unsubBtn?.();
-      });
-    }
+    refreshFocus();
+    this.unsubNav = inputSystem.onNav((dir: NavDir) => {
+      if (dir === 'left' || dir === 'right') {
+        SoundSystem.playSwing();
+        focusIdx = focusIdx === 0 ? 1 : 0;
+        refreshFocus();
+      }
+    });
+    this.unsubBtn = inputSystem.onButton((b: VirtualButton) => {
+      if (b === 'esc') {
+        onMenu();
+        return;
+      }
+      if (b === 'e' || b === 'space') {
+        if (focusIdx === 0) onMenu();
+        else onPlayAgain();
+      }
+    });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.unsubNav?.();
+      this.unsubBtn?.();
+    });
 
     net.onPlayAgain = () => {
       playAgainReady = true;

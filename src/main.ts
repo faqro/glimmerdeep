@@ -7,7 +7,10 @@ import { GameOverScene } from './scenes/GameOverScene';
 import { GameScene } from './scenes/GameScene';
 import { JournalScene } from './scenes/JournalScene';
 import { LobbyScene } from './scenes/LobbyScene';
+import { LocalLobbyScene } from './scenes/LocalLobbyScene';
 import { MenuScene } from './scenes/MenuScene';
+import { SettingsScene } from './scenes/SettingsScene';
+import { SkinScene } from './scenes/SkinScene';
 import { UIScene } from './scenes/UIScene';
 
 if (isMobileMode()) {
@@ -39,7 +42,7 @@ const config: Phaser.Types.Core.GameConfig = {
       debug: false,
     },
   },
-  scene: [BootScene, MenuScene, JournalScene, LobbyScene, GameScene, UIScene, GameOverScene, CreditsScene],
+  scene: [BootScene, MenuScene, SettingsScene, SkinScene, JournalScene, LobbyScene, LocalLobbyScene, GameScene, UIScene, GameOverScene, CreditsScene],
 };
 
 new Phaser.Game(config);

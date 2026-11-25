@@ -7,11 +7,15 @@ import { ROOM_TEMPLATES } from '../data/roomTemplates';
 import { WEAPONS } from '../data/weapons';
 import { SoundSystem } from '../audio/SoundSystem';
 import { isMobileMode, mobileInput } from '../mobile/MobileInput';
+import { getControlActionText } from '../systems/ControlHints';
 import { DungeonGenerator, GeneratedFloor } from '../systems/DungeonGenerator';
+import { inputSystem, localCoopSession } from '../systems/InputSystem';
 import { addItemToSlots, consumeUse, createItemInstance, hasArtifact, rollBossCombatItemId, rollRandomItemId, rollSecretChestItemId } from '../systems/InventorySystem';
 import { JournalSystem } from '../systems/JournalSystem';
 import { net, NetRoomSync, NetWorldSync, SyncedProjectile } from '../systems/MultiplayerSystem';
 import { StatusEffectManager } from '../systems/StatusEffectSystem';
+import { settingsSystem } from '../systems/SettingsSystem';
+import { grantAdminMasterUnlock, steamSystem } from '../systems/SteamSystem';
 import {
   Direction,
   InventoryItem,
@@ -180,6 +184,29 @@ interface CarriedSkeletonState {
   formationIndex: number;
 }
 
+interface LocalPlayerActor {
+  slotIndex: number;
+  inputType: 'gamepad' | 'keyboard';
+  padIndex: number;
+  state: PlayerStateSnapshot;
+  sprite: Phaser.Physics.Arcade.Sprite;
+  wardRing: Phaser.GameObjects.Arc;
+  aimReticle: Phaser.GameObjects.Arc;
+  nameTag: Phaser.GameObjects.BitmapText;
+  attackCooldownMs: number;
+  invulnMs: number;
+  dodgeMs: number;
+  dodgeVx: number;
+  dodgeVy: number;
+  spikePinnedMs: number;
+  staminaRegenMs: number;
+  statusTickMs: number;
+  burnFxMs: number;
+  hitFlashMs: number;
+  slowTinted: boolean;
+  respawnAnimMs: number;
+}
+
 export class GameScene extends Phaser.Scene {
   private levelIndex = 0;
   private floorSeed = 123456;
@@ -188,7 +215,10 @@ export class GameScene extends Phaser.Scene {
 
   private playerSprite!: Phaser.Physics.Arcade.Sprite;
   private wardRing!: Phaser.GameObjects.Arc;
+  private aimReticle!: Phaser.GameObjects.Arc;
   private playerState!: PlayerStateSnapshot;
+  private localPlayers: LocalPlayerActor[] = [];
+  private activeLocalActor: LocalPlayerActor | null = null;
   private remotePlayers = new Map<string, PlayerStateSnapshot>();
   private remotePlayerLastDirectAt = new Map<string, number>();
   private remoteSprites = new Map<
@@ -346,6 +376,7 @@ export class GameScene extends Phaser.Scene {
 
   private totalShardsCollected = 0;
   private totalEnemiesDefeated = 0;
+  private runStartMs = 0;
   private netSyncTimerMs = 0;
   private worldSyncTimerMs = 0;
   private plateCooldownMs = 0;
@@ -383,12 +414,17 @@ export class GameScene extends Phaser.Scene {
     floorSeed?: number;
     resetRun?: boolean;
     carryPlayer?: PlayerStateSnapshot;
+    carryLocalPlayers?: PlayerStateSnapshot[];
     carrySkeletons?: CarriedSkeletonState[];
+    carryRunStartMs?: number;
     restoreReconnect?: boolean;
     exitedTestRoom?: boolean;
   }): void {
     this.levelIndex = data.levelIndex ?? 0;
     this.floorSeed = data.floorSeed ?? getDailySeed(this.levelIndex);
+    this.runStartMs = data.resetRun || !data.carryRunStartMs ? Date.now() : data.carryRunStartMs;
+    if (this.levelIndex >= 2) void steamSystem.unlockAchievement('ACH_FLOOR_3');
+    if (this.levelIndex >= 5) void steamSystem.unlockAchievement('ACH_FLOOR_6');
     this.transitioningLevel = false;
     this.paused = false;
     this.testSpawnCooldownMs = 0;
@@ -471,9 +507,16 @@ export class GameScene extends Phaser.Scene {
       };
     }
 
-    const playerCount = net.mode === 'solo' ? 1 : Math.max(1, net.players.size);
+    const playerCount = localCoopSession.active
+      ? Math.max(1, localCoopSession.players.length)
+      : net.mode === 'solo'
+        ? 1
+        : Math.max(1, net.players.size);
     if (this.playerState.name === 'ADMIN') {
       JournalSystem.unlockAll();
+    }
+    if (this.playerState.name === 'ADMIN12345' || net.localName === 'ADMIN12345') {
+      grantAdminMasterUnlock();
     }
     this.isTestRoom =
       this.playerState.name === 'TESTER' &&
@@ -516,20 +559,120 @@ export class GameScene extends Phaser.Scene {
     this.beamGfx = this.add.graphics().setDepth(12);
 
     this.physics.world.setBounds(0, 0, 176, 176);
-    this.cameras.main.setZoom(1.18);
+    this.cameras.main.setZoom(localCoopSession.active ? 0.84 : 1.18);
     this.cameras.main.centerOn(88, 88);
+    const origShake = this.cameras.main.shake.bind(this.cameras.main);
+    this.cameras.main.shake = ((
+      duration?: number,
+      intensity?: number,
+      force?: boolean,
+      callback?: Phaser.Types.Cameras.Scene2D.CameraShakeCallback,
+      context?: unknown
+    ) => {
+      if (!settingsSystem.current.screenShake) return this.cameras.main;
+      return origShake(duration, intensity, force, callback, context);
+    }) as typeof this.cameras.main.shake;
 
-    this.playerSprite = this.physics.add.sprite(88, 88, `player_${this.playerState.paletteId}`, 0);
-    this.playerSprite.setDepth(10);
-    this.playerSprite.setSize(7, 7);
-    this.playerSprite.setOffset(4.5, 9.5);
-    this.playerSprite.setCollideWorldBounds(true);
+    this.localPlayers = [];
+    this.activeLocalActor = null;
 
-    this.wardRing = this.add.circle(88, 88, 13, 0x6ef3ff, 0.12).setStrokeStyle(1, 0x6ef3ff, 0.85).setDepth(11).setVisible(false);
+    if (localCoopSession.active && localCoopSession.players.length > 0) {
+      const tagColors = [0x66ffd9, 0xffe066, 0xf49ac1, 0x6ef3ff];
+      localCoopSession.players.forEach((cfg, idx) => {
+        const carried = !data.resetRun ? data.carryLocalPlayers?.[idx] : undefined;
+        const st: PlayerStateSnapshot = carried
+          ? {
+              ...carried,
+              gx: this.levelIndex === 6 ? 0 : 0,
+              gy: this.levelIndex === 6 ? 1 : 2,
+              x: this.levelIndex === 6 ? 36 : 88,
+              y: this.levelIndex === 6 ? 72 : 88,
+              inExitReady: false,
+            }
+          : {
+              id: `local_${idx}`,
+              name: cfg.name,
+              paletteId: cfg.paletteId,
+              gx: 0,
+              gy: 2,
+              x: 88,
+              y: 88,
+              vx: 0,
+              vy: 0,
+              aimAngle: 0,
+              hp: 16,
+              maxHp: 16,
+              shield: 0,
+              stamina: 4,
+              maxStamina: 4,
+              shards: 0,
+              downed: false,
+              downedTimerMs: 0,
+              dodging: false,
+              activeSlot: 0,
+              inventory: [createItemInstance('moonblade'), createItemInstance('heartdew_potion'), null],
+              statusEffects: [],
+              inExitReady: false,
+              animState: 'idle',
+              flipX: false,
+            };
 
-    this.physics.add.collider(this.playerSprite, this.wallGroup);
-    this.physics.add.collider(this.playerSprite, this.crateGroup);
-    this.physics.add.collider(this.playerSprite, this.pushBlockGroup);
+        const sp = this.physics.add.sprite(88, 88, `player_${st.paletteId}`, 0);
+        sp.setDepth(10);
+        sp.setSize(7, 7);
+        sp.setOffset(4.5, 9.5);
+        sp.setCollideWorldBounds(true);
+        this.physics.add.collider(sp, this.wallGroup);
+        this.physics.add.collider(sp, this.crateGroup);
+        this.physics.add.collider(sp, this.pushBlockGroup);
+
+        const wr = this.add.circle(88, 88, 13, 0x6ef3ff, 0.12).setStrokeStyle(1, 0x6ef3ff, 0.85).setDepth(11).setVisible(false);
+        const ar = this.add.circle(88, 88, 2, 0xffe066, 0.9).setStrokeStyle(1, 0x100d24, 0.9).setDepth(15).setVisible(false);
+        const nt = addPixelText(this, 88, 76, cfg.name, 8, tagColors[idx % tagColors.length], 0.5, 1).setDepth(14);
+
+        this.localPlayers.push({
+          slotIndex: idx,
+          inputType: cfg.inputType,
+          padIndex: cfg.padIndex,
+          state: st,
+          sprite: sp,
+          wardRing: wr,
+          aimReticle: ar,
+          nameTag: nt,
+          attackCooldownMs: 0,
+          invulnMs: 0,
+          dodgeMs: 0,
+          dodgeVx: 0,
+          dodgeVy: 0,
+          spikePinnedMs: 0,
+          staminaRegenMs: 0,
+          statusTickMs: 0,
+          burnFxMs: 0,
+          hitFlashMs: 0,
+          slowTinted: false,
+          respawnAnimMs: 0,
+        });
+      });
+
+      const first = this.localPlayers[0];
+      this.playerState = first.state;
+      this.playerSprite = first.sprite;
+      this.wardRing = first.wardRing;
+      this.aimReticle = first.aimReticle;
+    } else {
+      this.playerSprite = this.physics.add.sprite(88, 88, `player_${this.playerState.paletteId}`, 0);
+      this.playerSprite.setDepth(10);
+      this.playerSprite.setSize(7, 7);
+      this.playerSprite.setOffset(4.5, 9.5);
+      this.playerSprite.setCollideWorldBounds(true);
+
+      this.wardRing = this.add.circle(88, 88, 13, 0x6ef3ff, 0.12).setStrokeStyle(1, 0x6ef3ff, 0.85).setDepth(11).setVisible(false);
+      this.aimReticle = this.add.circle(88, 88, 2, 0xffe066, 0.9).setStrokeStyle(1, 0x100d24, 0.9).setDepth(15).setVisible(false);
+
+      this.physics.add.collider(this.playerSprite, this.wallGroup);
+      this.physics.add.collider(this.playerSprite, this.crateGroup);
+      this.physics.add.collider(this.playerSprite, this.pushBlockGroup);
+    }
     this.physics.add.collider(this.enemyGroup, this.wallGroup);
     this.physics.add.collider(this.enemyGroup, this.crateGroup);
     this.physics.add.collider(this.enemyGroup, this.doorBlockGroup);
@@ -682,21 +825,32 @@ export class GameScene extends Phaser.Scene {
       this.remoteSprites.clear();
     });
 
+    const runForKeyboardPlayer = (fn: () => void) => {
+      if (localCoopSession.active) {
+        const kbActor = this.localPlayers.find((lp) => lp.inputType === 'keyboard');
+        if (!kbActor || kbActor.state.downed) return;
+        this.withLocalPlayer(kbActor, fn);
+      } else {
+        if (this.playerState.downed) return;
+        fn();
+      }
+    };
+
     kb.on('keydown-Q', () => {
-      if (!this.paused && !this.ui.isOverlayOpen() && !this.playerState.downed) {
-        this.dropActiveItem();
+      if (!this.paused && !this.ui.isOverlayOpen()) {
+        runForKeyboardPlayer(() => this.dropActiveItem());
       }
     });
-    kb.on('keydown-ONE', () => (this.playerState.activeSlot = 0));
-    kb.on('keydown-TWO', () => (this.playerState.activeSlot = 1));
-    kb.on('keydown-THREE', () => (this.playerState.activeSlot = 2));
+    kb.on('keydown-ONE', () => runForKeyboardPlayer(() => (this.playerState.activeSlot = 0)));
+    kb.on('keydown-TWO', () => runForKeyboardPlayer(() => (this.playerState.activeSlot = 1)));
+    kb.on('keydown-THREE', () => runForKeyboardPlayer(() => (this.playerState.activeSlot = 2)));
     kb.on('keydown-G', () => {
-      if (!this.paused && !this.ui.isOverlayOpen() && !this.playerState.downed) {
-        this.dropActiveItem();
+      if (!this.paused && !this.ui.isOverlayOpen()) {
+        runForKeyboardPlayer(() => this.dropActiveItem());
       }
     });
     kb.on('keydown-E', () => {
-      if (!this.paused) this.handleInteract();
+      if (!this.paused) runForKeyboardPlayer(() => this.handleInteract());
     });
 
     const switchSpectator = (dir: -1 | 1) => {
@@ -712,12 +866,14 @@ export class GameScene extends Phaser.Scene {
     this.input.mouse?.disableContextMenu();
     if (!isMobileMode()) {
       this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-        if (this.paused || this.ui.isOverlayOpen() || this.playerState.downed) return;
-        if (pointer.rightButtonDown()) {
-          this.handleSecondaryAction();
-        } else {
-          this.handlePrimaryAttack();
-        }
+        if (this.paused || this.ui.isOverlayOpen()) return;
+        runForKeyboardPlayer(() => {
+          if (pointer.rightButtonDown()) {
+            this.handleSecondaryAction();
+          } else {
+            this.handlePrimaryAttack();
+          }
+        });
       });
       this.input.on(
         'wheel',
@@ -727,9 +883,11 @@ export class GameScene extends Phaser.Scene {
           _deltaX: number,
           deltaY: number
         ) => {
-          if (this.paused || this.ui.isOverlayOpen() || this.playerState.downed || deltaY === 0) return;
-          const step = deltaY > 0 ? 1 : 2;
-          this.playerState.activeSlot = (this.playerState.activeSlot + step) % 3;
+          if (this.paused || this.ui.isOverlayOpen() || deltaY === 0) return;
+          runForKeyboardPlayer(() => {
+            const step = deltaY > 0 ? 1 : 2;
+            this.playerState.activeSlot = (this.playerState.activeSlot + step) % 3;
+          });
         }
       );
     } else {
@@ -1496,7 +1654,24 @@ export class GameScene extends Phaser.Scene {
     this.nyarlathotepSummoning = false;
     this.nyarWaitToastCooldownMs = 0;
 
-    if (wTiles > 11 || hTiles > 11) {
+    if (localCoopSession.active) {
+      const cam = this.cameras.main;
+      cam.stopFollow();
+      cam.removeBounds();
+      if (room.type === 'boss' && this.levelIndex === 6) {
+        // Final Boss Room: zoomed out so the entire room is visible at once without scrolling
+        const fitZoom = Math.min(254 / this.roomWidthPx, 240 / this.roomHeightPx);
+        cam.setZoom(Math.max(0.55, Math.min(0.75, fitZoom)));
+        cam.centerOn(this.roomWidthPx / 2, this.roomHeightPx / 2);
+      } else if (wTiles > 11 || hTiles > 11) {
+        // Level 7 hallway: zoomed out, centered on average player position in update()
+        cam.setZoom(0.84);
+        cam.centerOn(spawnX, this.roomHeightPx / 2);
+      } else {
+        cam.setZoom(0.84);
+        cam.centerOn(88, 88);
+      }
+    } else if (wTiles > 11 || hTiles > 11) {
       const cam = this.cameras.main;
       const viewW = cam.width / cam.zoom;
       const viewH = cam.height / cam.zoom;
@@ -1514,7 +1689,10 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Wandering Eye artifact reveals adjacent secret rooms
-    if (hasArtifact(this.playerState.inventory, 'wandering_eye') !== -1) {
+    const anyWanderingEye = localCoopSession.active
+      ? this.localPlayers.some((lp) => hasArtifact(lp.state.inventory, 'wandering_eye') !== -1)
+      : hasArtifact(this.playerState.inventory, 'wandering_eye') !== -1;
+    if (anyWanderingEye) {
       for (let ry = 0; ry < 6; ry++) {
         for (let rx = 0; rx < 6; rx++) {
           const sr = this.floor.rooms[ry]?.[rx];
@@ -1523,7 +1701,28 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    if (!isSpectating) {
+    if (localCoopSession.active && this.localPlayers.length > 0) {
+      const spread = [
+        { dx: -6, dy: -4 },
+        { dx: 6, dy: -4 },
+        { dx: -6, dy: 4 },
+        { dx: 6, dy: 4 },
+      ];
+      this.localPlayers.forEach((lp, idx) => {
+        const off = this.localPlayers.length > 1 ? spread[idx % spread.length] : { dx: 0, dy: 0 };
+        const px = Phaser.Math.Clamp(spawnX + off.dx, 22, Math.max(22, this.roomWidthPx - 22));
+        const py = Phaser.Math.Clamp(spawnY + off.dy, 22, Math.max(22, this.roomHeightPx - 22));
+        lp.state.gx = gx;
+        lp.state.gy = gy;
+        lp.state.x = px;
+        lp.state.y = py;
+        lp.state.vx = 0;
+        lp.state.vy = 0;
+        lp.spikePinnedMs = 0;
+        lp.sprite.setPosition(px, py).setVelocity(0, 0).setVisible(true);
+        lp.nameTag.setPosition(px, py - 12).setVisible(true);
+      });
+    } else if (!isSpectating) {
       this.playerState.gx = gx;
       this.playerState.gy = gy;
       this.playerState.x = spawnX;
@@ -2418,12 +2617,14 @@ export class GameScene extends Phaser.Scene {
       ? mobileInput.dpadActive || mobileInput.dpadDirX !== 0 || mobileInput.dpadDirY !== 0
         ? mobileInput.dpadAngle
         : this.playerState.aimAngle
-      : Phaser.Math.Angle.Between(
-          this.playerSprite.x,
-          this.playerSprite.y,
-          this.input.activePointer.worldX,
-          this.input.activePointer.worldY
-        );
+      : (this.activeLocalActor ? this.activeLocalActor.inputType === 'gamepad' : inputSystem.controlType === 'gamepad')
+        ? this.playerState.aimAngle
+        : Phaser.Math.Angle.Between(
+            this.playerSprite.x,
+            this.playerSprite.y,
+            this.input.activePointer.worldX,
+            this.input.activePointer.worldY
+          );
     this.playerState.aimAngle = angle;
 
     if (item && item.category === 'consumable') {
@@ -2502,7 +2703,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private getAimAngle(): number {
-    if (!isMobileMode()) {
+    const usePadAim = this.activeLocalActor
+      ? this.activeLocalActor.inputType === 'gamepad'
+      : inputSystem.controlType === 'gamepad';
+    if (!isMobileMode() && !usePadAim) {
       const ptr = this.input.activePointer;
       if (ptr) {
         const wp = this.cameras.main.getWorldPoint(ptr.x, ptr.y);
@@ -4048,6 +4252,8 @@ export class GameScene extends Phaser.Scene {
     enemy.sprite.destroy();
     this.activeEnemies = this.activeEnemies.filter((e) => e !== enemy);
     this.totalEnemiesDefeated++;
+    if (this.totalEnemiesDefeated >= 1) void steamSystem.unlockAchievement('ACH_FIRST_BLOOD');
+    if (enemy.isBoss) void steamSystem.unlockAchievement('ACH_BOSS_SLAYER');
     this.spawnParticles(ex, ey, 0xffe066, 10);
 
     if (!enemy.isBoss) {
@@ -4453,7 +4659,7 @@ export class GameScene extends Phaser.Scene {
           } else {
             simon.progress = 0;
             SoundSystem.playHit();
-            this.ui.showToast('Wrong rune! Center [E] to replay', '#ff5d8f');
+            this.ui.showToast(`Wrong rune! Center [${getControlActionText('interact')}] to replay`, '#ff5d8f');
           }
           return;
         }
@@ -4545,14 +4751,18 @@ export class GameScene extends Phaser.Scene {
     const item = this.playerState.inventory[this.playerState.activeSlot];
     if (!item) return;
     this.playerState.inventory[this.playerState.activeSlot] = null;
-    const angle = isMobileMode()
-      ? this.playerState.aimAngle
-      : Phaser.Math.Angle.Between(
-          this.playerSprite.x,
-          this.playerSprite.y,
-          this.input.activePointer.worldX,
-          this.input.activePointer.worldY
-        );
+    const usePadAim = this.activeLocalActor
+      ? this.activeLocalActor.inputType === 'gamepad'
+      : inputSystem.controlType === 'gamepad';
+    const angle =
+      isMobileMode() || usePadAim
+        ? this.playerState.aimAngle
+        : Phaser.Math.Angle.Between(
+            this.playerSprite.x,
+            this.playerSprite.y,
+            this.input.activePointer.worldX,
+            this.input.activePointer.worldY
+          );
     const tx = this.playerSprite.x + Math.cos(angle) * 18;
     const ty = this.playerSprite.y + Math.sin(angle) * 18;
     this.spawnPersistentFloorItem(item.id, tx, ty, item.uses);
@@ -4580,6 +4790,12 @@ export class GameScene extends Phaser.Scene {
     SoundSystem.playUnlock();
 
     if (this.levelIndex >= 6) {
+      void steamSystem.unlockAchievement('ACH_EVERHEART_RESTORED');
+      if (net.mode === 'solo' && !localCoopSession.active) {
+        void steamSystem.unlockAchievement('ACH_SOLO_CHAMPION');
+        const elapsedMs = Math.max(1, Date.now() - this.runStartMs);
+        void steamSystem.submitSoloClearTime(elapsedMs);
+      }
       if (net.mode === 'host') {
         net.broadcastInteract({
           peerId: this.playerState.id,
@@ -4604,8 +4820,97 @@ export class GameScene extends Phaser.Scene {
       levelIndex: nextLevel,
       floorSeed: nextSeed,
       carryPlayer: this.playerState,
+      carryLocalPlayers: localCoopSession.active ? this.localPlayers.map((lp) => lp.state) : undefined,
       carrySkeletons: this.getCarriedSkeletons(),
+      carryRunStartMs: this.runStartMs,
     });
+  }
+
+  private withLocalPlayer<T>(lp: LocalPlayerActor, fn: () => T): T {
+    const prevActor = this.activeLocalActor;
+    const prevState = this.playerState;
+    const prevSprite = this.playerSprite;
+    const prevWard = this.wardRing;
+    const prevReticle = this.aimReticle;
+    const prevAtk = this.attackCooldownMs;
+    const prevInvuln = this.invulnMs;
+    const prevDodge = this.dodgeMs;
+    const prevDodgeVx = this.dodgeVx;
+    const prevDodgeVy = this.dodgeVy;
+    const prevPin = this.spikePinnedMs;
+    const prevStam = this.staminaRegenMs;
+    const prevStat = this.statusTickMs;
+    const prevBurn = this.burnFxMs;
+    const prevFlash = this.playerHitFlashMs;
+    const prevSlow = this.playerSlowTinted;
+    const prevRespawn = this.respawnAnimMs;
+
+    this.activeLocalActor = lp;
+    this.playerState = lp.state;
+    this.playerSprite = lp.sprite;
+    this.wardRing = lp.wardRing;
+    this.aimReticle = lp.aimReticle;
+    this.attackCooldownMs = lp.attackCooldownMs;
+    this.invulnMs = lp.invulnMs;
+    this.dodgeMs = lp.dodgeMs;
+    this.dodgeVx = lp.dodgeVx;
+    this.dodgeVy = lp.dodgeVy;
+    this.spikePinnedMs = lp.spikePinnedMs;
+    this.staminaRegenMs = lp.staminaRegenMs;
+    this.statusTickMs = lp.statusTickMs;
+    this.burnFxMs = lp.burnFxMs;
+    this.playerHitFlashMs = lp.hitFlashMs;
+    this.playerSlowTinted = lp.slowTinted;
+    this.respawnAnimMs = lp.respawnAnimMs;
+
+    try {
+      return fn();
+    } finally {
+      lp.attackCooldownMs = this.attackCooldownMs;
+      lp.invulnMs = this.invulnMs;
+      lp.dodgeMs = this.dodgeMs;
+      lp.dodgeVx = this.dodgeVx;
+      lp.dodgeVy = this.dodgeVy;
+      lp.spikePinnedMs = this.spikePinnedMs;
+      lp.staminaRegenMs = this.staminaRegenMs;
+      lp.statusTickMs = this.statusTickMs;
+      lp.burnFxMs = this.burnFxMs;
+      lp.hitFlashMs = this.playerHitFlashMs;
+      lp.slowTinted = this.playerSlowTinted;
+      lp.respawnAnimMs = this.respawnAnimMs;
+
+      this.activeLocalActor = prevActor;
+      this.playerState = prevState;
+      this.playerSprite = prevSprite;
+      this.wardRing = prevWard;
+      this.aimReticle = prevReticle;
+      this.attackCooldownMs = prevAtk;
+      this.invulnMs = prevInvuln;
+      this.dodgeMs = prevDodge;
+      this.dodgeVx = prevDodgeVx;
+      this.dodgeVy = prevDodgeVy;
+      this.spikePinnedMs = prevPin;
+      this.staminaRegenMs = prevStam;
+      this.statusTickMs = prevStat;
+      this.burnFxMs = prevBurn;
+      this.playerHitFlashMs = prevFlash;
+      this.playerSlowTinted = prevSlow;
+      this.respawnAnimMs = prevRespawn;
+    }
+  }
+
+  private getNearestAliveLocalPlayer(x: number, y: number): LocalPlayerActor | null {
+    let best: LocalPlayerActor | null = null;
+    let bestD = Infinity;
+    for (const lp of this.localPlayers) {
+      if (lp.state.downed || !lp.sprite.active) continue;
+      const d = Phaser.Math.Distance.Between(x, y, lp.sprite.x, lp.sprite.y);
+      if (d < bestD) {
+        bestD = d;
+        best = lp;
+      }
+    }
+    return best;
   }
 
   private getCarriedSkeletons(): CarriedSkeletonState[] {
@@ -4705,6 +5010,19 @@ export class GameScene extends Phaser.Scene {
       this.invulnMs = 1500;
       SoundSystem.playHeal();
       this.ui.showToast(`${usedItem.name} saved you!`, '#ffe066');
+      return;
+    }
+
+    if (localCoopSession.active) {
+      this.playerState.downed = true;
+      this.playerState.downedTimerMs = 20000;
+      this.playerSprite.setFrame(5).setDepth(7);
+      const anyAlive = this.localPlayers.some((lp) => !lp.state.downed);
+      if (!anyAlive) {
+        this.triggerGameOver(false);
+      } else {
+        this.ui.showToast(`${this.playerState.name} is down!`, '#ff5d8f');
+      }
       return;
     }
 
@@ -4983,8 +5301,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnFireParticles(x: number, y: number, count = 2): void {
+    const actualCount = settingsSystem.current.particles === 'reduced' ? Math.max(1, Math.floor(count / 2)) : count;
     const fireColors = [0xff4500, 0xff6b35, 0xff9f1c, 0xffe066];
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < actualCount; i++) {
       const sx = x + Phaser.Math.FloatBetween(-5, 5);
       const sy = y + Phaser.Math.FloatBetween(-4, 4);
       const color = fireColors[Math.floor(Math.random() * fireColors.length)];
@@ -5007,7 +5326,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnParticles(x: number, y: number, color: number, count: number): void {
-    for (let i = 0; i < count; i++) {
+    const actualCount = settingsSystem.current.particles === 'reduced' ? Math.max(1, Math.floor(count / 2)) : count;
+    for (let i = 0; i < actualCount; i++) {
       const p = this.add.image(x, y, i % 2 === 0 ? 'particle_star' : 'particle_spark').setTint(color).setDepth(14);
       const a = Math.random() * Math.PI * 2;
       const dist = Phaser.Math.Between(10, 26);
@@ -5026,15 +5346,145 @@ export class GameScene extends Phaser.Scene {
     if (isMobileMode() && (this.paused || this.ui.isOverlayOpen())) {
       mobileInput.clearQueuedActions();
     }
+
+    // Gamepad pause / overlay close
+    const anyPadPause = localCoopSession.active
+      ? this.localPlayers.some((lp) => lp.inputType === 'gamepad' && inputSystem.consumePadAction(lp.padIndex, 'pause'))
+      : inputSystem.consumeAction('pause');
+    if (anyPadPause) {
+      if (this.ui.isOverlayOpen()) {
+        this.ui.closeShop();
+        this.paused = this.ui.togglePause(false);
+      } else {
+        this.paused = this.ui.togglePause();
+      }
+      return;
+    }
+
     if (this.paused || this.transitioningLevel) return;
 
-    this.attackCooldownMs = Math.max(0, this.attackCooldownMs - delta);
-    this.invulnMs = Math.max(0, this.invulnMs - delta);
-    this.respawnAnimMs = Math.max(0, this.respawnAnimMs - delta);
+    const anyPadMap = localCoopSession.active
+      ? this.localPlayers.some((lp) => lp.inputType === 'gamepad' && inputSystem.consumePadAction(lp.padIndex, 'map'))
+      : inputSystem.consumeAction('map');
+    if (anyPadMap) {
+      this.ui.toggleMap();
+    }
+
     this.doorCooldownMs = Math.max(0, this.doorCooldownMs - delta);
     this.plateCooldownMs = Math.max(0, this.plateCooldownMs - delta);
     this.blockPushCooldownMs = Math.max(0, this.blockPushCooldownMs - delta);
     this.giantStompCooldownMs = Math.max(0, this.giantStompCooldownMs - delta);
+
+    if (localCoopSession.active && this.localPlayers.length > 0) {
+      for (const lp of this.localPlayers) {
+        this.withLocalPlayer(lp, () => {
+          if (!this.ui.isOverlayOpen() && !this.playerState.downed && lp.inputType === 'gamepad') {
+            if (inputSystem.consumePadAction(lp.padIndex, 'prevSlot')) {
+              this.playerState.activeSlot = (this.playerState.activeSlot + 2) % 3;
+            }
+            if (inputSystem.consumePadAction(lp.padIndex, 'nextSlot')) {
+              this.playerState.activeSlot = (this.playerState.activeSlot + 1) % 3;
+            }
+            if (inputSystem.consumePadAction(lp.padIndex, 'drop')) {
+              this.dropActiveItem();
+            }
+            if (inputSystem.consumePadAction(lp.padIndex, 'interact')) {
+              this.handleLocalInteractOrRevive(lp);
+            }
+            if (inputSystem.consumePadAction(lp.padIndex, 'secondary')) {
+              this.handleSecondaryAction();
+            }
+          }
+          this.updateSinglePlayerTick(time, delta);
+          lp.nameTag.setPosition(Math.round(this.playerSprite.x), Math.round(this.playerSprite.y - 12));
+        });
+      }
+
+      // Level 7 Hallway: center camera on average position of all players & prevent going off-camera
+      if (this.currentRoom.hallwayDoors && (this.currentRoom.widthTiles ?? 11) > 11) {
+        const alive = this.localPlayers.filter((lp) => !lp.state.downed);
+        const group = alive.length > 0 ? alive : this.localPlayers;
+        const avgX = group.reduce((acc, lp) => acc + lp.sprite.x, 0) / group.length;
+        const cam = this.cameras.main;
+        const halfViewW = cam.width / cam.zoom / 2;
+        const minCamX = Math.min(this.roomWidthPx / 2, halfViewW - 12);
+        const maxCamX = Math.max(this.roomWidthPx / 2, this.roomWidthPx - halfViewW + 12);
+        const camX = Phaser.Math.Clamp(avgX, minCamX, maxCamX);
+        cam.centerOn(camX, this.roomHeightPx / 2);
+
+        const clampMinX = Math.max(16, camX - halfViewW + 14);
+        const clampMaxX = Math.min(this.roomWidthPx - 16, camX + halfViewW - 14);
+        for (const lp of this.localPlayers) {
+          if (lp.sprite.x < clampMinX) {
+            lp.sprite.x = clampMinX;
+            lp.state.x = clampMinX;
+          } else if (lp.sprite.x > clampMaxX) {
+            lp.sprite.x = clampMaxX;
+            lp.state.x = clampMaxX;
+          }
+        }
+      }
+    } else {
+      if (!this.ui.isOverlayOpen() && !this.playerState.downed) {
+        if (inputSystem.consumeAction('prevSlot')) {
+          this.playerState.activeSlot = (this.playerState.activeSlot + 2) % 3;
+        }
+        if (inputSystem.consumeAction('nextSlot')) {
+          this.playerState.activeSlot = (this.playerState.activeSlot + 1) % 3;
+        }
+        if (inputSystem.consumeAction('drop')) {
+          this.dropActiveItem();
+        }
+        if (inputSystem.consumeAction('interact')) {
+          this.handleInteract();
+        }
+        if (inputSystem.consumeAction('secondary')) {
+          this.handleSecondaryAction();
+        }
+      }
+      this.updateSinglePlayerTick(time, delta);
+    }
+
+    this.updateLevel7Events(delta);
+    this.updateTestRoomDungeon(delta);
+    this.updatePrismBeams(delta);
+    this.updateSummonedSkeletons(time, delta);
+    this.updateEnemies(time, delta);
+    this.updateProjectiles(delta);
+    this.updateSlimeSplatters(delta);
+    this.updateCometTrail(delta);
+    this.updateHazardsAndLoot(delta);
+    this.updatePuzzlePlates();
+    this.updatePuzzleBlocks();
+    this.checkDoorTransitions();
+    this.updateFireflies(delta);
+    this.syncMultiplayer(delta);
+    this.pushUIUpdate();
+  }
+
+  private handleLocalInteractOrRevive(lp: LocalPlayerActor): void {
+    // Check if an injured/downed local teammate is nearby to revive
+    for (const other of this.localPlayers) {
+      if (other === lp || !other.state.downed) continue;
+      const d = Phaser.Math.Distance.Between(lp.sprite.x, lp.sprite.y, other.sprite.x, other.sprite.y);
+      if (d < 26) {
+        other.state.downed = false;
+        other.state.hp = Math.max(4, Math.floor(other.state.maxHp / 2));
+        other.invulnMs = 1500;
+        other.sprite.setFrame(0).setDepth(10);
+        SoundSystem.playHeal();
+        this.spawnParticles(other.sprite.x, other.sprite.y, 0x66ffd9, 10);
+        this.ui.showToast(`${other.state.name} revived!`, '#66ffd9');
+        return;
+      }
+    }
+    this.handleInteract();
+  }
+
+  private updateSinglePlayerTick(time: number, delta: number): void {
+    this.attackCooldownMs = Math.max(0, this.attackCooldownMs - delta);
+    this.invulnMs = Math.max(0, this.invulnMs - delta);
+    this.respawnAnimMs = Math.max(0, this.respawnAnimMs - delta);
 
     // Status effects tick
     const hadVitality = StatusEffectManager.has(this.playerState.statusEffects, 'vitality');
@@ -5095,16 +5545,10 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.updatePlayerMovement(time, delta);
-    this.updateLevel7Events(delta);
-    this.updateTestRoomDungeon(delta);
     this.updateBeamWeapon(delta);
-    this.updatePrismBeams(delta);
     this.updateFlamethrowerWeapon(delta);
     this.updateAuroraHarpHoldFire();
-    this.updateSummonedSkeletons(time, delta);
-    this.updateEnemies(time, delta);
-    this.updateProjectiles(delta);
-    this.updateSlimeSplatters(delta);
+
     if (this.playerHitFlashMs > 0) {
       this.playerHitFlashMs -= delta;
       if (this.playerHitFlashMs <= 0) {
@@ -5127,14 +5571,6 @@ export class GameScene extends Phaser.Scene {
         this.playerSlowTinted = false;
       }
     }
-    this.updateCometTrail(delta);
-    this.updateHazardsAndLoot(delta);
-    this.updatePuzzlePlates();
-    this.updatePuzzleBlocks();
-    this.checkDoorTransitions();
-    this.updateFireflies(delta);
-    this.syncMultiplayer(delta);
-    this.pushUIUpdate();
   }
 
   private updatePlayerMovement(time: number, delta: number): void {
@@ -5144,6 +5580,13 @@ export class GameScene extends Phaser.Scene {
       this.playerState.vy = 0;
       this.playerSprite.setFrame(5).setDepth(7);
       this.playerState.downedTimerMs -= delta;
+      if (localCoopSession.active) {
+        const anyAlive = this.localPlayers.some((lp) => !lp.state.downed);
+        if (!anyAlive) {
+          this.triggerGameOver(false);
+        }
+        return;
+      }
       const anyAlive = Array.from(this.remotePlayers.values()).some((p) => !p.downed);
       if (!anyAlive) {
         this.triggerGameOver(false);
@@ -5192,22 +5635,70 @@ export class GameScene extends Phaser.Scene {
 
     let dx = 0;
     let dy = 0;
-    if (this.keys.a.isDown || this.keys.left.isDown) dx -= 1;
-    if (this.keys.d.isDown || this.keys.right.isDown) dx += 1;
-    if (this.keys.w.isDown || this.keys.up.isDown) dy -= 1;
-    if (this.keys.s.isDown || this.keys.down.isDown) dy += 1;
+    let wantDodge = false;
 
-    if (isMobileMode()) {
-      if (Math.abs(mobileInput.moveX) > 0.05 || Math.abs(mobileInput.moveY) > 0.05) {
-        dx = mobileInput.moveX;
-        dy = mobileInput.moveY;
-        if (!mobileInput.dpadActive) {
-          this.playerState.aimAngle = Math.atan2(dy, dx);
+    if (this.activeLocalActor) {
+      if (this.activeLocalActor.inputType === 'keyboard') {
+        if (this.keys.a.isDown || this.keys.left.isDown) dx -= 1;
+        if (this.keys.d.isDown || this.keys.right.isDown) dx += 1;
+        if (this.keys.w.isDown || this.keys.up.isDown) dy -= 1;
+        if (this.keys.s.isDown || this.keys.down.isDown) dy += 1;
+        wantDodge =
+          Phaser.Input.Keyboard.JustDown(this.keys.space) ||
+          Phaser.Input.Keyboard.JustDown(this.keys.shift);
+      } else {
+        const padIdx = this.activeLocalActor.padIndex;
+        const padMove = inputSystem.getPadMoveVector(padIdx);
+        dx = padMove.x;
+        dy = padMove.y;
+        const padAim = inputSystem.getPadAimVector(padIdx);
+        if (padAim.active) {
+          this.playerState.aimAngle = Math.atan2(padAim.y, padAim.x);
         }
+        if (!this.ui.isOverlayOpen() && (inputSystem.consumePadAction(padIdx, 'attack') || inputSystem.isPadActionHeld(padIdx, 'attack'))) {
+          this.handlePrimaryAttack();
+        }
+        wantDodge = inputSystem.consumePadAction(padIdx, 'dodge');
       }
-      if (mobileInput.consumeAttack() || mobileInput.isDpadAttackActive()) {
+    } else {
+      if (this.keys.a.isDown || this.keys.left.isDown) dx -= 1;
+      if (this.keys.d.isDown || this.keys.right.isDown) dx += 1;
+      if (this.keys.w.isDown || this.keys.up.isDown) dy -= 1;
+      if (this.keys.s.isDown || this.keys.down.isDown) dy += 1;
+
+      const padMove = inputSystem.getMoveVector();
+      if (Math.abs(padMove.x) > 0 || Math.abs(padMove.y) > 0) {
+        dx = padMove.x;
+        dy = padMove.y;
+      }
+
+      const padAim = inputSystem.getAimVector();
+      if (padAim.active) {
+        this.playerState.aimAngle = Math.atan2(padAim.y, padAim.x);
+      }
+
+      if (!this.ui.isOverlayOpen() && (inputSystem.consumeAction('attack') || inputSystem.isActionHeld('attack'))) {
         this.handlePrimaryAttack();
       }
+
+      if (isMobileMode()) {
+        if (Math.abs(mobileInput.moveX) > 0.05 || Math.abs(mobileInput.moveY) > 0.05) {
+          dx = mobileInput.moveX;
+          dy = mobileInput.moveY;
+          if (!mobileInput.dpadActive) {
+            this.playerState.aimAngle = Math.atan2(dy, dx);
+          }
+        }
+        if (mobileInput.consumeAttack() || mobileInput.isDpadAttackActive()) {
+          this.handlePrimaryAttack();
+        }
+      }
+
+      wantDodge =
+        Phaser.Input.Keyboard.JustDown(this.keys.space) ||
+        Phaser.Input.Keyboard.JustDown(this.keys.shift) ||
+        inputSystem.consumeAction('dodge') ||
+        (isMobileMode() && mobileInput.consumeDodge());
     }
 
     if (dx !== 0 && dy !== 0) {
@@ -5219,10 +5710,6 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Dodge input (also allows escaping when pinned by a spike trap)
-    const wantDodge =
-      Phaser.Input.Keyboard.JustDown(this.keys.space) ||
-      Phaser.Input.Keyboard.JustDown(this.keys.shift) ||
-      (isMobileMode() && mobileInput.consumeDodge());
 
     if (this.spikePinnedMs > 0) {
       if (wantDodge && this.dodgeMs <= 0 && this.playerState.stamina >= 1) {
@@ -5287,6 +5774,20 @@ export class GameScene extends Phaser.Scene {
 
     const hasWard = StatusEffectManager.has(this.playerState.statusEffects, 'starward');
     this.wardRing.setPosition(this.playerSprite.x, this.playerSprite.y).setVisible(hasWard);
+
+    const showReticle = this.activeLocalActor
+      ? this.activeLocalActor.inputType === 'gamepad'
+      : inputSystem.controlType === 'gamepad';
+    if (showReticle && !this.playerState.downed) {
+      this.aimReticle
+        .setPosition(
+          this.playerSprite.x + Math.cos(this.playerState.aimAngle) * 18,
+          this.playerSprite.y + Math.sin(this.playerState.aimAngle) * 18
+        )
+        .setVisible(true);
+    } else {
+      this.aimReticle.setVisible(false);
+    }
   }
 
   private spawnObsidianAxeSlam(originX: number, originY: number, angle: number, isLocal: boolean): void {
@@ -5727,7 +6228,9 @@ export class GameScene extends Phaser.Scene {
 
     const holdingShoot = isMobileMode()
       ? mobileInput.dpadActive
-      : this.input.activePointer.leftButtonDown();
+      : inputSystem.controlType === 'gamepad'
+        ? inputSystem.isActionHeld('attack')
+        : this.input.activePointer.leftButtonDown();
 
     if (!holdingShoot) {
       this.beamDamageTickMs = 0;
@@ -5994,7 +6497,9 @@ export class GameScene extends Phaser.Scene {
     if (!activeItem || activeItem.id !== 'aurora_harp') return;
     const holdingShoot = isMobileMode()
       ? mobileInput.dpadActive
-      : this.input.activePointer.leftButtonDown();
+      : inputSystem.controlType === 'gamepad'
+        ? inputSystem.isActionHeld('attack')
+        : this.input.activePointer.leftButtonDown();
     if (holdingShoot) {
       this.handlePrimaryAttack();
     }
@@ -6015,7 +6520,9 @@ export class GameScene extends Phaser.Scene {
 
     const holdingShoot = isMobileMode()
       ? mobileInput.dpadActive
-      : this.input.activePointer.leftButtonDown();
+      : inputSystem.controlType === 'gamepad'
+        ? inputSystem.isActionHeld('attack')
+        : this.input.activePointer.leftButtonDown();
 
     if (!holdingShoot) {
       this.flameDamageTickMs = 0;
@@ -6410,9 +6917,11 @@ export class GameScene extends Phaser.Scene {
 
     const hostX = this.playerSprite.x;
     const hostY = this.playerSprite.y;
-    const roomAllies = Array.from(this.remotePlayers.values()).filter(
-      (p) => !p.downed && p.gx === this.currentRoom.gx && p.gy === this.currentRoom.gy
-    );
+    const roomAllies = localCoopSession.active
+      ? this.localPlayers.filter((lp) => !lp.state.downed).map((lp) => lp.state)
+      : Array.from(this.remotePlayers.values()).filter(
+          (p) => !p.downed && p.gx === this.currentRoom.gx && p.gy === this.currentRoom.gy
+        );
 
     for (const e of [...this.activeEnemies]) {
       if (!e.sprite.active) continue;
@@ -8129,6 +8638,43 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private tryEnemyProjectileHitLocal(p: ActiveProjectile): boolean {
+    const distToPlayer = Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, this.playerSprite.x, this.playerSprite.y);
+    if (StatusEffectManager.has(this.playerState.statusEffects, 'starward') && distToPlayer < 15) {
+      p.fromPlayer = true;
+      p.ownerId = this.playerState.id;
+      p.vx *= -1.45;
+      p.vy *= -1.45;
+      p.lifeMs = 1400;
+      p.hitUids.clear();
+      p.sprite.setTint(0x6ef3ff);
+      SoundSystem.playSwing();
+      this.spawnParticles(p.sprite.x, p.sprite.y, 0x6ef3ff, 4);
+      return false;
+    }
+    if (distToPlayer < 10) {
+      if (p.shooterUid) {
+        const shooter = this.activeEnemies.find((e) => e.uid === p.shooterUid);
+        if (shooter) shooter.blockedShots = 0;
+      }
+      if (p.burns) {
+        StatusEffectManager.addEffect(this.playerState.statusEffects, 'burning', 3000);
+      }
+      if (p.inflictEffect) {
+        StatusEffectManager.addEffect(this.playerState.statusEffects, p.inflictEffect, p.inflictDurationMs ?? 2500);
+      }
+      if (p.slimeSplatter) {
+        this.spawnSlimeSplatter(p.sprite.x, p.sprite.y, true);
+      }
+      if (p.sporeBurst) {
+        this.spawnEnemySporeBurst(p.sprite.x, p.sprite.y, p.damage, p.color);
+      }
+      this.damagePlayer(p.damage);
+      return true;
+    }
+    return false;
+  }
+
   private updateProjectiles(delta: number): void {
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
@@ -8467,7 +9013,7 @@ export class GameScene extends Phaser.Scene {
         continue;
       }
 
-      if (p.fromPlayer && p.ownerId === this.playerState.id) {
+      if (p.fromPlayer && (localCoopSession.active ? p.ownerId.startsWith('local_') : p.ownerId === this.playerState.id)) {
         let reflected = false;
         if (!p.boomerang) {
           for (const e of this.activeEnemies) {
@@ -8611,38 +9157,21 @@ export class GameScene extends Phaser.Scene {
         }
       } else if (!p.fromPlayer) {
         if (p.bubbled) continue;
-        const distToPlayer = Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, this.playerSprite.x, this.playerSprite.y);
-        if (StatusEffectManager.has(this.playerState.statusEffects, 'starward') && distToPlayer < 15) {
-          p.fromPlayer = true;
-          p.ownerId = this.playerState.id;
-          p.vx *= -1.45;
-          p.vy *= -1.45;
-          p.lifeMs = 1400;
-          p.hitUids.clear();
-          p.sprite.setTint(0x6ef3ff);
-          SoundSystem.playSwing();
-          this.spawnParticles(p.sprite.x, p.sprite.y, 0x6ef3ff, 4);
-        } else if (distToPlayer < 10) {
-          if (p.shooterUid) {
-            const shooter = this.activeEnemies.find((e) => e.uid === p.shooterUid);
-            if (shooter) shooter.blockedShots = 0;
+        const targetActors: Array<LocalPlayerActor | null> = localCoopSession.active
+          ? this.localPlayers.filter((lp) => !lp.state.downed)
+          : [null];
+        for (const actor of targetActors) {
+          if (!p.sprite.active || p.fromPlayer) break;
+          const hit = actor
+            ? this.withLocalPlayer(actor, () => this.tryEnemyProjectileHitLocal(p))
+            : this.tryEnemyProjectileHitLocal(p);
+          if (hit) {
+            p.sprite.destroy();
+            this.projectiles.splice(i, 1);
+            break;
           }
-          if (p.burns) {
-            StatusEffectManager.addEffect(this.playerState.statusEffects, 'burning', 3000);
-          }
-          if (p.inflictEffect) {
-            StatusEffectManager.addEffect(this.playerState.statusEffects, p.inflictEffect, p.inflictDurationMs ?? 2500);
-          }
-          if (p.slimeSplatter) {
-            this.spawnSlimeSplatter(p.sprite.x, p.sprite.y, true);
-          }
-          if (p.sporeBurst) {
-            this.spawnEnemySporeBurst(p.sprite.x, p.sprite.y, p.damage, p.color);
-          }
-          this.damagePlayer(p.damage);
-          p.sprite.destroy();
-          this.projectiles.splice(i, 1);
-        } else {
+        }
+        if (!p.fromPlayer && p.sprite.active) {
           for (const sk of [...this.summonedSkeletons]) {
             if (!sk.sprite.active) continue;
             if (Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, sk.sprite.x, sk.sprite.y) < 9) {
@@ -8858,13 +9387,18 @@ export class GameScene extends Phaser.Scene {
         l.sprite.y += Math.sin(a) * 1.8;
       }
 
-      if (d < 14 && (l.kind === 'shard' || l.kind === 'heart')) {
+      const collector = localCoopSession.active ? this.getNearestAliveLocalPlayer(l.sprite.x, l.sprite.y) : null;
+      const cx = collector ? collector.sprite.x : px;
+      const cy = collector ? collector.sprite.y : py;
+      const lootDist = Phaser.Math.Distance.Between(cx, cy, l.sprite.x, l.sprite.y);
+      if (lootDist < 14 && (l.kind === 'shard' || l.kind === 'heart')) {
         l.collected = true;
         l.sprite.destroy();
         const roomLoot = this.currentRoom.loot.find((rl) => rl.uid === l.uid);
         if (roomLoot) roomLoot.collected = true;
+        const targetState = collector ? collector.state : this.playerState;
         net.broadcastInteract({
-          peerId: this.playerState.id,
+          peerId: targetState.id,
           gx: this.currentRoom.gx,
           gy: this.currentRoom.gy,
           kind: 'pickup',
@@ -8872,11 +9406,12 @@ export class GameScene extends Phaser.Scene {
         });
         if (l.kind === 'shard') {
           const amt = l.amount ?? 1;
-          this.playerState.shards += amt;
+          targetState.shards += amt;
           this.totalShardsCollected += amt;
+          if (this.totalShardsCollected >= 50) void steamSystem.unlockAchievement('ACH_HOARDER');
           SoundSystem.playPickup();
         } else {
-          this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 2);
+          targetState.hp = Math.min(targetState.maxHp, targetState.hp + 2);
           SoundSystem.playHeal();
         }
       }
@@ -9459,55 +9994,61 @@ export class GameScene extends Phaser.Scene {
 
   private checkDoorTransitions(): void {
     if (this.doorCooldownMs > 0 || this.currentRoom.doorsLocked) return;
-    const px = this.playerSprite.x;
-    const py = this.playerSprite.y;
 
-    for (const d of this.doorZones) {
-      if (Phaser.Geom.Rectangle.Contains(d.rect, px, py)) {
-        if (d.isTestExit) {
-          this.despawnAllTestEnemies();
-          this.isTestRoom = false;
-          SoundSystem.playUnlock();
-          this.scene.restart({
-            levelIndex: 0,
-            floorSeed: getDailySeed(0),
-            carryPlayer: this.playerState,
-            carrySkeletons: this.getCarriedSkeletons(),
-            exitedTestRoom: true,
-          });
-          return;
-        }
-        if (d.targetGx !== undefined && d.targetGy !== undefined && d.spawnX !== undefined && d.spawnY !== undefined) {
-          if (this.floor.rooms[d.targetGy]?.[d.targetGx]) {
-            this.loadRoom(d.targetGx, d.targetGy, d.spawnX, d.spawnY);
+    const candidates = localCoopSession.active
+      ? this.localPlayers.filter((lp) => !lp.state.downed).map((lp) => ({ x: lp.sprite.x, y: lp.sprite.y }))
+      : [{ x: this.playerSprite.x, y: this.playerSprite.y }];
+
+    for (const pos of candidates) {
+      const px = pos.x;
+      const py = pos.y;
+      for (const d of this.doorZones) {
+        if (Phaser.Geom.Rectangle.Contains(d.rect, px, py)) {
+          if (d.isTestExit) {
+            this.despawnAllTestEnemies();
+            this.isTestRoom = false;
+            SoundSystem.playUnlock();
+            this.scene.restart({
+              levelIndex: 0,
+              floorSeed: getDailySeed(0),
+              carryPlayer: this.playerState,
+              carrySkeletons: this.getCarriedSkeletons(),
+              exitedTestRoom: true,
+            });
+            return;
+          }
+          if (d.targetGx !== undefined && d.targetGy !== undefined && d.spawnX !== undefined && d.spawnY !== undefined) {
+            if (this.floor.rooms[d.targetGy]?.[d.targetGx]) {
+              this.loadRoom(d.targetGx, d.targetGy, d.spawnX, d.spawnY);
+            }
+            return;
+          }
+          let nx = this.currentRoom.gx;
+          let ny = this.currentRoom.gy;
+          let sx = px;
+          let sy = py;
+          if (d.dir === 'north') {
+            ny -= 1;
+            sx = 88;
+            sy = 152;
+          } else if (d.dir === 'south') {
+            ny += 1;
+            sx = 88;
+            sy = 24;
+          } else if (d.dir === 'west') {
+            nx -= 1;
+            sx = 152;
+            sy = 88;
+          } else if (d.dir === 'east') {
+            nx += 1;
+            sx = 24;
+            sy = 88;
+          }
+          if (this.floor.rooms[ny]?.[nx]) {
+            this.loadRoom(nx, ny, sx, sy);
           }
           return;
         }
-        let nx = this.currentRoom.gx;
-        let ny = this.currentRoom.gy;
-        let sx = px;
-        let sy = py;
-        if (d.dir === 'north') {
-          ny -= 1;
-          sx = 88;
-          sy = 152;
-        } else if (d.dir === 'south') {
-          ny += 1;
-          sx = 88;
-          sy = 24;
-        } else if (d.dir === 'west') {
-          nx -= 1;
-          sx = 152;
-          sy = 88;
-        } else if (d.dir === 'east') {
-          nx += 1;
-          sx = 24;
-          sy = 88;
-        }
-        if (this.floor.rooms[ny]?.[nx]) {
-          this.loadRoom(nx, ny, sx, sy);
-        }
-        return;
       }
     }
   }
@@ -9863,6 +10404,7 @@ export class GameScene extends Phaser.Scene {
     this.ui.updateState({
       player: uiPlayer,
       allies: uiAllies,
+      localPlayers: localCoopSession.active ? this.localPlayers.map((lp) => lp.state) : undefined,
       levelIndex: this.levelIndex,
       modifierId: this.floor.modifier as LevelModifierId,
       rooms: this.floor.rooms,

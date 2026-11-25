@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
-import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { isMobileMode, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { inputSystem } from '../systems/InputSystem';
 import { net } from '../systems/MultiplayerSystem';
 import { getDailySeed } from '../utils/SeededGenerator';
 
@@ -147,15 +148,13 @@ export class LobbyScene extends Phaser.Scene {
       });
     }
 
-    if (isMobileMode()) {
-      this.refreshMobileFocus();
-      this.unsubNav = mobileInput.onNav((dir) => this.handleMobileNav(dir));
-      this.unsubBtn = mobileInput.onButton((btn) => this.handleMobileButton(btn));
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-        this.unsubNav?.();
-        this.unsubBtn?.();
-      });
-    }
+    this.refreshMobileFocus();
+    this.unsubNav = inputSystem.onNav((dir) => this.handleMobileNav(dir));
+    this.unsubBtn = inputSystem.onButton((btn) => this.handleMobileButton(btn));
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.unsubNav?.();
+      this.unsubBtn?.();
+    });
   }
 
   private rebuildActionButton(): void {
@@ -227,7 +226,7 @@ export class LobbyScene extends Phaser.Scene {
   }
 
   private refreshMobileFocus(): void {
-    if (!isMobileMode()) return;
+    if (!isMobileMode() && inputSystem.controlType !== 'gamepad') return;
     this.copyBtn.setTint(this.mobileFocusIndex === 0 ? 0xffe066 : 0x66ffd9);
     if (this.backBtn && this.backTxt) {
       this.backBtn.setTexture(this.mobileFocusIndex === 1 ? 'ui_btn_hover' : 'ui_btn');

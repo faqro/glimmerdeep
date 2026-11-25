@@ -8,6 +8,7 @@ import bossAwakenSfxUrl from './bossawaken.ogg';
 import bossSpawnSfxUrl from './bossspawn.ogg';
 import bossDeadSfxUrl from './bossdead.ogg';
 import bossEvilLaughSfxUrl from './bossevillaugh.ogg';
+import { settingsSystem } from '../systems/SettingsSystem';
 
 export type MusicTrack = 'menu' | 'normal' | 'boss' | 'darkcave' | 'nyar_boss' | 'credits';
 
@@ -26,7 +27,7 @@ const TRACK_URLS: Record<MusicTrack, string> = {
  */
 class SoundSystemImpl {
   private ctx: AudioContext | null = null;
-  private _muted = false;
+  private _muted = settingsSystem.current.muted;
   private tracks: Partial<Record<MusicTrack, HTMLAudioElement>> = {};
   private activeTrack: MusicTrack = 'menu';
   private bgmStarted = false;
@@ -35,18 +36,30 @@ class SoundSystemImpl {
   private laughAudio: HTMLAudioElement | null = null;
   private laughTimer: number | null = null;
 
+  constructor() {
+    settingsSystem.onChange((s) => {
+      this._muted = s.muted;
+      const trackVol = 0.175 * (s.musicVolume / 100);
+      for (const audio of Object.values(this.tracks)) {
+        if (audio) {
+          audio.muted = s.muted;
+          audio.volume = trackVol;
+        }
+      }
+      if (this.laughAudio) {
+        this.laughAudio.muted = s.muted;
+        this.laughAudio.volume = 0.25 * (s.sfxVolume / 100);
+      }
+    });
+  }
+
   get muted(): boolean {
     return this._muted;
   }
 
   set muted(val: boolean) {
     this._muted = val;
-    for (const audio of Object.values(this.tracks)) {
-      if (audio) audio.muted = val;
-    }
-    if (this.laughAudio) {
-      this.laughAudio.muted = val;
-    }
+    settingsSystem.update({ muted: val });
   }
 
   private getOrCreateTrack(track: MusicTrack): HTMLAudioElement {
@@ -55,7 +68,7 @@ class SoundSystemImpl {
 
     const audio = new Audio(TRACK_URLS[track]);
     audio.loop = true;
-    audio.volume = 0.175;
+    audio.volume = 0.175 * (settingsSystem.current.musicVolume / 100);
     audio.muted = this._muted;
     audio.addEventListener('ended', () => {
       if (this.activeTrack !== track) return;
@@ -193,6 +206,9 @@ class SoundSystemImpl {
     const ctx = this.ensureContext();
     if (!ctx) return;
 
+    const sfxMult = settingsSystem.current.sfxVolume / 100;
+    if (sfxMult <= 0) return;
+
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -200,7 +216,7 @@ class SoundSystemImpl {
     osc.frequency.setValueAtTime(freq, now);
     osc.frequency.exponentialRampToValueAtTime(Math.max(20, endFreq), now + duration);
 
-    gain.gain.setValueAtTime(gainVal * 2, now);
+    gain.gain.setValueAtTime(Math.max(0.001, gainVal * 2 * sfxMult), now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
     osc.connect(gain);

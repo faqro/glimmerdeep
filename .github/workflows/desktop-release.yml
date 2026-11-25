@@ -1,0 +1,278 @@
+name: Desktop & Steamworks Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-standalone:
+    name: Windows Standalone (Electron)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build desktop web bundle
+        env:
+          VITE_DESKTOP: 'true'
+          VITE_STEAMWORKS: 'false'
+        run: npm run build
+
+      - name: Package Windows Standalone (NSIS + Portable)
+        run: npx electron-builder --win nsis portable --config.extraMetadata.steamworks=false
+
+      - name: Prepare release artifacts
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name || github.run_number }}
+        run: |
+          New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
+          Get-ChildItem -Path release-electron -Filter *.exe | ForEach-Object {
+            Copy-Item $_.FullName -Destination "release-artifacts/"
+          }
+
+      - name: Upload Windows Standalone to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*.exe
+
+      - name: Upload Windows Standalone workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: glimmerdeep-windows-standalone
+          path: release-artifacts/*.exe
+
+  build-steam-windows:
+    name: Windows (Steamworks)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Steamworks web bundle
+        env:
+          VITE_DESKTOP: 'true'
+          VITE_STEAMWORKS: 'true'
+        run: npm run build
+
+      - name: Package Windows Steamworks build
+        env:
+          STEAM_APP_ID: ${{ secrets.STEAM_APP_ID || '480' }}
+          STEAM_DLC_APP_ID: ${{ secrets.STEAM_DLC_APP_ID || '0' }}
+        run: |
+          npx electron-builder --win dir --config.extraMetadata.steamworks=true --config.extraMetadata.steamAppId=%STEAM_APP_ID% --config.extraMetadata.steamDlcAppId=%STEAM_DLC_APP_ID%
+          echo %STEAM_APP_ID%> release-electron\win-unpacked\steam_appid.txt
+
+      - name: Upload Windows Steam depot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-depot-win
+          path: release-electron/win-unpacked
+
+  build-steam-linux:
+    name: Linux (Steamworks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Steamworks web bundle
+        env:
+          VITE_DESKTOP: 'true'
+          VITE_STEAMWORKS: 'true'
+        run: npm run build
+
+      - name: Package Linux Steamworks build
+        env:
+          STEAM_APP_ID: ${{ secrets.STEAM_APP_ID || '480' }}
+          STEAM_DLC_APP_ID: ${{ secrets.STEAM_DLC_APP_ID || '0' }}
+        run: |
+          npx electron-builder --linux dir --config.extraMetadata.steamworks=true --config.extraMetadata.steamAppId="$STEAM_APP_ID" --config.extraMetadata.steamDlcAppId="$STEAM_DLC_APP_ID"
+          echo "$STEAM_APP_ID" > release-electron/linux-unpacked/steam_appid.txt
+
+      - name: Upload Linux Steam depot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-depot-linux
+          path: release-electron/linux-unpacked
+
+  build-steam-macos:
+    name: macOS (Steamworks)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Steamworks web bundle
+        env:
+          VITE_DESKTOP: 'true'
+          VITE_STEAMWORKS: 'true'
+        run: npm run build
+
+      - name: Package macOS Steamworks build
+        env:
+          STEAM_APP_ID: ${{ secrets.STEAM_APP_ID || '480' }}
+          STEAM_DLC_APP_ID: ${{ secrets.STEAM_DLC_APP_ID || '0' }}
+        run: |
+          npx electron-builder --mac dir --config.extraMetadata.steamworks=true --config.extraMetadata.steamAppId="$STEAM_APP_ID" --config.extraMetadata.steamDlcAppId="$STEAM_DLC_APP_ID"
+          MAC_DIR=$(find release-electron -maxdepth 1 -type d -name "mac*" | head -n 1)
+          echo "$STEAM_APP_ID" > "$MAC_DIR/steam_appid.txt"
+          mv "$MAC_DIR" release-electron/mac-unpacked
+
+      - name: Upload macOS Steam depot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-depot-mac
+          path: release-electron/mac-unpacked
+
+  deploy-steam:
+    name: Submit Depots to Steam (SteamCMD)
+    needs: [build-steam-windows, build-steam-linux, build-steam-macos]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows depot
+        uses: actions/download-artifact@v4
+        with:
+          name: steam-depot-win
+          path: steam-build/depots/win
+
+      - name: Download Linux depot
+        uses: actions/download-artifact@v4
+        with:
+          name: steam-depot-linux
+          path: steam-build/depots/linux
+
+      - name: Download macOS depot
+        uses: actions/download-artifact@v4
+        with:
+          name: steam-depot-mac
+          path: steam-build/depots/mac
+
+      - name: Generate SteamCMD VDF manifests
+        env:
+          STEAM_APP_ID: ${{ secrets.STEAM_APP_ID }}
+          STEAM_DEPOT_ID_WIN: ${{ secrets.STEAM_DEPOT_ID_WIN }}
+          STEAM_DEPOT_ID_LINUX: ${{ secrets.STEAM_DEPOT_ID_LINUX }}
+          STEAM_DEPOT_ID_MAC: ${{ secrets.STEAM_DEPOT_ID_MAC }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.run_number }}
+        run: |
+          mkdir -p steam-build/output
+          cat > steam-build/depot_win.vdf <<EOF
+          "DepotBuildConfig"
+          {
+            "DepotID" "${STEAM_DEPOT_ID_WIN}"
+            "ContentRoot" "$(pwd)/steam-build/depots/win"
+            "FileMapping"
+            {
+              "LocalPath" "*"
+              "DepotPath" "."
+              "recursive" "1"
+            }
+          }
+          EOF
+
+          cat > steam-build/depot_linux.vdf <<EOF
+          "DepotBuildConfig"
+          {
+            "DepotID" "${STEAM_DEPOT_ID_LINUX}"
+            "ContentRoot" "$(pwd)/steam-build/depots/linux"
+            "FileMapping"
+            {
+              "LocalPath" "*"
+              "DepotPath" "."
+              "recursive" "1"
+            }
+          }
+          EOF
+
+          cat > steam-build/depot_mac.vdf <<EOF
+          "DepotBuildConfig"
+          {
+            "DepotID" "${STEAM_DEPOT_ID_MAC}"
+            "ContentRoot" "$(pwd)/steam-build/depots/mac"
+            "FileMapping"
+            {
+              "LocalPath" "*"
+              "DepotPath" "."
+              "recursive" "1"
+            }
+          }
+          EOF
+
+          cat > steam-build/app_build.vdf <<EOF
+          "AppBuild"
+          {
+            "AppID" "${STEAM_APP_ID}"
+            "Desc" "Glimmerdeep ${RELEASE_TAG}"
+            "BuildOutput" "$(pwd)/steam-build/output"
+            "ContentRoot" "$(pwd)/steam-build/depots"
+            "SetLive" "default"
+            "Depots"
+            {
+              "${STEAM_DEPOT_ID_WIN}" "$(pwd)/steam-build/depot_win.vdf"
+              "${STEAM_DEPOT_ID_LINUX}" "$(pwd)/steam-build/depot_linux.vdf"
+              "${STEAM_DEPOT_ID_MAC}" "$(pwd)/steam-build/depot_mac.vdf"
+            }
+          }
+          EOF
+
+      - name: Install SteamCMD & Upload Build
+        env:
+          STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
+          STEAM_PASSWORD: ${{ secrets.STEAM_PASSWORD }}
+          STEAM_CONFIG_VDF_BASE64: ${{ secrets.STEAM_CONFIG_VDF_BASE64 }}
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          echo steam steam/question select "I AGREE" | sudo debconf-set-selections
+          echo steam steam/license note '' | sudo debconf-set-selections
+          sudo apt-get install -y steamcmd
+          mkdir -p ~/.steam/steam/config
+          if [ -n "$STEAM_CONFIG_VDF_BASE64" ]; then
+            echo "$STEAM_CONFIG_VDF_BASE64" | base64 --decode > ~/.steam/steam/config/config.vdf
+            /usr/games/steamcmd +login "$STEAM_USERNAME" +run_app_build "$(pwd)/steam-build/app_build.vdf" +quit
+          else
+            /usr/games/steamcmd +login "$STEAM_USERNAME" "$STEAM_PASSWORD" +run_app_build "$(pwd)/steam-build/app_build.vdf" +quit
+          fi

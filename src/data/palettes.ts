@@ -11,6 +11,74 @@ export const PLAYER_PALETTES: PlayerPalette[] = [
   { id: 'ghost', cloak: 0xcbd5e1, trim: 0xc084fc, skin: 0xf8fafc, hat: 0x475569 },
 ];
 
+export type DlcCharacterId =
+  | 'wizard'
+  | 'hitman'
+  | 'skeleton'
+  | 'robot'
+  | 'astronaut'
+  | 'demon'
+  | 'zombie'
+  | 'plague_doctor'
+  | 'toga'
+  | 'aviator'
+  | 'pirate'
+  | 'ninja'
+  | 'knight'
+  | 'cyberpunk'
+  | 'alien'
+  | 'vampire'
+  | 'chef'
+  | 'clown'
+  | 'cowboy'
+  | 'samurai'
+  | 'mummy'
+  | 'mushroom'
+  | 'scarecrow'
+  | 'royal'
+  | 'diver'
+  | 'frog';
+
+export interface SelectableAvatar {
+  id: string;
+  label: string;
+  isDlc: boolean;
+}
+
+export const DLC_CHARACTERS: Array<{ id: DlcCharacterId; label: string }> = [
+  { id: 'wizard', label: 'WIZARD' },
+  { id: 'hitman', label: 'HITMAN' },
+  { id: 'skeleton', label: 'SKELETON' },
+  { id: 'robot', label: 'ROBOT' },
+  { id: 'astronaut', label: 'ASTRONAUT' },
+  { id: 'demon', label: 'DEMON' },
+  { id: 'zombie', label: 'ZOMBIE' },
+  { id: 'plague_doctor', label: 'PLAGUE DOC' },
+  { id: 'toga', label: 'TOGA SAGE' },
+  { id: 'aviator', label: 'AVIATOR' },
+  { id: 'pirate', label: 'PIRATE' },
+  { id: 'ninja', label: 'NINJA' },
+  { id: 'knight', label: 'KNIGHT' },
+  { id: 'cyberpunk', label: 'CYBERPUNK' },
+  { id: 'alien', label: 'ALIEN' },
+  { id: 'vampire', label: 'VAMPIRE' },
+  { id: 'chef', label: 'CHEF' },
+  { id: 'clown', label: 'CLOWN' },
+  { id: 'cowboy', label: 'COWBOY' },
+  { id: 'samurai', label: 'SAMURAI' },
+  { id: 'mummy', label: 'MUMMY' },
+  { id: 'mushroom', label: 'FUNGUS' },
+  { id: 'scarecrow', label: 'SCARECROW' },
+  { id: 'royal', label: 'MONARCH' },
+  { id: 'diver', label: 'DIVER' },
+  { id: 'frog', label: 'FROG' },
+];
+
+export const ALL_SELECTABLE_AVATARS: SelectableAvatar[] = [
+  ...PLAYER_PALETTES.map((p) => ({ id: p.id, label: p.id.toUpperCase(), isDlc: false })),
+  ...DLC_CHARACTERS.map((c) => ({ id: c.id, label: c.label, isDlc: true })),
+];
+
 export function getPaletteById(id: string): PlayerPalette {
   return PLAYER_PALETTES.find((p) => p.id === id) ?? PLAYER_PALETTES[0];
 }

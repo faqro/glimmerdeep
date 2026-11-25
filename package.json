@@ -1,7 +1,8 @@
 {
   "name": "glimmerdeep",
-  "version": "1.4.4",
+  "version": "1.5.0",
   "description": "16-bit top-down action roguelike",
+  "main": "electron/main.cjs",
   "type": "commonjs",
   "scripts": {
     "dev": "vite",
@@ -11,7 +12,54 @@
     "android:sync": "npm run build:mobile && npx cap sync android",
     "android:build": "npm run android:sync && cd android && gradlew.bat assembleDebug",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "electron:dev": "electron .",
+    "dist:win-standalone": "npx electron-builder --win nsis portable --config.extraMetadata.steamworks=false",
+    "dist:win-steam": "npx electron-builder --win dir --config.extraMetadata.steamworks=true",
+    "dist:linux-steam": "npx electron-builder --linux dir --config.extraMetadata.steamworks=true",
+    "dist:mac-steam": "npx electron-builder --mac dir --config.extraMetadata.steamworks=true"
+  },
+  "build": {
+    "appId": "com.faqro.glimmerdeep",
+    "productName": "Glimmerdeep",
+    "directories": {
+      "output": "release-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "!node_modules/@capacitor/**",
+      "!node_modules/phaser/src/**"
+    ],
+    "asarUnpack": [
+      "**/node_modules/steamworks.js/**"
+    ],
+    "win": {
+      "icon": "electron/icons/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "installerIcon": "electron/icons/icon.ico",
+      "uninstallerIcon": "electron/icons/icon.ico"
+    },
+    "linux": {
+      "icon": "electron/icons/icon.png",
+      "target": [
+        "dir"
+      ],
+      "category": "Game"
+    },
+    "mac": {
+      "icon": "electron/icons/icon-1024.png",
+      "target": [
+        "dir"
+      ],
+      "category": "public.app-category.role-playing-games"
+    }
   },
   "keywords": [],
   "author": "Faraaz Jan",
@@ -26,7 +74,12 @@
     "@capacitor/android": "^8.6.2",
     "@capacitor/cli": "^8.6.2",
     "@types/node": "^26.6.6",
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"
+  },
+  "optionalDependencies": {
+    "steamworks.js": "^0.4.0"
   }
 }

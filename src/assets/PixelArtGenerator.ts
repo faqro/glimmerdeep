@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { PLAYER_PALETTES } from '../data/palettes';
+import { DLC_CHARACTERS, DlcCharacterId, PLAYER_PALETTES } from '../data/palettes';
 import { PlayerPalette } from '../types/game';
 
 /**
@@ -16,6 +16,7 @@ export class PixelArtGenerator {
   generateAll(): void {
     this.generateGlowsAndParticles();
     this.generateUIElements();
+    this.generateControlIcons();
     this.generateEnvironmentSprites();
     this.generateItemIcons();
     this.generatePlayerSprites();
@@ -405,6 +406,348 @@ export class PixelArtGenerator {
       this.px(ctx, 2, 2, hover ? '#ffc2e2' : '#9d8ce0', 92, 1);
       tex.refresh();
     }
+  }
+
+  private generateControlIcons(): void {
+    const miniGlyphs: Record<string, string[]> = {
+      A: ['.###.', '#...#', '#####', '#...#', '#...#'],
+      B: ['####.', '#...#', '####.', '#...#', '####.'],
+      C: ['.####', '#....', '#....', '#....', '.####'],
+      D: ['####.', '#...#', '#...#', '#...#', '####.'],
+      E: ['#####', '#....', '####.', '#....', '#####'],
+      H: ['#...#', '#...#', '#####', '#...#', '#...#'],
+      K: ['#...#', '#..#.', '###..', '#..#.', '#...#'],
+      L: ['#....', '#....', '#....', '#....', '#####'],
+      O: ['.###.', '#...#', '#...#', '#...#', '.###.'],
+      P: ['####.', '#...#', '####.', '#....', '#....'],
+      Q: ['.###.', '#...#', '#.#.#', '#..#.', '.##.#'],
+      R: ['####.', '#...#', '####.', '#.#..', '#..#.'],
+      S: ['.####', '#....', '.###.', '....#', '####.'],
+      T: ['#####', '..#..', '..#..', '..#..', '..#..'],
+      W: ['#...#', '#...#', '#.#.#', '##.##', '#...#'],
+      X: ['#...#', '.#.#.', '..#..', '.#.#.', '#...#'],
+      Y: ['#...#', '.#.#.', '..#..', '..#..', '..#..'],
+      '1': ['..#..', '.##..', '..#..', '..#..', '.###.'],
+      '2': ['####.', '....#', '.###.', '#....', '#####'],
+      '3': ['####.', '....#', '.###.', '....#', '####.'],
+      '<': ['..#.', '.#..', '#...', '.#..', '..#.'],
+      '>': ['.#..', '..#.', '...#', '..#.', '.#..'],
+    };
+
+    const drawMiniGlyph = (ctx: CanvasRenderingContext2D, ch: string, ox: number, oy: number, color: string) => {
+      const g = miniGlyphs[ch];
+      if (!g) return;
+      for (let y = 0; y < g.length; y++) {
+        for (let x = 0; x < g[y].length; x++) {
+          if (g[y][x] === '#') {
+            this.px(ctx, ox + x, oy + y, color, 1, 1);
+          }
+        }
+      }
+    };
+
+    const makeKeycap = (key: string, label: string, width: number, textColor = '#ffffff') => {
+      const h = 12;
+      const { ctx, tex } = this.createCanvas(key, width, h);
+      // Outer dark outline
+      this.px(ctx, 1, 0, '#0b0917', width - 2, 1);
+      this.px(ctx, 1, h - 1, '#0b0917', width - 2, 1);
+      this.px(ctx, 0, 1, '#0b0917', 1, h - 2);
+      this.px(ctx, width - 1, 1, '#0b0917', 1, h - 2);
+      // 3D bottom skirt
+      this.px(ctx, 1, h - 3, '#4a3b7d', width - 2, 2);
+      // Keycap border & top bevel
+      this.px(ctx, 1, 1, '#8b7bd8', width - 2, h - 4);
+      // Keycap inner face
+      this.px(ctx, 2, 2, '#241d42', width - 4, h - 6);
+      // Top inner highlight
+      this.px(ctx, 2, 2, '#3a2f66', width - 4, 1);
+
+      // Draw centered characters (5px wide each + 1px spacing)
+      const chars = label.split('');
+      const totalW = chars.length * 5 + Math.max(0, chars.length - 1);
+      let sx = Math.floor((width - totalW) / 2);
+      const sy = 3;
+      for (const ch of chars) {
+        drawMiniGlyph(ctx, ch, sx, sy, textColor);
+        sx += 6;
+      }
+      tex.refresh();
+    };
+
+    // Single-letter keycaps (11x12)
+    makeKeycap('key_e', 'E', 11, '#66ffd9');
+    makeKeycap('key_q', 'Q', 11, '#f49ac1');
+    makeKeycap('key_w', 'W', 11, '#ffffff');
+    makeKeycap('key_a', 'A', 11, '#ffffff');
+    makeKeycap('key_s', 'S', 11, '#ffffff');
+    makeKeycap('key_d', 'D', 11, '#ffffff');
+    makeKeycap('key_1', '1', 11, '#b8a1ff');
+    makeKeycap('key_2', '2', 11, '#b8a1ff');
+    makeKeycap('key_3', '3', 11, '#b8a1ff');
+
+    // Wide keycaps
+    makeKeycap('key_tab', 'TAB', 21, '#ffe066');
+    makeKeycap('key_esc', 'ESC', 21, '#f49ac1');
+    makeKeycap('key_space', 'SPC', 23, '#66ffd9');
+
+    // Mouse icons (10x13)
+    const makeMouse = (key: string, highlight: 'left' | 'right' | 'scroll') => {
+      const { ctx, tex } = this.createCanvas(key, 10, 13);
+      this.drawGrid(
+        ctx,
+        0,
+        0,
+        [
+          '..oooooo..',
+          '.oLLooRRo.',
+          'oLLLoRRRRo',
+          'oLLLSSRRRo',
+          'oLLLSSRRRo',
+          'oooooooooo',
+          'oBBBBBBBBo',
+          'oBBBBBBBBo',
+          'oBBBBBBBBo',
+          'oBBBBBBBBo',
+          '.oBBBBBBo.',
+          '..oooooo..',
+          '..........',
+        ],
+        {
+          o: '#0b0917',
+          L: highlight === 'left' ? '#ffe066' : '#3a2f66',
+          R: highlight === 'right' ? '#66ffd9' : '#3a2f66',
+          S: highlight === 'scroll' ? '#f49ac1' : '#8b7bd8',
+          B: '#241d42',
+        }
+      );
+      tex.refresh();
+    };
+    makeMouse('mouse_lmb', 'left');
+    makeMouse('mouse_rmb', 'right');
+    makeMouse('mouse_scroll', 'scroll');
+
+    // Gamepad Face Buttons (11x11)
+    const makePadFace = (key: string, ch: string, fill: string, rim: string) => {
+      const { ctx, tex } = this.createCanvas(key, 11, 11);
+      this.drawGrid(
+        ctx,
+        0,
+        0,
+        [
+          '..ooooooo..',
+          '.oRRRRRRRo.',
+          'oRFFFFFFFRo',
+          'oFFFFFFFFFo',
+          'oFFFFFFFFFo',
+          'oFFFFFFFFFo',
+          'oFFFFFFFFFo',
+          'oFFFFFFFFFo',
+          'oRFFFFFFFRo',
+          '.oRRRRRRRo.',
+          '..ooooooo..',
+        ],
+        { o: '#0b0917', F: fill, R: rim }
+      );
+      drawMiniGlyph(ctx, ch, 3, 3, '#100d24');
+      tex.refresh();
+    };
+    makePadFace('pad_a', 'A', '#4ade80', '#86efac');
+    makePadFace('pad_b', 'B', '#ff5d8f', '#fda4af');
+    makePadFace('pad_x', 'X', '#6ef3ff', '#bae6fd');
+    makePadFace('pad_y', 'Y', '#ffe066', '#fef08a');
+
+    // Gamepad Shoulder / Trigger / System Pills (15x11)
+    const makePadPill = (key: string, label: string, fill: string, textCol: string) => {
+      const w = label.length >= 3 ? 19 : 15;
+      const h = 11;
+      const { ctx, tex } = this.createCanvas(key, w, h);
+      this.px(ctx, 1, 0, '#0b0917', w - 2, 1);
+      this.px(ctx, 1, h - 1, '#0b0917', w - 2, 1);
+      this.px(ctx, 0, 1, '#0b0917', 1, h - 2);
+      this.px(ctx, w - 1, 1, '#0b0917', 1, h - 2);
+      this.px(ctx, 1, 1, '#6c5bb3', w - 2, h - 2);
+      this.px(ctx, 2, 2, fill, w - 4, h - 4);
+      const chars = label.split('');
+      const totalW = chars.length * 5 + Math.max(0, chars.length - 1);
+      let sx = Math.floor((w - totalW) / 2);
+      for (const ch of chars) {
+        drawMiniGlyph(ctx, ch, sx, 3, textCol);
+        sx += 6;
+      }
+      tex.refresh();
+    };
+    makePadPill('pad_lb', 'LB', '#261f47', '#b8a1ff');
+    makePadPill('pad_rb', 'RB', '#261f47', '#b8a1ff');
+    makePadPill('pad_lt', 'LT', '#2e2459', '#66ffd9');
+    makePadPill('pad_rt', 'RT', '#2e2459', '#ffe066');
+    makePadPill('pad_back', 'BK', '#1b1736', '#9d8ce0');
+    makePadPill('pad_start', 'ST', '#1b1736', '#f49ac1');
+
+    // PlayStation Face Buttons (11x11)
+    const makePsFace = (key: string, symbolRows: string[], glyphColor: string) => {
+      const { ctx, tex } = this.createCanvas(key, 11, 11);
+      this.drawGrid(
+        ctx,
+        0,
+        0,
+        [
+          '..ooooooo..',
+          '.oRRRRRRRo.',
+          'oRFFFFFFFRo',
+          'oFFFFFFFFFo',
+          'oFFFFFFFFFo',
+          'oFFFFFFFFFo',
+          'oFFFFFFFFFo',
+          'oFFFFFFFFFo',
+          'oRFFFFFFFRo',
+          '.oRRRRRRRo.',
+          '..ooooooo..',
+        ],
+        { o: '#0b0917', F: '#1b1736', R: '#534887' }
+      );
+      this.drawGrid(ctx, 3, 3, symbolRows, { '#': glyphColor });
+      tex.refresh();
+    };
+    makePsFace('ps_cross', ['#...#', '.#.#.', '..#..', '.#.#.', '#...#'], '#6ef3ff');
+    makePsFace('ps_circle', ['.###.', '#...#', '#...#', '#...#', '.###.'], '#ff5d8f');
+    makePsFace('ps_square', ['#####', '#...#', '#...#', '#...#', '#####'], '#f49ac1');
+    makePsFace('ps_triangle', ['..#..', '.#.#.', '.#.#.', '#...#', '#####'], '#4ade80');
+
+    // PlayStation Shoulder / Trigger / System Pills
+    makePadPill('ps_l1', 'L1', '#261f47', '#b8a1ff');
+    makePadPill('ps_r1', 'R1', '#261f47', '#b8a1ff');
+    makePadPill('ps_l2', 'L2', '#2e2459', '#66ffd9');
+    makePadPill('ps_r2', 'R2', '#2e2459', '#ffe066');
+    makePadPill('ps_back', 'SH', '#1b1736', '#9d8ce0');
+    makePadPill('ps_start', 'OP', '#1b1736', '#f49ac1');
+
+    // Analog Sticks (12x12)
+    const makeStick = (key: string, ch: string, accent: string) => {
+      const { ctx, tex } = this.createCanvas(key, 12, 12);
+      this.drawGrid(
+        ctx,
+        0,
+        0,
+        [
+          '...oooooo...',
+          '..oRRRRRRo..',
+          '.oRFFFFFFRo.',
+          'oRFFFFFFFFRo',
+          'oFFFFFFFFFFo',
+          'oFFFFFFFFFFo',
+          'oFFFFFFFFFFo',
+          'oFFFFFFFFFFo',
+          'oRFFFFFFFFRo',
+          '.oRFFFFFFRo.',
+          '..oRRRRRRo..',
+          '...oooooo...',
+        ],
+        { o: '#0b0917', F: '#241d42', R: accent }
+      );
+      drawMiniGlyph(ctx, ch, 4, 4, '#ffffff');
+      tex.refresh();
+    };
+    makeStick('pad_ls', 'L', '#66ffd9');
+    makeStick('pad_rs', 'R', '#ffe066');
+
+    // D-pad icon (11x11)
+    const dpad = this.createCanvas('pad_dpad', 11, 11);
+    this.drawGrid(
+      dpad.ctx,
+      0,
+      0,
+      [
+        '...ooooo...',
+        '...oDDDo...',
+        '...oDDDo...',
+        'ooooDDDoooo',
+        'oDDDDDDDDDo',
+        'oDDDDDDDDDo',
+        'oDDDDDDDDDo',
+        'ooooDDDoooo',
+        '...oDDDo...',
+        '...oDDDo...',
+        '...ooooo...',
+      ],
+      { o: '#0b0917', D: '#8b7bd8' }
+    );
+    dpad.tex.refresh();
+
+    // Touch Icons (11x11)
+    const makeTouchIcon = (key: string, grid: string[], palette: Record<string, string>) => {
+      const { ctx, tex } = this.createCanvas(key, 11, 11);
+      this.drawGrid(ctx, 0, 0, grid, palette);
+      tex.refresh();
+    };
+    makeTouchIcon(
+      'touch_interact',
+      [
+        '..ooooooo..',
+        '.oBBBBBBBo.',
+        'oBBBBHBBBBo',
+        'oBBBHSHBBBo',
+        'oBBHSSSHBBo',
+        'oBHSSSSSHBo',
+        'oBBHSSSHBBo',
+        'oBBBHSHBBBo',
+        'oBBBBHBBBBo',
+        '.oBBBBBBBo.',
+        '..ooooooo..',
+      ],
+      { o: '#0b0917', B: '#261f47', H: '#66ffd9', S: '#ffffff' }
+    );
+    makeTouchIcon(
+      'touch_dodge',
+      [
+        '..ooooooo..',
+        '.oBBBBBBBo.',
+        'oBBBBHBBBBo',
+        'oBBHHSHBBBo',
+        'oBHHHHSHBBo',
+        'oBBBBHSHBBo',
+        'oBHHHHSHBBo',
+        'oBBHHSHBBBo',
+        'oBBBBHBBBBo',
+        '.oBBBBBBBo.',
+        '..ooooooo..',
+      ],
+      { o: '#0b0917', B: '#261f47', H: '#66ffd9', S: '#ffffff' }
+    );
+    makeTouchIcon(
+      'touch_map',
+      [
+        '..ooooooo..',
+        '.oBBBBBBBo.',
+        'oBGGGGGGGBo',
+        'oBGWGWGGGBo',
+        'oBGGGGGGGBo',
+        'oBGGWGWGGBo',
+        'oBGGGGGGGBo',
+        'oBGWGWGGGBo',
+        'oBGGGGGGGBo',
+        '.oBBBBBBBo.',
+        '..ooooooo..',
+      ],
+      { o: '#0b0917', B: '#261f47', G: '#6c5bb3', W: '#ffe066' }
+    );
+    makeTouchIcon(
+      'touch_drop',
+      [
+        '..ooooooo..',
+        '.oBBBBBBBo.',
+        'oBBBBPBBBBo',
+        'oBBBBPBBBBo',
+        'oBBBBPBBBBo',
+        'oBBPPPPPBo.',
+        'oBBBPPPBBBo',
+        'oBBBBPBBBBo',
+        'oBBBBBBBBBo',
+        '.oBBBBBBBo.',
+        '..ooooooo..',
+      ],
+      { o: '#0b0917', B: '#261f47', P: '#f49ac1' }
+    );
   }
 
   private generateEnvironmentSprites(): void {
@@ -1667,6 +2010,9 @@ export class PixelArtGenerator {
     for (const pal of PLAYER_PALETTES) {
       this.buildPlayerSheet(pal);
     }
+    for (const dlc of DLC_CHARACTERS) {
+      this.buildDlcCharacterSheet(dlc.id);
+    }
   }
 
   private buildPlayerSheet(pal: PlayerPalette): void {
@@ -1736,6 +2082,312 @@ export class PixelArtGenerator {
 
     tex.refresh();
     // Register frames manually on CanvasTexture
+    for (let i = 0; i < 6; i++) {
+      tex.add(i, 0, i * fw, 0, fw, fh);
+    }
+  }
+
+  private buildDlcCharacterSheet(charId: DlcCharacterId): void {
+    const key = `player_${charId}`;
+    const fw = 16;
+    const fh = 24;
+    const { ctx, tex } = this.createCanvas(key, fw * 6, fh);
+
+    const themes: Record<
+      DlcCharacterId,
+      { body: string; bodyDk: string; trim: string; skin: string; hat: string; hatHi: string }
+    > = {
+      wizard: { body: '#2c2366', bodyDk: '#1a1440', trim: '#ffe066', skin: '#ffdec7', hat: '#3b2b8a', hatHi: '#6c5bb3' },
+      hitman: { body: '#1e1e26', bodyDk: '#111117', trim: '#ef4444', skin: '#f7d9c4', hat: '#18181f', hatHi: '#3f3f4e' },
+      skeleton: { body: '#1f1c2e', bodyDk: '#12101c', trim: '#e2e8f0', skin: '#f1f5f9', hat: '#e2e8f0', hatHi: '#ffffff' },
+      robot: { body: '#64748b', bodyDk: '#475569', trim: '#38bdf8', skin: '#94a3b8', hat: '#475569', hatHi: '#cbd5e1' },
+      astronaut: { body: '#e2e8f0', bodyDk: '#94a3b8', trim: '#f59e0b', skin: '#f59e0b', hat: '#f8fafc', hatHi: '#ffffff' },
+      demon: { body: '#7f1d1d', bodyDk: '#450a0a', trim: '#fbbf24', skin: '#ef4444', hat: '#991b1b', hatHi: '#f87171' },
+      zombie: { body: '#3f6212', bodyDk: '#1a2e05', trim: '#78350f', skin: '#84cc16', hat: '#4d7c0f', hatHi: '#a3e635' },
+      plague_doctor: { body: '#1f1b24', bodyDk: '#120f17', trim: '#d97706', skin: '#f8fafc', hat: '#27222e', hatHi: '#474054' },
+      toga: { body: '#f8fafc', bodyDk: '#cbd5e1', trim: '#fbbf24', skin: '#f1c29b', hat: '#16a34a', hatHi: '#4ade80' },
+      aviator: { body: '#78350f', bodyDk: '#451a03', trim: '#fef3c7', skin: '#fcd5b5', hat: '#92400e', hatHi: '#b45309' },
+      pirate: { body: '#991b1b', bodyDk: '#450a0a', trim: '#fbbf24', skin: '#fcd5b5', hat: '#1f1b24', hatHi: '#474054' },
+      ninja: { body: '#18181f', bodyDk: '#09090d', trim: '#ef4444', skin: '#fcd5b5', hat: '#1e1e26', hatHi: '#3f3f4e' },
+      knight: { body: '#94a3b8', bodyDk: '#475569', trim: '#ef4444', skin: '#cbd5e1', hat: '#cbd5e1', hatHi: '#f8fafc' },
+      cyberpunk: { body: '#1e1b4b', bodyDk: '#0f172a', trim: '#f472b6', skin: '#fcd5b5', hat: '#ec4899', hatHi: '#f9a8d4' },
+      alien: { body: '#6d28d9', bodyDk: '#4c1d95', trim: '#38bdf8', skin: '#a3e635', hat: '#a3e635', hatHi: '#d9f99d' },
+      vampire: { body: '#18181f', bodyDk: '#09090d', trim: '#dc2626', skin: '#f1f5f9', hat: '#18181f', hatHi: '#475569' },
+      chef: { body: '#f8fafc', bodyDk: '#cbd5e1', trim: '#ef4444', skin: '#fcd5b5', hat: '#ffffff', hatHi: '#e2e8f0' },
+      clown: { body: '#f59e0b', bodyDk: '#b45309', trim: '#38bdf8', skin: '#f8fafc', hat: '#ef4444', hatHi: '#60a5fa' },
+      cowboy: { body: '#78350f', bodyDk: '#451a03', trim: '#dc2626', skin: '#f1c29b', hat: '#d97706', hatHi: '#fbbf24' },
+      samurai: { body: '#991b1b', bodyDk: '#450a0a', trim: '#fbbf24', skin: '#fcd5b5', hat: '#1f1b24', hatHi: '#fbbf24' },
+      mummy: { body: '#e7e5e4', bodyDk: '#a8a29e', trim: '#d6d3d1', skin: '#e7e5e4', hat: '#f5f5f4', hatHi: '#d6d3d1' },
+      mushroom: { body: '#78350f', bodyDk: '#451a03', trim: '#fef3c7', skin: '#fef3c7', hat: '#ef4444', hatHi: '#ffffff' },
+      scarecrow: { body: '#92400e', bodyDk: '#451a03', trim: '#fbbf24', skin: '#d97706', hat: '#78350f', hatHi: '#b45309' },
+      royal: { body: '#6b21a8', bodyDk: '#3b0764', trim: '#f8fafc', skin: '#fcd5b5', hat: '#fbbf24', hatHi: '#fef08a' },
+      diver: { body: '#b45309', bodyDk: '#78350f', trim: '#fbbf24', skin: '#d97706', hat: '#d97706', hatHi: '#fde68a' },
+      frog: { body: '#15803d', bodyDk: '#14532d', trim: '#bef264', skin: '#4ade80', hat: '#4ade80', hatHi: '#86efac' },
+    };
+    const th = themes[charId];
+
+    const drawFrame = (frameIdx: number, bobY: number, legOffset: number, squash: boolean, downed: boolean) => {
+      const ox = frameIdx * fw;
+      if (downed) {
+        this.px(ctx, ox + 2, 16, '#100d24', 12, 6);
+        this.px(ctx, ox + 3, 17, th.body, 6, 4);
+        this.px(ctx, ox + 9, 17, th.skin, 4, 4);
+        this.px(ctx, ox + 10, 18, '#100d24', 1, 1);
+        this.px(ctx, ox + 12, 18, '#100d24', 1, 1);
+        this.px(ctx, ox + 5, 13, '#ffe066', 2, 1);
+        this.px(ctx, ox + 10, 12, '#ffe066', 2, 1);
+        return;
+      }
+
+      const y = 3 + bobY + (squash ? 2 : 0);
+      const bodyH = squash ? 5 : 6;
+
+      // Headgear / top silhouette per character
+      if (charId === 'wizard') {
+        this.px(ctx, ox + 6, y - 2, '#100d24', 4, 3);
+        this.px(ctx, ox + 7, y - 1, th.hatHi, 2, 2);
+        this.px(ctx, ox + 4, y + 1, '#100d24', 8, 4);
+        this.px(ctx, ox + 5, y + 1, th.hat, 6, 4);
+        this.px(ctx, ox + 7, y + 2, '#ffe066', 1, 1);
+        this.px(ctx, ox + 2, y + 5, '#100d24', 12, 2);
+        this.px(ctx, ox + 3, y + 5, th.trim, 10, 1);
+      } else if (charId === 'hitman') {
+        this.px(ctx, ox + 4, y + 4, '#100d24', 8, 2);
+        this.px(ctx, ox + 5, y + 4, th.hat, 6, 2);
+      } else if (charId === 'skeleton') {
+        this.px(ctx, ox + 5, y + 4, '#100d24', 6, 2);
+        this.px(ctx, ox + 6, y + 5, th.skin, 4, 1);
+      } else if (charId === 'robot') {
+        this.px(ctx, ox + 7, y + 1, '#38bdf8', 2, 2);
+        this.px(ctx, ox + 7, y + 3, '#100d24', 2, 2);
+        this.px(ctx, ox + 4, y + 4, '#100d24', 8, 2);
+        this.px(ctx, ox + 5, y + 5, th.hatHi, 6, 1);
+      } else if (charId === 'astronaut') {
+        this.px(ctx, ox + 4, y + 3, '#100d24', 8, 3);
+        this.px(ctx, ox + 5, y + 4, th.hat, 6, 2);
+      } else if (charId === 'demon') {
+        // Horns
+        this.px(ctx, ox + 3, y + 2, '#100d24', 2, 3);
+        this.px(ctx, ox + 4, y + 2, '#fbbf24', 1, 3);
+        this.px(ctx, ox + 11, y + 2, '#100d24', 2, 3);
+        this.px(ctx, ox + 11, y + 2, '#fbbf24', 1, 3);
+        this.px(ctx, ox + 4, y + 4, '#100d24', 8, 2);
+        this.px(ctx, ox + 5, y + 5, th.skin, 6, 1);
+      } else if (charId === 'zombie') {
+        this.px(ctx, ox + 4, y + 4, '#100d24', 8, 2);
+        this.px(ctx, ox + 5, y + 5, th.hat, 5, 1);
+      } else if (charId === 'plague_doctor') {
+        this.px(ctx, ox + 4, y + 1, '#100d24', 8, 4);
+        this.px(ctx, ox + 5, y + 2, th.hat, 6, 3);
+        this.px(ctx, ox + 2, y + 5, '#100d24', 12, 2);
+        this.px(ctx, ox + 3, y + 5, th.hatHi, 10, 1);
+      } else if (charId === 'toga') {
+        this.px(ctx, ox + 4, y + 4, '#100d24', 8, 2);
+        this.px(ctx, ox + 5, y + 4, '#65a30d', 6, 2);
+        this.px(ctx, ox + 5, y + 4, '#fbbf24', 2, 1);
+        this.px(ctx, ox + 9, y + 4, '#fbbf24', 2, 1);
+      } else if (charId === 'aviator') {
+        this.px(ctx, ox + 4, y + 2, '#100d24', 8, 4);
+        this.px(ctx, ox + 5, y + 3, th.hat, 6, 3);
+        // Brass flight goggles
+        this.px(ctx, ox + 4, y + 4, '#fbbf24', 3, 2);
+        this.px(ctx, ox + 9, y + 4, '#fbbf24', 3, 2);
+        this.px(ctx, ox + 5, y + 4, '#67e8f9', 1, 1);
+        this.px(ctx, ox + 10, y + 4, '#67e8f9', 1, 1);
+      } else if (charId === 'pirate') {
+        this.px(ctx, ox + 3, y + 2, '#100d24', 10, 4);
+        this.px(ctx, ox + 4, y + 3, th.hat, 8, 3);
+        this.px(ctx, ox + 7, y + 3, '#f8fafc', 2, 2);
+      } else if (charId === 'ninja') {
+        this.px(ctx, ox + 4, y + 3, '#100d24', 8, 3);
+        this.px(ctx, ox + 5, y + 4, th.hat, 6, 2);
+        this.px(ctx, ox + 4, y + 5, '#ef4444', 8, 1);
+      } else if (charId === 'knight') {
+        this.px(ctx, ox + 6, y, '#ef4444', 4, 3);
+        this.px(ctx, ox + 4, y + 3, '#100d24', 8, 3);
+        this.px(ctx, ox + 5, y + 4, th.hatHi, 6, 2);
+      } else if (charId === 'cyberpunk') {
+        this.px(ctx, ox + 6, y + 1, th.hat, 4, 4);
+        this.px(ctx, ox + 7, y + 1, th.hatHi, 2, 3);
+        this.px(ctx, ox + 4, y + 4, '#100d24', 8, 2);
+      } else if (charId === 'alien') {
+        this.px(ctx, ox + 4, y + 2, '#100d24', 8, 4);
+        this.px(ctx, ox + 5, y + 3, th.skin, 6, 3);
+      } else if (charId === 'vampire') {
+        this.px(ctx, ox + 4, y + 3, '#100d24', 8, 3);
+        this.px(ctx, ox + 5, y + 4, th.hat, 6, 2);
+        this.px(ctx, ox + 7, y + 5, th.hat, 2, 2);
+      } else if (charId === 'chef') {
+        this.px(ctx, ox + 4, y, '#100d24', 8, 5);
+        this.px(ctx, ox + 5, y + 1, th.hat, 6, 4);
+      } else if (charId === 'clown') {
+        this.px(ctx, ox + 3, y + 3, '#ef4444', 3, 4);
+        this.px(ctx, ox + 10, y + 3, '#60a5fa', 3, 4);
+        this.px(ctx, ox + 6, y + 3, '#fbbf24', 4, 2);
+      } else if (charId === 'cowboy') {
+        this.px(ctx, ox + 4, y + 2, '#100d24', 8, 3);
+        this.px(ctx, ox + 5, y + 2, th.hat, 6, 3);
+        this.px(ctx, ox + 2, y + 5, '#100d24', 12, 2);
+        this.px(ctx, ox + 3, y + 5, th.hatHi, 10, 1);
+      } else if (charId === 'samurai') {
+        this.px(ctx, ox + 3, y + 1, '#fbbf24', 2, 3);
+        this.px(ctx, ox + 11, y + 1, '#fbbf24', 2, 3);
+        this.px(ctx, ox + 4, y + 3, '#100d24', 8, 3);
+        this.px(ctx, ox + 5, y + 4, th.hat, 6, 2);
+      } else if (charId === 'mummy') {
+        this.px(ctx, ox + 4, y + 4, '#100d24', 8, 2);
+        this.px(ctx, ox + 5, y + 4, th.hat, 6, 2);
+      } else if (charId === 'mushroom') {
+        this.px(ctx, ox + 3, y + 1, '#100d24', 10, 5);
+        this.px(ctx, ox + 4, y + 2, th.hat, 8, 4);
+        this.px(ctx, ox + 5, y + 3, '#ffffff', 2, 2);
+        this.px(ctx, ox + 9, y + 2, '#ffffff', 2, 2);
+      } else if (charId === 'scarecrow') {
+        this.px(ctx, ox + 5, y, '#100d24', 6, 4);
+        this.px(ctx, ox + 6, y + 1, th.hat, 4, 3);
+        this.px(ctx, ox + 2, y + 4, '#100d24', 12, 2);
+        this.px(ctx, ox + 3, y + 4, th.hatHi, 10, 1);
+      } else if (charId === 'royal') {
+        this.px(ctx, ox + 4, y + 2, '#100d24', 8, 4);
+        this.px(ctx, ox + 5, y + 3, th.hat, 6, 2);
+        this.px(ctx, ox + 5, y + 2, '#fbbf24', 1, 1);
+        this.px(ctx, ox + 7, y + 2, '#ef4444', 2, 1);
+        this.px(ctx, ox + 10, y + 2, '#fbbf24', 1, 1);
+      } else if (charId === 'diver') {
+        this.px(ctx, ox + 4, y + 3, '#100d24', 8, 3);
+        this.px(ctx, ox + 5, y + 4, th.hat, 6, 2);
+      } else if (charId === 'frog') {
+        // Bulging frog eyes on top of head
+        this.px(ctx, ox + 4, y + 3, '#100d24', 3, 3);
+        this.px(ctx, ox + 5, y + 4, '#ffffff', 1, 1);
+        this.px(ctx, ox + 9, y + 3, '#100d24', 3, 3);
+        this.px(ctx, ox + 10, y + 4, '#ffffff', 1, 1);
+      }
+
+      // Head
+      this.px(ctx, ox + 4, y + 6, '#100d24', 8, 6);
+      this.px(ctx, ox + 5, y + 7, th.skin, 6, 4);
+
+      // Face details
+      if (charId === 'hitman') {
+        // Sunglasses
+        this.px(ctx, ox + 5, y + 8, '#0b0917', 6, 2);
+        this.px(ctx, ox + 6, y + 8, '#94a3b8', 1, 1);
+        this.px(ctx, ox + 9, y + 8, '#94a3b8', 1, 1);
+      } else if (charId === 'robot') {
+        this.px(ctx, ox + 5, y + 7, '#0f172a', 6, 4);
+        this.px(ctx, ox + 6, y + 8, '#38bdf8', 1, 2);
+        this.px(ctx, ox + 9, y + 8, '#38bdf8', 1, 2);
+      } else if (charId === 'astronaut') {
+        this.px(ctx, ox + 5, y + 7, '#f59e0b', 6, 4);
+        this.px(ctx, ox + 6, y + 8, '#fef3c7', 2, 1);
+      } else if (charId === 'plague_doctor') {
+        // Dark hood + white beak
+        this.px(ctx, ox + 5, y + 7, '#18141f', 6, 4);
+        this.px(ctx, ox + 6, y + 8, '#fde68a', 1, 1);
+        this.px(ctx, ox + 9, y + 8, '#fde68a', 1, 1);
+        this.px(ctx, ox + 7, y + 9, '#f8fafc', 4, 2);
+        this.px(ctx, ox + 10, y + 10, '#e2e8f0', 2, 1);
+      } else if (charId === 'demon') {
+        this.px(ctx, ox + 6, y + 8, '#ffe066', 1, 2);
+        this.px(ctx, ox + 9, y + 8, '#ffe066', 1, 2);
+      } else if (charId === 'zombie') {
+        this.px(ctx, ox + 6, y + 8, '#ffffff', 1, 2);
+        this.px(ctx, ox + 9, y + 8, '#ef4444', 1, 1);
+        this.px(ctx, ox + 8, y + 7, '#1a2e05', 2, 1);
+      } else if (charId === 'pirate') {
+        this.px(ctx, ox + 6, y + 8, '#100d24', 2, 2);
+        this.px(ctx, ox + 9, y + 8, '#100d24', 1, 2);
+      } else if (charId === 'ninja') {
+        this.px(ctx, ox + 5, y + 7, '#18181f', 6, 4);
+        this.px(ctx, ox + 5, y + 8, th.skin, 6, 1);
+        this.px(ctx, ox + 6, y + 8, '#100d24', 1, 1);
+        this.px(ctx, ox + 9, y + 8, '#100d24', 1, 1);
+      } else if (charId === 'knight') {
+        this.px(ctx, ox + 5, y + 7, '#94a3b8', 6, 4);
+        this.px(ctx, ox + 5, y + 8, '#0b0917', 6, 1);
+        this.px(ctx, ox + 6, y + 8, '#38bdf8', 1, 1);
+        this.px(ctx, ox + 9, y + 8, '#38bdf8', 1, 1);
+      } else if (charId === 'cyberpunk') {
+        this.px(ctx, ox + 5, y + 8, '#0b0917', 6, 2);
+        this.px(ctx, ox + 5, y + 8, '#22d3ee', 6, 1);
+      } else if (charId === 'alien') {
+        this.px(ctx, ox + 5, y + 8, '#0b0917', 2, 3);
+        this.px(ctx, ox + 9, y + 8, '#0b0917', 2, 3);
+      } else if (charId === 'vampire') {
+        this.px(ctx, ox + 6, y + 8, '#ef4444', 1, 2);
+        this.px(ctx, ox + 9, y + 8, '#ef4444', 1, 2);
+      } else if (charId === 'clown') {
+        this.px(ctx, ox + 6, y + 8, '#100d24', 1, 1);
+        this.px(ctx, ox + 9, y + 8, '#100d24', 1, 1);
+        this.px(ctx, ox + 7, y + 9, '#ef4444', 2, 2);
+      } else if (charId === 'mummy') {
+        this.px(ctx, ox + 5, y + 8, '#100d24', 6, 1);
+        this.px(ctx, ox + 6, y + 8, '#fbbf24', 1, 1);
+        this.px(ctx, ox + 9, y + 8, '#fbbf24', 1, 1);
+        this.px(ctx, ox + 5, y + 10, '#a8a29e', 6, 1);
+      } else if (charId === 'diver') {
+        this.px(ctx, ox + 5, y + 7, '#b45309', 6, 4);
+        this.px(ctx, ox + 6, y + 8, '#67e8f9', 4, 2);
+      } else if (charId === 'scarecrow') {
+        this.px(ctx, ox + 6, y + 8, '#100d24', 1, 1);
+        this.px(ctx, ox + 9, y + 8, '#100d24', 1, 1);
+        this.px(ctx, ox + 6, y + 10, '#100d24', 4, 1);
+      } else if (charId === 'frog') {
+        this.px(ctx, ox + 6, y + 9, '#14532d', 4, 1);
+      } else {
+        this.px(ctx, ox + 6, y + 8, '#100d24', 1, 2);
+        this.px(ctx, ox + 9, y + 8, '#100d24', 1, 2);
+      }
+
+      // Wizard long white beard
+      if (charId === 'wizard') {
+        this.px(ctx, ox + 5, y + 10, '#f8fafc', 6, 4);
+        this.px(ctx, ox + 6, y + 14, '#e2e8f0', 4, 2);
+      }
+
+      // Body
+      this.px(ctx, ox + 3, y + 12, '#100d24', 10, bodyH);
+      this.px(ctx, ox + 4, y + 12, th.body, 8, bodyH - 1);
+      this.px(ctx, ox + 4, y + 12 + bodyH - 2, th.bodyDk, 8, 1);
+
+      if (charId === 'hitman') {
+        // White shirt V & red tie
+        this.px(ctx, ox + 7, y + 12, '#f8fafc', 2, 3);
+        this.px(ctx, ox + 7, y + 13, '#ef4444', 2, 3);
+      } else if (charId === 'skeleton') {
+        // Ribcage
+        this.px(ctx, ox + 7, y + 12, '#f1f5f9', 2, 4);
+        this.px(ctx, ox + 5, y + 13, '#e2e8f0', 6, 1);
+        this.px(ctx, ox + 5, y + 15, '#e2e8f0', 6, 1);
+      } else if (charId === 'robot') {
+        this.px(ctx, ox + 6, y + 13, '#38bdf8', 4, 2);
+      } else if (charId === 'toga') {
+        // Diagonal gold sash
+        this.px(ctx, ox + 5, y + 12, th.trim, 2, 2);
+        this.px(ctx, ox + 7, y + 13, th.trim, 2, 2);
+        this.px(ctx, ox + 9, y + 14, th.trim, 2, 2);
+      } else if (charId === 'aviator') {
+        // Fluffy shearling collar
+        this.px(ctx, ox + 4, y + 12, th.trim, 8, 2);
+      } else if (charId !== 'wizard') {
+        this.px(ctx, ox + 5, y + 12, th.trim, 6, 1);
+      }
+
+      // Feet
+      const footCol = charId === 'skeleton' ? '#e2e8f0' : '#100d24';
+      this.px(ctx, ox + 4 + legOffset, y + 12 + bodyH, footCol, 3, 2);
+      this.px(ctx, ox + 9 - legOffset, y + 12 + bodyH, footCol, 3, 2);
+    };
+
+    drawFrame(0, 0, 0, false, false);
+    drawFrame(1, 1, 0, false, false);
+    drawFrame(2, 0, -1, false, false);
+    drawFrame(3, 1, 1, false, false);
+    drawFrame(4, 0, 0, true, false);
+    drawFrame(5, 0, 0, false, true);
+
+    tex.refresh();
     for (let i = 0; i < 6; i++) {
       tex.add(i, 0, i * fw, 0, fw, fh);
     }
