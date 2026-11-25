@@ -570,6 +570,12 @@ class InputSystem {
     return false;
   }
 
+  public consumeChatButton(): boolean {
+    if (!this._gamepadConnected) return false;
+    // Right Stick Click (R3, index 11) opens chat in online co-op
+    return this.justPressed.has(11);
+  }
+
   public getButtonForAction(action: GameAction): GamepadButtonId {
     return this.layout.bindings[action];
   }

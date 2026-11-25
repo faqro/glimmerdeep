@@ -5,8 +5,22 @@ export type SteamAchievementId =
   | 'ACH_FLOOR_6'
   | 'ACH_EVERHEART_RESTORED'
   | 'ACH_SOLO_CHAMPION'
+  | 'ACH_COOP_CHAMPION'
   | 'ACH_HOARDER'
-  | 'ACH_LORE_SEEKER';
+  | 'ACH_LORE_SEEKER'
+  | 'ACH_ITEM_COLLECTOR'
+  | 'ACH_JOURNAL_MASTER'
+  | 'ACH_SECRET_ARSENAL'
+  | 'ACH_PERSISTENT'
+  | 'ACH_PINCUSHION'
+  | 'ACH_FRUGAL'
+  | 'ACH_COLD_HEARTED'
+  | 'ACH_PACIFIST'
+  | 'ACH_NO_HEAL'
+  | 'ACH_SPEEDRUNNER';
+
+const DEATH_COUNT_KEY = 'glimmerdeep_total_deaths';
+const SPIKE_STAB_COUNT_KEY = 'glimmerdeep_spike_stabs';
 
 const ADMIN_UNLOCK_STORAGE_KEY = 'glimmerdeep_admin_unlock';
 
@@ -85,6 +99,99 @@ class SteamSystem {
     } catch {
       // ignore IPC errors
     }
+  }
+
+  public async submitCoopClearTime(timeMs: number): Promise<void> {
+    if (!isSteamworksBuild()) return;
+    try {
+      await window.glimmerdeepDesktop?.submitLeaderboardTime('Co-op Speedrun', timeMs);
+    } catch {
+      // ignore IPC errors
+    }
+  }
+
+  public recordDeath(): void {
+    let total = 0;
+    try {
+      total = (Number(localStorage.getItem(DEATH_COUNT_KEY)) || 0) + 1;
+      localStorage.setItem(DEATH_COUNT_KEY, String(total));
+    } catch {
+      total = 1;
+    }
+    if (isSteamworksBuild()) {
+      void window.glimmerdeepDesktop?.incrementStat('total_deaths', 1);
+    }
+    if (total >= 100) {
+      void this.unlockAchievement('ACH_PERSISTENT');
+    }
+  }
+
+  public recordSpikeStab(): void {
+    let total = 0;
+    try {
+      total = (Number(localStorage.getItem(SPIKE_STAB_COUNT_KEY)) || 0) + 1;
+      localStorage.setItem(SPIKE_STAB_COUNT_KEY, String(total));
+    } catch {
+      total = 1;
+    }
+    if (isSteamworksBuild()) {
+      void window.glimmerdeepDesktop?.incrementStat('spike_stabs', 1);
+    }
+    if (total >= 50) {
+      void this.unlockAchievement('ACH_PINCUSHION');
+    }
+  }
+
+  public async createLobby(roomId: string, signaling = 'nostr'): Promise<boolean> {
+    if (!isSteamworksBuild()) return false;
+    try {
+      return Boolean(await window.glimmerdeepDesktop?.createLobby(roomId, signaling));
+    } catch {
+      return false;
+    }
+  }
+
+  public async updateLobbyState(state: 'lobby' | 'playing' | 'finished', joinable = true): Promise<void> {
+    if (!isSteamworksBuild()) return;
+    try {
+      await window.glimmerdeepDesktop?.updateLobbyState(state, joinable);
+    } catch {
+      // ignore
+    }
+  }
+
+  public async openInviteDialog(): Promise<void> {
+    if (!isSteamworksBuild()) return;
+    try {
+      await window.glimmerdeepDesktop?.openInviteDialog();
+    } catch {
+      // ignore
+    }
+  }
+
+  public async leaveLobby(): Promise<void> {
+    if (!isSteamworksBuild()) return;
+    try {
+      await window.glimmerdeepDesktop?.leaveLobby();
+    } catch {
+      // ignore
+    }
+  }
+
+  public async consumePendingInvite(): Promise<{ roomId: string; signaling?: string } | null> {
+    if (!isSteamworksBuild()) return null;
+    try {
+      return (await window.glimmerdeepDesktop?.consumePendingInvite()) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  public onLobbyJoinInvite(cb: (data: { roomId: string; signaling?: string }) => void): () => void {
+    if (!isSteamworksBuild() || !window.glimmerdeepDesktop?.onLobbyJoinInvite) {
+      return () => {};
+    }
+    return window.glimmerdeepDesktop.onLobbyJoinInvite(cb);
   }
 
   public async setStat(name: string, value: number): Promise<void> {

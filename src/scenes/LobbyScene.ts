@@ -4,6 +4,7 @@ import { SoundSystem } from '../audio/SoundSystem';
 import { isMobileMode, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { inputSystem } from '../systems/InputSystem';
 import { net } from '../systems/MultiplayerSystem';
+import { isSteamworksBuild, steamSystem } from '../systems/SteamSystem';
 import { getDailySeed } from '../utils/SeededGenerator';
 
 export class LobbyScene extends Phaser.Scene {
@@ -59,6 +60,23 @@ export class LobbyScene extends Phaser.Scene {
     }
 
     this.add.image(180, 142, 'ui_panel').setDisplaySize(308, 130);
+
+    if (isSteamworksBuild()) {
+      const inviteBg = this.add.image(180, 195, 'ui_btn').setDisplaySize(112, 16).setDepth(5);
+      const inviteTxt = addPixelText(this, 180, 195, 'INVITE FRIENDS', 8, 0x66ffd9, 0.5, 0.5).setDepth(5);
+      inviteBg.setInteractive({ useHandCursor: true }).on('pointerdown', () => {
+        SoundSystem.playPickup();
+        void steamSystem.openInviteDialog();
+      });
+      inviteBg.on('pointerover', () => {
+        inviteBg.setTexture('ui_btn_hover');
+        inviteTxt.setTint(0xffe066);
+      });
+      inviteBg.on('pointerout', () => {
+        inviteBg.setTexture('ui_btn');
+        inviteTxt.setTint(0x66ffd9);
+      });
+    }
 
     this.statusText = addPixelText(this, 180, 214, '', 8, 0xb8a1ff, 0.5, 0.5, 320);
 
@@ -243,8 +261,10 @@ export class LobbyScene extends Phaser.Scene {
     this.playerRows = [];
 
     const list = Array.from(net.players.values());
+    const rowStep = isSteamworksBuild() ? 23 : 28;
+    const rowStartY = isSteamworksBuild() ? 94 : 98;
     list.forEach((p, idx) => {
-      const y = 98 + idx * 28;
+      const y = rowStartY + idx * rowStep;
       const row = this.add.container(0, 0);
       const sp = this.add.sprite(50, y, `player_${p.paletteId}`, 0);
       const tag = p.isHost ? ' [HOST]' : '';

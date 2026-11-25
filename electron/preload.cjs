@@ -13,4 +13,15 @@ contextBridge.exposeInMainWorld('glimmerdeepDesktop', {
   submitLeaderboardTime: (name, timeMs) =>
     ipcRenderer.invoke('steam:submitLeaderboardTime', name, timeMs),
   setStat: (name, value) => ipcRenderer.invoke('steam:setStat', name, value),
+  incrementStat: (name, amount) => ipcRenderer.invoke('steam:incrementStat', name, amount),
+  createLobby: (roomId, signaling) => ipcRenderer.invoke('steam:createLobby', roomId, signaling),
+  updateLobbyState: (state, joinable) => ipcRenderer.invoke('steam:updateLobbyState', state, joinable),
+  openInviteDialog: () => ipcRenderer.invoke('steam:openInviteDialog'),
+  leaveLobby: () => ipcRenderer.invoke('steam:leaveLobby'),
+  consumePendingInvite: () => ipcRenderer.invoke('steam:consumePendingInvite'),
+  onLobbyJoinInvite: (cb) => {
+    const handler = (_event, data) => cb(data);
+    ipcRenderer.on('steam:lobbyJoinInvite', handler);
+    return () => ipcRenderer.removeListener('steam:lobbyJoinInvite', handler);
+  },
 });

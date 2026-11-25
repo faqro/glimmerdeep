@@ -10,6 +10,7 @@ export interface GameSettings {
   particles: ParticleQuality;
   crtScanlines: boolean;
   showControlHints: boolean;
+  filterMessages: boolean;
 }
 
 const DEFAULT_SETTINGS: GameSettings = {
@@ -20,7 +21,31 @@ const DEFAULT_SETTINGS: GameSettings = {
   particles: 'full',
   crtScanlines: false,
   showControlHints: true,
+  filterMessages: true,
 };
+
+const PROFANITY_B64 =
+  'ZnVja3xzaGl0fGJpdGNofGFzc2hvbGV8YmFzdGFyZHxkaWNrfGNvY2t8cHVzc3l8Y3VudHx3aG9yZXxzbHV0fGRhbW58Y3JhcHxwaXNzfGZhZ3xmYWdnb3R8cmV0YXJkfG5pZ2dlcnxuaWdnYXxtb3RoZXJmdWNrZXJ8YnVsbHNoaXR8ZHVtYmFzc3xqYWNrYXNz';
+
+let cachedProfanityRegex: RegExp | null = null;
+
+function getProfanityRegex(): RegExp | null {
+  if (cachedProfanityRegex) return cachedProfanityRegex;
+  try {
+    const decoded = typeof atob === 'function' ? atob(PROFANITY_B64) : '';
+    if (!decoded) return null;
+    cachedProfanityRegex = new RegExp(`\\b(${decoded})(s|ed|ing|er)?\\b`, 'gi');
+    return cachedProfanityRegex;
+  } catch {
+    return null;
+  }
+}
+
+export function filterProfanity(text: string): string {
+  const rx = getProfanityRegex();
+  if (!rx) return text;
+  return text.replace(rx, (match) => '*'.repeat(match.length));
+}
 
 class SettingsManager {
   private data: GameSettings = { ...DEFAULT_SETTINGS };
@@ -50,6 +75,9 @@ class SettingsManager {
       if (typeof parsed.crtScanlines === 'boolean') this.data.crtScanlines = parsed.crtScanlines;
       if (typeof parsed.showControlHints === 'boolean') {
         this.data.showControlHints = parsed.showControlHints;
+      }
+      if (typeof parsed.filterMessages === 'boolean') {
+        this.data.filterMessages = parsed.filterMessages;
       }
     } catch {
       // ignore storage errors

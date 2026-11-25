@@ -2,8 +2,15 @@ import { joinRoom as joinNostrRoom, JsonValue, Room } from 'trystero';
 import { joinRoom as joinMqttRoom } from '@trystero-p2p/mqtt';
 import { pickRandomPaletteId } from '../data/palettes';
 import { GameMode, LobbyPlayerInfo, PlayerStateSnapshot } from '../types/game';
+import { steamSystem } from './SteamSystem';
 
 export type SignalingBackend = 'nostr' | 'mqtt';
+
+export interface NetChatMessage {
+  sender: string;
+  text: string;
+  ts: number;
+}
 
 const APP_ID = 'glimmerdeep-roguelike-v1';
 const SIGNALING_STORAGE_KEY = 'glimmerdeep_signaling';
@@ -226,6 +233,7 @@ export class MultiplayerSystem {
   private sendAttackFn: ((data: NetAttackEvent, target?: string) => void) | null = null;
   private sendInteractFn: ((data: NetInteractEvent, target?: string) => void) | null = null;
   private sendPlayAgainFn: ((data: { ts: number }, target?: string) => void) | null = null;
+  private sendChatFn: ((data: NetChatMessage, target?: string) => void) | null = null;
 
   public onLobbyUpdate?: () => void;
   public onGameStart?: (seed: number, levelIndex: number, restorePlayer?: PlayerStateSnapshot) => void;
@@ -238,6 +246,7 @@ export class MultiplayerSystem {
   public onPeerLeft?: (peerId: string, leavingPlayer?: LobbyPlayerInfo) => void;
   public onHostMigrated?: (newHostPeerId: string, isLocalNewHost: boolean) => void;
   public onPlayAgain?: () => void;
+  public onChatMessage?: (msg: NetChatMessage, fromPeer: string) => void;
   public onSelfIdResolved?: (peerId: string) => void;
   public onConnectionError?: (message: string) => void;
   public connectionError: string | null = null;
@@ -301,6 +310,7 @@ export class MultiplayerSystem {
     this.localName = name || 'Host';
     this.localPaletteId = paletteId;
     this.connectRoom(code, true);
+    void steamSystem.createLobby(code, this.signalingBackend);
     return code;
   }
 
@@ -449,7 +459,7 @@ export class MultiplayerSystem {
         // ignore if room was left before getSelf resolved
       });
 
-    type RelayChannel = 'lobby' | 'start' | 'pstate' | 'wsync' | 'rsync' | 'attack' | 'interact' | 'playagain' | 'peer_left';
+    type RelayChannel = 'lobby' | 'start' | 'pstate' | 'wsync' | 'rsync' | 'attack' | 'interact' | 'playagain' | 'chat' | 'peer_left';
     interface RelayEnvelope {
       [key: string]: JsonValue;
       id: string;
@@ -468,6 +478,7 @@ export class MultiplayerSystem {
     const attackAct = room.makeAction<NetAttackEvent>('attack');
     const interactAct = room.makeAction<NetInteractEvent>('interact');
     const playAgainAct = room.makeAction<{ ts: number }>('playagain');
+    const chatAct = room.makeAction<NetChatMessage>('chat');
     const relayAct = room.makeAction<RelayEnvelope>('relay');
 
     const markSeenRelay = (id: string): boolean => {
@@ -525,6 +536,7 @@ export class MultiplayerSystem {
     this.sendAttackFn = (data, target) => sendWithRelayFallback(attackAct, 'attack', data, target);
     this.sendInteractFn = (data, target) => sendWithRelayFallback(interactAct, 'interact', data, target);
     this.sendPlayAgainFn = (data, target) => sendWithRelayFallback(playAgainAct, 'playagain', data, target, true);
+    this.sendChatFn = (data, target) => sendWithRelayFallback(chatAct, 'chat', data, target, true);
 
     const handleLobbyMessage = (info: LobbyPlayerInfo, fromPeer: string) => {
       this.peerLastSeen.set(fromPeer, Date.now());
@@ -596,11 +608,17 @@ export class MultiplayerSystem {
       this.onPlayAgain?.();
     };
 
+    const handleChatMessage = (msg: NetChatMessage, fromPeer: string) => {
+      this.peerLastSeen.set(fromPeer, Date.now());
+      this.onChatMessage?.(msg, fromPeer);
+    };
+
     lobbyAct.onMessage((info, ctx) => handleLobbyMessage(info, ctx.peerId));
     startAct.onMessage((payload, ctx) => handleStartMessage(payload, ctx.peerId));
     playerAct.onMessage((state, ctx) => handlePlayerStateMessage(state, ctx.peerId));
     worldAct.onMessage((sync, ctx) => handleWorldSyncMessage(sync, ctx.peerId));
     roomSyncAct.onMessage((sync, ctx) => handleRoomSyncMessage(sync, ctx.peerId));
+    chatAct.onMessage((msg, ctx) => handleChatMessage(msg, ctx.peerId));
     attackAct.onMessage((ev, ctx) => handleAttackMessage(ev, ctx.peerId));
     interactAct.onMessage((ev, ctx) => handleInteractMessage(ev, ctx.peerId));
     playAgainAct.onMessage((_data, ctx) => handlePlayAgainMessage(ctx.peerId));
@@ -635,6 +653,9 @@ export class MultiplayerSystem {
             break;
           case 'playagain':
             handlePlayAgainMessage(env.from);
+            break;
+          case 'chat':
+            handleChatMessage(env.data as unknown as NetChatMessage, env.from);
             break;
           case 'peer_left': {
             const leftId = env.data as string;
@@ -798,6 +819,9 @@ export class MultiplayerSystem {
         this.mode = 'host';
         this.sendLobbyFn?.(newHost);
       }
+      if (isLocalNewHost && this.inviteCode) {
+        void steamSystem.createLobby(this.inviteCode, this.signalingBackend);
+      }
       this.onHostMigrated?.(newHost.peerId, isLocalNewHost);
     }
 
@@ -821,6 +845,7 @@ export class MultiplayerSystem {
 
   broadcastStart(seed: number, levelIndex = 0): void {
     if (this.mode !== 'host') return;
+    void steamSystem.updateLobbyState('playing', true);
     this.sendStartFn?.({ seed, levelIndex });
   }
 
@@ -860,9 +885,24 @@ export class MultiplayerSystem {
       p.ready = p.isHost;
     }
     this.sendPlayAgainFn?.({ ts: Date.now() });
+    void steamSystem.updateLobbyState('lobby', true);
+  }
+
+  broadcastChat(text: string): NetChatMessage | null {
+    if (this.mode === 'solo') return null;
+    const cleaned = text.trim().slice(0, 48);
+    if (!cleaned) return null;
+    const msg: NetChatMessage = {
+      sender: this.localName || 'Player',
+      text: cleaned,
+      ts: Date.now(),
+    };
+    this.sendChatFn?.(msg);
+    return msg;
   }
 
   disconnect(): void {
+    void steamSystem.leaveLobby();
     this.connectGen++;
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
@@ -888,6 +928,7 @@ export class MultiplayerSystem {
     this.sendAttackFn = null;
     this.sendInteractFn = null;
     this.sendPlayAgainFn = null;
+    this.sendChatFn = null;
     this.onLobbyUpdate = undefined;
     this.onGameStart = undefined;
     this.onRemotePlayerState = undefined;

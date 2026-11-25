@@ -398,12 +398,16 @@ export class SettingsScene extends Phaser.Scene {
   }
 
   private renderOptionList(titleStr: string, defs: SettingOptionRow[]): void {
-    const title = addPixelText(this, 180, 68, titleStr, 8, 0xffe066, 0.5, 0.5);
+    const title = addPixelText(this, 180, 66, titleStr, 8, 0xffe066, 0.5, 0.5);
     this.contentContainer.add(title);
 
+    const step = defs.length > 6 ? 20 : 23;
+    const startY = defs.length > 6 ? 84 : 90;
+    const rowH = defs.length > 6 ? 17 : 19;
+
     defs.forEach((def, idx) => {
-      const y = 90 + idx * 23;
-      const bg = this.add.rectangle(180, y, 304, 19, 0x100d24).setStrokeStyle(1, 0x4a3b7d);
+      const y = startY + idx * step;
+      const bg = this.add.rectangle(180, y, 304, rowH, 0x100d24).setStrokeStyle(1, 0x4a3b7d);
       const lblTxt = addPixelText(this, 40, y, def.label, 8, 0xffffff, 0, 0.5);
       const valTxt = addPixelText(this, 318, y, def.getValue(), 8, 0x66ffd9, 1, 0.5);
 
@@ -466,6 +470,14 @@ export class SettingsScene extends Phaser.Scene {
         onChange: () => {
           SoundSystem.playSwing();
           settingsSystem.update({ showControlHints: !settingsSystem.current.showControlHints });
+        },
+      },
+      {
+        label: 'FILTER MESSAGES',
+        getValue: () => (settingsSystem.current.filterMessages ? 'ON' : 'OFF'),
+        onChange: () => {
+          SoundSystem.playSwing();
+          settingsSystem.update({ filterMessages: !settingsSystem.current.filterMessages });
         },
       },
       {

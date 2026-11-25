@@ -184,6 +184,13 @@ interface CarriedSkeletonState {
   formationIndex: number;
 }
 
+interface RunAchievementFlags {
+  boughtAnything: boolean;
+  revivedAnyone: boolean;
+  hurtAnyEnemy: boolean;
+  healedAtAll: boolean;
+}
+
 interface LocalPlayerActor {
   slotIndex: number;
   inputType: 'gamepad' | 'keyboard';
@@ -377,6 +384,12 @@ export class GameScene extends Phaser.Scene {
   private totalShardsCollected = 0;
   private totalEnemiesDefeated = 0;
   private runStartMs = 0;
+  private runFlags: RunAchievementFlags = {
+    boughtAnything: false,
+    revivedAnyone: false,
+    hurtAnyEnemy: false,
+    healedAtAll: false,
+  };
   private netSyncTimerMs = 0;
   private worldSyncTimerMs = 0;
   private plateCooldownMs = 0;
@@ -417,12 +430,17 @@ export class GameScene extends Phaser.Scene {
     carryLocalPlayers?: PlayerStateSnapshot[];
     carrySkeletons?: CarriedSkeletonState[];
     carryRunStartMs?: number;
+    carryRunFlags?: RunAchievementFlags;
     restoreReconnect?: boolean;
     exitedTestRoom?: boolean;
   }): void {
     this.levelIndex = data.levelIndex ?? 0;
     this.floorSeed = data.floorSeed ?? getDailySeed(this.levelIndex);
     this.runStartMs = data.resetRun || !data.carryRunStartMs ? Date.now() : data.carryRunStartMs;
+    this.runFlags =
+      data.resetRun || !data.carryRunFlags
+        ? { boughtAnything: false, revivedAnyone: false, hurtAnyEnemy: false, healedAtAll: false }
+        : { ...data.carryRunFlags };
     if (this.levelIndex >= 2) void steamSystem.unlockAchievement('ACH_FLOOR_3');
     if (this.levelIndex >= 5) void steamSystem.unlockAchievement('ACH_FLOOR_6');
     this.transitioningLevel = false;
@@ -770,6 +788,7 @@ export class GameScene extends Phaser.Scene {
 
     kb.on('keydown-TAB', (ev: KeyboardEvent) => {
       ev.preventDefault();
+      if (this.ui?.isChatOpen()) return;
       this.ui.toggleMap();
     });
 
@@ -778,7 +797,7 @@ export class GameScene extends Phaser.Scene {
       const now = performance.now();
       if (now - lastEscMs < 80) return;
       lastEscMs = now;
-      if (!this.ui) return;
+      if (!this.ui || this.ui.isChatOpen()) return;
       if (this.ui.isOverlayOpen()) {
         this.ui.closeShop();
         this.paused = this.ui.togglePause(false);
@@ -837,20 +856,37 @@ export class GameScene extends Phaser.Scene {
     };
 
     kb.on('keydown-Q', () => {
-      if (!this.paused && !this.ui.isOverlayOpen()) {
+      if (!this.paused && !this.ui.isOverlayOpen() && !this.ui.isChatOpen()) {
         runForKeyboardPlayer(() => this.dropActiveItem());
       }
     });
-    kb.on('keydown-ONE', () => runForKeyboardPlayer(() => (this.playerState.activeSlot = 0)));
-    kb.on('keydown-TWO', () => runForKeyboardPlayer(() => (this.playerState.activeSlot = 1)));
-    kb.on('keydown-THREE', () => runForKeyboardPlayer(() => (this.playerState.activeSlot = 2)));
+    kb.on('keydown-ONE', () => {
+      if (!this.ui.isChatOpen()) runForKeyboardPlayer(() => (this.playerState.activeSlot = 0));
+    });
+    kb.on('keydown-TWO', () => {
+      if (!this.ui.isChatOpen()) runForKeyboardPlayer(() => (this.playerState.activeSlot = 1));
+    });
+    kb.on('keydown-THREE', () => {
+      if (!this.ui.isChatOpen()) runForKeyboardPlayer(() => (this.playerState.activeSlot = 2));
+    });
     kb.on('keydown-G', () => {
-      if (!this.paused && !this.ui.isOverlayOpen()) {
+      if (!this.paused && !this.ui.isOverlayOpen() && !this.ui.isChatOpen()) {
         runForKeyboardPlayer(() => this.dropActiveItem());
       }
     });
     kb.on('keydown-E', () => {
-      if (!this.paused) runForKeyboardPlayer(() => this.handleInteract());
+      if (!this.paused && !this.ui.isChatOpen()) runForKeyboardPlayer(() => this.handleInteract());
+    });
+    kb.on('keydown-T', () => {
+      if (
+        net.mode !== 'solo' &&
+        !localCoopSession.active &&
+        !this.paused &&
+        !this.ui.isOverlayOpen() &&
+        !this.ui.isChatOpen()
+      ) {
+        this.ui.openChatKeyboard();
+      }
     });
 
     const switchSpectator = (dir: -1 | 1) => {
@@ -933,6 +969,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private setupNetworking(): void {
+    net.onChatMessage = (msg) => {
+      this.ui?.addChatMessage(msg.sender, msg.text);
+    };
     net.onLobbyUpdate = undefined;
     net.onGameStart = undefined;
     net.onPlayAgain = undefined;
@@ -2865,6 +2904,7 @@ export class GameScene extends Phaser.Scene {
           this.playRipOutAnimationForRemote(longestDowned.id, 0xffe066);
         }
         SoundSystem.playHeal();
+        this.runFlags.revivedAnyone = true;
         this.ui.showToast(`Revived ${longestDowned.name}!`, '#ffe066');
       } else {
         this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 4);
@@ -4192,6 +4232,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private damageEnemy(enemy: ActiveEnemy, dmg: number, knockbackAngle?: number): void {
+    this.runFlags.hurtAnyEnemy = true;
     if (this.playerState.name === 'ADMIN') {
       dmg = Math.max(dmg, enemy.hp, 9999);
     }
@@ -4452,6 +4493,7 @@ export class GameScene extends Phaser.Scene {
       this.specialObjs.shrine.setAlpha(0.45);
       const heal = this.floor.modifier === 'lunar_bloom' ? 6 : 4;
       this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + heal);
+      this.runFlags.healedAtAll = true;
       SoundSystem.playHeal();
       this.spawnParticles(88, 84, 0xff5d8f, 10);
 
@@ -4461,6 +4503,7 @@ export class GameScene extends Phaser.Scene {
           .sort((a, b) => a.downedTimerMs - b.downedTimerMs);
         if (downedAllies.length > 0) {
           const longestDowned = downedAllies[0];
+          this.runFlags.revivedAnyone = true;
           const halfHp = Math.max(1, Math.floor(longestDowned.maxHp / 2));
           net.broadcastInteract({
             peerId: this.playerState.id,
@@ -4705,6 +4748,7 @@ export class GameScene extends Phaser.Scene {
         this.spawnPersistentFloorItem(res.replaced.id, this.playerSprite.x, this.playerSprite.y + 12, res.replaced.uses);
       }
       SoundSystem.playPickup();
+      this.runFlags.boughtAnything = true;
       this.ui.showToast(`Bought ${newItem.name}!`, '#66ffd9');
       this.openMerchantShop();
     });
@@ -4790,11 +4834,21 @@ export class GameScene extends Phaser.Scene {
     SoundSystem.playUnlock();
 
     if (this.levelIndex >= 6) {
+      const elapsedMs = Math.max(1, Date.now() - this.runStartMs);
       void steamSystem.unlockAchievement('ACH_EVERHEART_RESTORED');
+      if (elapsedMs < 600_000) void steamSystem.unlockAchievement('ACH_SPEEDRUNNER');
+      if (!this.runFlags.boughtAnything) void steamSystem.unlockAchievement('ACH_FRUGAL');
+      if (!this.runFlags.hurtAnyEnemy) void steamSystem.unlockAchievement('ACH_PACIFIST');
+      if (!this.runFlags.healedAtAll) void steamSystem.unlockAchievement('ACH_NO_HEAL');
+
       if (net.mode === 'solo' && !localCoopSession.active) {
         void steamSystem.unlockAchievement('ACH_SOLO_CHAMPION');
-        const elapsedMs = Math.max(1, Date.now() - this.runStartMs);
         void steamSystem.submitSoloClearTime(elapsedMs);
+      } else {
+        void steamSystem.unlockAchievement('ACH_COOP_CHAMPION');
+        void steamSystem.submitCoopClearTime(elapsedMs);
+        if (!this.runFlags.revivedAnyone) void steamSystem.unlockAchievement('ACH_COLD_HEARTED');
+        void steamSystem.updateLobbyState('finished', false);
       }
       if (net.mode === 'host') {
         net.broadcastInteract({
@@ -4823,6 +4877,7 @@ export class GameScene extends Phaser.Scene {
       carryLocalPlayers: localCoopSession.active ? this.localPlayers.map((lp) => lp.state) : undefined,
       carrySkeletons: this.getCarriedSkeletons(),
       carryRunStartMs: this.runStartMs,
+      carryRunFlags: this.runFlags,
     });
   }
 
@@ -5012,6 +5067,8 @@ export class GameScene extends Phaser.Scene {
       this.ui.showToast(`${usedItem.name} saved you!`, '#ffe066');
       return;
     }
+
+    steamSystem.recordDeath();
 
     if (localCoopSession.active) {
       this.playerState.downed = true;
@@ -5351,7 +5408,7 @@ export class GameScene extends Phaser.Scene {
     const anyPadPause = localCoopSession.active
       ? this.localPlayers.some((lp) => lp.inputType === 'gamepad' && inputSystem.consumePadAction(lp.padIndex, 'pause'))
       : inputSystem.consumeAction('pause');
-    if (anyPadPause) {
+    if (anyPadPause && !this.ui.isChatOpen()) {
       if (this.ui.isOverlayOpen()) {
         this.ui.closeShop();
         this.paused = this.ui.togglePause(false);
@@ -5363,10 +5420,20 @@ export class GameScene extends Phaser.Scene {
 
     if (this.paused || this.transitioningLevel) return;
 
+    if (
+      net.mode !== 'solo' &&
+      !localCoopSession.active &&
+      !this.ui.isOverlayOpen() &&
+      !this.ui.isChatOpen() &&
+      inputSystem.consumeChatButton()
+    ) {
+      this.ui.openChatGamepad();
+    }
+
     const anyPadMap = localCoopSession.active
       ? this.localPlayers.some((lp) => lp.inputType === 'gamepad' && inputSystem.consumePadAction(lp.padIndex, 'map'))
       : inputSystem.consumeAction('map');
-    if (anyPadMap) {
+    if (anyPadMap && !this.ui.isChatOpen()) {
       this.ui.toggleMap();
     }
 
@@ -5425,7 +5492,7 @@ export class GameScene extends Phaser.Scene {
         }
       }
     } else {
-      if (!this.ui.isOverlayOpen() && !this.playerState.downed) {
+      if (!this.ui.isOverlayOpen() && !this.ui.isChatOpen() && !this.playerState.downed) {
         if (inputSystem.consumeAction('prevSlot')) {
           this.playerState.activeSlot = (this.playerState.activeSlot + 2) % 3;
         }
@@ -5472,6 +5539,7 @@ export class GameScene extends Phaser.Scene {
         other.state.hp = Math.max(4, Math.floor(other.state.maxHp / 2));
         other.invulnMs = 1500;
         other.sprite.setFrame(0).setDepth(10);
+        this.runFlags.revivedAnyone = true;
         SoundSystem.playHeal();
         this.spawnParticles(other.sprite.x, other.sprite.y, 0x66ffd9, 10);
         this.ui.showToast(`${other.state.name} revived!`, '#66ffd9');
@@ -5482,6 +5550,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateSinglePlayerTick(time: number, delta: number): void {
+    const hpBeforeTick = this.playerState.hp;
+    const wasDownedBeforeTick = this.playerState.downed;
     this.attackCooldownMs = Math.max(0, this.attackCooldownMs - delta);
     this.invulnMs = Math.max(0, this.invulnMs - delta);
     this.respawnAnimMs = Math.max(0, this.respawnAnimMs - delta);
@@ -5571,6 +5641,9 @@ export class GameScene extends Phaser.Scene {
         this.playerSlowTinted = false;
       }
     }
+    if (!wasDownedBeforeTick && !this.playerState.downed && this.playerState.hp > hpBeforeTick) {
+      this.runFlags.healedAtAll = true;
+    }
   }
 
   private updatePlayerMovement(time: number, delta: number): void {
@@ -5625,7 +5698,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (this.respawnAnimMs > 0) {
+    if (this.respawnAnimMs > 0 || this.ui?.isChatOpen()) {
       this.playerSprite.setVelocity(0, 0);
       this.playerState.vx = 0;
       this.playerState.vy = 0;
@@ -9352,6 +9425,7 @@ export class GameScene extends Phaser.Scene {
             this.spikePinnedMs = 1000;
             this.dodgeMs = 0;
             this.damagePlayer(1);
+            steamSystem.recordSpikeStab();
             this.ui.showToast('Stabbed by spikes!', '#ff5d8f');
           }
         }
@@ -9365,6 +9439,7 @@ export class GameScene extends Phaser.Scene {
           this.spikePinnedMs = Math.max(this.spikePinnedMs, s.activeMs);
           this.dodgeMs = 0;
           this.damagePlayer(1);
+          steamSystem.recordSpikeStab();
           this.ui.showToast('Stabbed by spikes!', '#ff5d8f');
         }
         if (s.activeMs <= 0) {
@@ -9412,6 +9487,7 @@ export class GameScene extends Phaser.Scene {
           SoundSystem.playPickup();
         } else {
           targetState.hp = Math.min(targetState.maxHp, targetState.hp + 2);
+          this.runFlags.healedAtAll = true;
           SoundSystem.playHeal();
         }
       }

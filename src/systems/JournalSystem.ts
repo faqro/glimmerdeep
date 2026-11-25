@@ -51,6 +51,24 @@ class JournalManager {
     if (total >= 10) {
       void steamSystem.unlockAchievement('ACH_LORE_SEEKER');
     }
+
+    const secretWeaponIds = Object.values(WEAPONS)
+      .filter((w) => w.rarity === 'secret')
+      .map((w) => w.id);
+    if (secretWeaponIds.length > 0 && secretWeaponIds.every((id) => this.data.items.includes(id))) {
+      void steamSystem.unlockAchievement('ACH_SECRET_ARSENAL');
+    }
+
+    const allItemIds = [...Object.keys(WEAPONS), ...Object.keys(CONSUMABLES), ...Object.keys(ARTIFACTS)];
+    const allItemsFound = allItemIds.every((id) => this.data.items.includes(id));
+    if (allItemsFound) {
+      void steamSystem.unlockAchievement('ACH_ITEM_COLLECTOR');
+      const allEnemiesFound = Object.keys(ENEMIES).every((id) => this.data.enemies.includes(id));
+      const allBossesFound = Object.keys(BOSSES).every((id) => this.data.bosses.includes(id));
+      if (allEnemiesFound && allBossesFound) {
+        void steamSystem.unlockAchievement('ACH_JOURNAL_MASTER');
+      }
+    }
   }
 
   public discoverEnemy(id: string): void {

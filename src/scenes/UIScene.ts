@@ -5,9 +5,11 @@ import { BIOMES, LEVEL_MODIFIERS } from '../data/biomes';
 import { applyRarityTextStyle, ARTIFACTS, CONSUMABLES, STATUS_EFFECTS } from '../data/items';
 import { WEAPONS } from '../data/weapons';
 import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { VirtualKeyboard } from '../mobile/VirtualKeyboard';
 import { getControlIconTexture } from '../systems/ControlHints';
 import { GameAction, inputSystem, localCoopSession } from '../systems/InputSystem';
-import { settingsSystem } from '../systems/SettingsSystem';
+import { net } from '../systems/MultiplayerSystem';
+import { filterProfanity, settingsSystem } from '../systems/SettingsSystem';
 import { PlayerStateSnapshot, RoomData, ShopStockItem } from '../types/game';
 
 export interface UIStatePayload {
@@ -101,6 +103,19 @@ export class UIScene extends Phaser.Scene {
   private unsubNav?: () => void;
   private unsubBtn?: () => void;
   private unsubCtrl?: () => void;
+
+  // Online Co-op Chat UI
+  private virtualKeyboard?: VirtualKeyboard;
+  private chatInputContainer!: Phaser.GameObjects.Container;
+  private chatInputTxt!: Phaser.GameObjects.BitmapText;
+  private chatTyping = false;
+  private chatDraft = '';
+  private chatBlink = true;
+  private chatMessages: Array<{
+    container: Phaser.GameObjects.Container;
+    height: number;
+    timer?: Phaser.Time.TimerEvent;
+  }> = [];
 
   constructor() {
     super({ key: 'UIScene' });
@@ -232,6 +247,7 @@ export class UIScene extends Phaser.Scene {
     this.buildShopOverlay();
     this.buildPauseOverlay();
     this.buildSpectateBar();
+    this.buildChatUI();
 
     this.unsubNav = inputSystem.onNav((dir) => this.handleMobileNav(dir));
     this.unsubBtn = inputSystem.onButton((btn) => this.handleMobileButton(btn));
@@ -244,6 +260,7 @@ export class UIScene extends Phaser.Scene {
       this.unsubNav?.();
       this.unsubBtn?.();
       this.unsubCtrl?.();
+      this.virtualKeyboard?.destroy();
     });
   }
 
@@ -267,6 +284,160 @@ export class UIScene extends Phaser.Scene {
   setSpectateHandlers(onPrev: () => void, onNext: () => void): void {
     this.onSpectatePrev = onPrev;
     this.onSpectateNext = onNext;
+  }
+
+  private buildChatUI(): void {
+    this.chatMessages = [];
+    this.chatTyping = false;
+    this.chatDraft = '';
+    this.virtualKeyboard = new VirtualKeyboard(this);
+
+    // Bottom-right focused chat textbox
+    this.chatInputContainer = this.add.container(0, 0).setDepth(85).setVisible(false);
+    const boxBg = this.add.rectangle(290, 256, 130, 15, 0x100d24, 0.94).setStrokeStyle(1, 0xffe066);
+    this.chatInputTxt = addPixelText(this, 229, 256, '_', 8, 0xffffff, 0, 0.5);
+    this.chatInputContainer.add([boxBg, this.chatInputTxt]);
+
+    this.time.addEvent({
+      delay: 420,
+      loop: true,
+      callback: () => {
+        this.chatBlink = !this.chatBlink;
+        if (this.chatTyping) this.refreshChatInput();
+      },
+    });
+
+    const onWindowKeyDown = (ev: KeyboardEvent) => {
+      if (!this.chatTyping) return;
+      ev.stopPropagation();
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        this.closeChatKeyboard();
+        return;
+      }
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        const text = this.chatDraft;
+        this.closeChatKeyboard();
+        this.submitChatMessage(text);
+        return;
+      }
+      if (ev.key === 'Backspace') {
+        ev.preventDefault();
+        this.chatDraft = this.chatDraft.slice(0, -1);
+        this.refreshChatInput();
+        return;
+      }
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (ev.key.length === 1 && this.chatDraft.length < 42) {
+        this.chatDraft += ev.key;
+        this.refreshChatInput();
+      }
+    };
+    window.addEventListener('keydown', onWindowKeyDown, true);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      window.removeEventListener('keydown', onWindowKeyDown, true);
+    });
+  }
+
+  private refreshChatInput(): void {
+    if (!this.chatInputTxt?.active) return;
+    const cursor = this.chatBlink ? '_' : ' ';
+    const visibleSlice = this.chatDraft.length > 18 ? this.chatDraft.slice(-18) : this.chatDraft;
+    this.chatInputTxt.setText(`${visibleSlice}${cursor}`);
+  }
+
+  public isChatOpen(): boolean {
+    return this.chatTyping || !!this.virtualKeyboard?.visible;
+  }
+
+  public openChatKeyboard(): void {
+    if (net.mode === 'solo' || localCoopSession.active || this.isChatOpen()) return;
+    this.chatTyping = true;
+    this.chatDraft = '';
+    this.chatBlink = true;
+    this.chatInputContainer.setVisible(true);
+    this.refreshChatInput();
+    SoundSystem.playSwing();
+  }
+
+  public closeChatKeyboard(): void {
+    this.chatTyping = false;
+    this.chatDraft = '';
+    this.chatInputContainer.setVisible(false);
+  }
+
+  public openChatGamepad(): void {
+    if (net.mode === 'solo' || localCoopSession.active || this.isChatOpen()) return;
+    SoundSystem.playSwing();
+    this.virtualKeyboard?.open({
+      title: 'TEAM CHAT',
+      initialValue: '',
+      maxLength: 42,
+      uppercaseOnly: false,
+      allowSymbols: true,
+      onEnter: (val) => {
+        this.submitChatMessage(val);
+      },
+    });
+  }
+
+  private submitChatMessage(raw: string): void {
+    const sent = net.broadcastChat(raw);
+    if (sent) {
+      SoundSystem.playPickup();
+      this.addChatMessage(sent.sender, sent.text);
+    }
+  }
+
+  public addChatMessage(sender: string, text: string): void {
+    if (!this.scene.isActive('UIScene')) return;
+    const container = this.add.container(0, 0).setDepth(80);
+    const filtered = settingsSystem.current.filterMessages ? filterProfanity(text) : text;
+    const display = `${sender.slice(0, 10)}: ${filtered}`;
+    const txt = addPixelText(this, 354, 0, display, 6, 0xffffff, 1, 0.5, 148);
+    const h = Math.max(8, txt.height + 2);
+    container.add([txt]);
+
+    const entry: { container: Phaser.GameObjects.Container; height: number; timer?: Phaser.Time.TimerEvent } = {
+      container,
+      height: h,
+    };
+    this.chatMessages.push(entry);
+
+    while (this.chatMessages.length > 5) {
+      const oldest = this.chatMessages.shift();
+      oldest?.timer?.remove(false);
+      oldest?.container.destroy();
+    }
+
+    this.layoutChatMessages();
+
+    entry.timer = this.time.delayedCall(10000, () => {
+      if (!entry.container.active) return;
+      this.tweens.add({
+        targets: entry.container,
+        alpha: 0,
+        duration: 450,
+        onComplete: () => {
+          const idx = this.chatMessages.indexOf(entry);
+          if (idx !== -1) this.chatMessages.splice(idx, 1);
+          entry.container.destroy();
+          this.layoutChatMessages();
+        },
+      });
+    });
+  }
+
+  private layoutChatMessages(): void {
+    let bottomY = 244;
+    for (let i = this.chatMessages.length - 1; i >= 0; i--) {
+      const item = this.chatMessages[i];
+      if (!item.container.active) continue;
+      const cy = Math.round(bottomY - item.height / 2);
+      item.container.setY(cy);
+      bottomY -= item.height + 2;
+    }
   }
 
   private buildMapOverlay(): void {
@@ -442,6 +613,11 @@ export class UIScene extends Phaser.Scene {
   }
 
   private handleMobileNav(dir: NavDir): void {
+    if (this.virtualKeyboard?.visible) {
+      this.virtualKeyboard.handleNav(dir);
+      return;
+    }
+
     if (this.pauseOverlay.visible) {
       SoundSystem.playSwing();
       if (dir === 'up') {
@@ -469,6 +645,11 @@ export class UIScene extends Phaser.Scene {
   }
 
   private handleMobileButton(btn: VirtualButton): void {
+    if (this.virtualKeyboard?.visible) {
+      this.virtualKeyboard.handleButton(btn);
+      return;
+    }
+
     if (this.game.loop.frame <= this.overlayOpenedFrame) return;
 
     if (this.pauseOverlay.visible) {

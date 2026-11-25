@@ -43,6 +43,7 @@ export class MenuScene extends Phaser.Scene {
   private unsubNav?: () => void;
   private unsubBtn?: () => void;
   private unsubCtrl?: () => void;
+  private unsubSteamInvite?: () => void;
 
   private cursorBlink = true;
   private fireflies: Array<{ sprite: Phaser.GameObjects.Image; vx: number; vy: number; phase: number }> = [];
@@ -251,10 +252,24 @@ export class MenuScene extends Phaser.Scene {
       }
       this.refreshMobileFocus();
     });
+    const handleSteamInvite = (invite: { roomId: string; signaling?: string }) => {
+      if (!invite?.roomId || !this.scene.isActive('MenuScene')) return;
+      if (invite.signaling === 'nostr' || invite.signaling === 'mqtt') {
+        net.setSignalingBackend(invite.signaling);
+      }
+      SoundSystem.playPickup();
+      net.joinGame(invite.roomId, this.playerName.trim() || 'Guest', this.getChosenAvatarId());
+      this.scene.start('LobbyScene');
+    };
+    this.unsubSteamInvite = steamSystem.onLobbyJoinInvite(handleSteamInvite);
+    void steamSystem.consumePendingInvite().then((pending) => {
+      if (pending) handleSteamInvite(pending);
+    });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.unsubNav?.();
       this.unsubBtn?.();
       this.unsubCtrl?.();
+      this.unsubSteamInvite?.();
       this.virtualKeyboard?.destroy();
     });
 
