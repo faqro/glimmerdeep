@@ -6069,7 +6069,7 @@ export class GameScene extends Phaser.Scene {
       this.flameDamageTickMs = 150;
     }
 
-    // Drain 1 use per 100ms (maxUses: 600 = 60 seconds total)
+    // Drain 1 use per 100ms (maxUses: 150 = 15 seconds total)
     this.flameDrainAccumMs += delta;
     while (this.flameDrainAccumMs >= 100) {
       this.flameDrainAccumMs -= 100;
