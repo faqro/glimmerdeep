@@ -59,9 +59,30 @@ class SteamSystem {
   private unlocked = new Set<string>();
   private _hasAvatarDlc = false;
   private _playerName: string | null = null;
+  private _steamId: string | null = null;
+  private _currentLobbyId: string | null = null;
 
   public getCachedPlayerName(): string | null {
     return this._playerName;
+  }
+
+  public getCachedSteamId(): string | null {
+    return this._steamId;
+  }
+
+  public getCurrentLobbyId(): string | null {
+    return this._currentLobbyId;
+  }
+
+  public async refreshSteamId(): Promise<string | null> {
+    if (!isSteamworksBuild()) return null;
+    try {
+      const id = await window.glimmerdeepDesktop?.getSteamId();
+      if (id) this._steamId = id;
+    } catch {
+      // ignore
+    }
+    return this._steamId;
   }
 
   public async refreshPlayerName(): Promise<string | null> {
@@ -160,10 +181,42 @@ class SteamSystem {
     }
   }
 
-  public async createLobby(roomId: string, signaling = 'nostr'): Promise<boolean> {
-    if (!isSteamworksBuild()) return false;
+  public async createLobby(roomId: string, signaling = 'nostr'): Promise<string | null> {
+    if (!isSteamworksBuild()) return null;
     try {
-      return Boolean(await window.glimmerdeepDesktop?.createLobby(roomId, signaling));
+      const lobbyId = (await window.glimmerdeepDesktop?.createLobby(roomId, signaling)) ?? null;
+      this._currentLobbyId = lobbyId;
+      return lobbyId;
+    } catch {
+      return null;
+    }
+  }
+
+  public async joinLobbyById(lobbyId: string): Promise<boolean> {
+    if (!isSteamworksBuild() || !lobbyId) return false;
+    if (this._currentLobbyId === lobbyId) return true;
+    try {
+      const ok = Boolean(await window.glimmerdeepDesktop?.joinLobbyById(lobbyId));
+      if (ok) this._currentLobbyId = lobbyId;
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  public async isFriend(steamId64: string): Promise<boolean> {
+    if (!isSteamworksBuild() || !steamId64) return false;
+    try {
+      return Boolean(await window.glimmerdeepDesktop?.isFriend(steamId64));
+    } catch {
+      return false;
+    }
+  }
+
+  public async addFriend(steamId64: string): Promise<boolean> {
+    if (!isSteamworksBuild() || !steamId64) return false;
+    try {
+      return Boolean(await window.glimmerdeepDesktop?.addFriend(steamId64));
     } catch {
       return false;
     }
@@ -188,6 +241,7 @@ class SteamSystem {
   }
 
   public async leaveLobby(): Promise<void> {
+    this._currentLobbyId = null;
     if (!isSteamworksBuild()) return;
     try {
       await window.glimmerdeepDesktop?.leaveLobby();
@@ -196,20 +250,27 @@ class SteamSystem {
     }
   }
 
-  public async consumePendingInvite(): Promise<{ roomId: string; signaling?: string } | null> {
+  public async consumePendingInvite(): Promise<{ roomId: string; signaling?: string; lobbyId?: string } | null> {
     if (!isSteamworksBuild()) return null;
     try {
-      return (await window.glimmerdeepDesktop?.consumePendingInvite()) ?? null;
+      const res = (await window.glimmerdeepDesktop?.consumePendingInvite()) ?? null;
+      if (res?.lobbyId) this._currentLobbyId = res.lobbyId;
+      return res;
     } catch {
       return null;
     }
   }
 
-  public onLobbyJoinInvite(cb: (data: { roomId: string; signaling?: string }) => void): () => void {
+  public onLobbyJoinInvite(
+    cb: (data: { roomId: string; signaling?: string; lobbyId?: string }) => void
+  ): () => void {
     if (!isSteamworksBuild() || !window.glimmerdeepDesktop?.onLobbyJoinInvite) {
       return () => {};
     }
-    return window.glimmerdeepDesktop.onLobbyJoinInvite(cb);
+    return window.glimmerdeepDesktop.onLobbyJoinInvite((data) => {
+      if (data?.lobbyId) this._currentLobbyId = data.lobbyId;
+      cb(data);
+    });
   }
 
   public async setStat(name: string, value: number): Promise<void> {

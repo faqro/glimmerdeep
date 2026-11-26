@@ -2,7 +2,7 @@ import { joinRoom as joinNostrRoom, JsonValue, Room } from 'trystero';
 import { joinRoom as joinMqttRoom } from '@trystero-p2p/mqtt';
 import { pickRandomPaletteId } from '../data/palettes';
 import { GameMode, LobbyPlayerInfo, PlayerStateSnapshot } from '../types/game';
-import { steamSystem } from './SteamSystem';
+import { isSteamworksBuild, steamSystem } from './SteamSystem';
 
 export type SignalingBackend = 'nostr' | 'mqtt';
 
@@ -310,7 +310,15 @@ export class MultiplayerSystem {
     this.localName = name || 'Host';
     this.localPaletteId = paletteId;
     this.connectRoom(code, true);
-    void steamSystem.createLobby(code, this.signalingBackend);
+    void steamSystem.createLobby(code, this.signalingBackend).then((lobbyId) => {
+      if (lobbyId && this.mode === 'host' && this.inviteCode === code) {
+        const self = this.players.get(this.localPeerId);
+        if (self) {
+          self.steamLobbyId = lobbyId;
+          this.sendLobbyFn?.(self);
+        }
+      }
+    });
     return code;
   }
 
@@ -545,6 +553,16 @@ export class MultiplayerSystem {
       const isNew = !this.players.has(fromPeer);
       const fullInfo = { ...info, peerId: fromPeer };
       this.players.set(fromPeer, fullInfo);
+
+      // Reverse assign Steam lobby: if host advertises a Steam lobby ID over Trystero, join it automatically
+      if (
+        this.mode === 'client' &&
+        info.steamLobbyId &&
+        isSteamworksBuild() &&
+        steamSystem.getCurrentLobbyId() !== info.steamLobbyId
+      ) {
+        void steamSystem.joinLobbyById(info.steamLobbyId);
+      }
 
       // Ensure no two players share the same skin: non-host (or lexicographically higher peerId) re-rolls on collision
       const selfInfo = this.players.get(this.localPeerId);
@@ -820,7 +838,16 @@ export class MultiplayerSystem {
         this.sendLobbyFn?.(newHost);
       }
       if (isLocalNewHost && this.inviteCode) {
-        void steamSystem.createLobby(this.inviteCode, this.signalingBackend);
+        const code = this.inviteCode;
+        void steamSystem.createLobby(code, this.signalingBackend).then((lobbyId) => {
+          if (lobbyId && this.mode === 'host' && this.inviteCode === code) {
+            const self = this.players.get(this.localPeerId);
+            if (self) {
+              self.steamLobbyId = lobbyId;
+              this.sendLobbyFn?.(self);
+            }
+          }
+        });
       }
       this.onHostMigrated?.(newHost.peerId, isLocalNewHost);
     }
@@ -837,6 +864,8 @@ export class MultiplayerSystem {
       ready,
       isHost: this.mode === 'host',
       joinedAt: this.localJoinedAt,
+      steamId: steamSystem.getCachedSteamId() ?? undefined,
+      steamLobbyId: this.mode === 'host' ? (steamSystem.getCurrentLobbyId() ?? undefined) : undefined,
     };
     this.players.set(this.localPeerId, info);
     this.sendLobbyFn?.(info);

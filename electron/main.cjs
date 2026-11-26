@@ -9,10 +9,15 @@ let steamClient = null;
 let currentLobby = null;
 let mainWindow = null;
 let pendingInviteData = null;
+let launchLobbyArg = null;
+const knownFriendIds = new Set();
 
 async function handleSteamLobbyJoin(lobbyId) {
   if (!steamClient || !lobbyId) return;
   try {
+    if (currentLobby && currentLobby.id?.toString() === String(lobbyId)) {
+      return;
+    }
     if (currentLobby) {
       try {
         currentLobby.leave();
@@ -29,11 +34,10 @@ async function handleSteamLobbyJoin(lobbyId) {
       console.warn('[Steamworks] Joined Steam lobby without trystero_room data');
       return;
     }
-    const payload = { roomId, signaling };
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    const payload = { roomId, signaling, lobbyId: lobby.id.toString() };
+    pendingInviteData = payload;
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading()) {
       mainWindow.webContents.send('steam:lobbyJoinInvite', payload);
-    } else {
-      pendingInviteData = payload;
     }
   } catch (err) {
     console.warn('[Steamworks] Failed to join Steam lobby:', err?.message || err);
@@ -53,19 +57,26 @@ function initSteamworks() {
     if (steamClient.callback && typeof steamClient.callback.register === 'function') {
       const JoinRequested = steamworks.SteamCallback?.GameLobbyJoinRequested ?? 8;
       steamClient.callback.register(JoinRequested, (data) => {
+        if (data?.friend_steam_id) {
+          knownFriendIds.add(data.friend_steam_id.toString());
+        }
         if (data && data.lobby_steam_id) {
           void handleSteamLobbyJoin(data.lobby_steam_id);
         }
       });
     }
 
-    // Handle +connect_lobby <lobbyId> launch argument
+    // Handle +connect_lobby <lobbyId> launch argument (joining via Steam invite while game was closed)
     const connectIdx = process.argv.indexOf('+connect_lobby');
     if (connectIdx !== -1 && process.argv[connectIdx + 1]) {
-      const lobbyArg = process.argv[connectIdx + 1];
-      setTimeout(() => {
-        void handleSteamLobbyJoin(lobbyArg);
-      }, 600);
+      launchLobbyArg = process.argv[connectIdx + 1];
+    } else {
+      for (const arg of process.argv) {
+        if (arg.startsWith('+connect_lobby=')) {
+          launchLobbyArg = arg.slice('+connect_lobby='.length);
+          break;
+        }
+      }
     }
 
     console.log(`[Steamworks] Initialized for AppID ${appId}`);
@@ -94,6 +105,13 @@ function createWindow() {
     },
   });
   mainWindow = win;
+  win.webContents.once('did-finish-load', () => {
+    if (launchLobbyArg) {
+      const arg = launchLobbyArg;
+      launchLobbyArg = null;
+      void handleSteamLobbyJoin(arg);
+    }
+  });
   win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
 }
 
@@ -179,7 +197,7 @@ ipcMain.handle('steam:incrementStat', (_event, statName, amount = 1) => {
 });
 
 ipcMain.handle('steam:createLobby', async (_event, roomId, signaling = 'nostr') => {
-  if (!steamClient || typeof roomId !== 'string' || !roomId) return false;
+  if (!steamClient || typeof roomId !== 'string' || !roomId) return null;
   try {
     if (currentLobby) {
       try {
@@ -196,11 +214,77 @@ ipcMain.handle('steam:createLobby', async (_event, roomId, signaling = 'nostr') 
     lobby.setData('state', 'lobby');
     lobby.setJoinable(true);
     currentLobby = lobby;
-    return true;
+    return lobby.id.toString();
   } catch (err) {
     console.warn('[Steamworks] createLobby failed:', err?.message || err);
+    return null;
+  }
+});
+
+ipcMain.handle('steam:joinLobbyById', async (_event, lobbyIdStr) => {
+  if (!steamClient || !lobbyIdStr) return false;
+  try {
+    if (currentLobby && currentLobby.id?.toString() === String(lobbyIdStr)) {
+      return true;
+    }
+    if (currentLobby) {
+      try {
+        currentLobby.leave();
+      } catch {
+        // ignore
+      }
+      currentLobby = null;
+    }
+    const lobby = await steamClient.matchmaking.joinLobby(BigInt(lobbyIdStr));
+    currentLobby = lobby;
+    return true;
+  } catch (err) {
+    console.warn('[Steamworks] joinLobbyById failed:', err?.message || err);
     return false;
   }
+});
+
+ipcMain.handle('steam:getSteamId', () => {
+  if (!steamClient) return null;
+  try {
+    return steamClient.localplayer.getSteamId().steamId64.toString();
+  } catch {
+    return null;
+  }
+});
+
+ipcMain.handle('steam:isFriend', (_event, steamId64) => {
+  if (!steamClient || !steamId64) return false;
+  const idStr = String(steamId64);
+  if (knownFriendIds.has(idStr)) return true;
+  try {
+    if (steamClient.friends && typeof steamClient.friends.getFriendRelationship === 'function') {
+      // EFriendRelationship::k_EFriendRelationshipFriend === 3
+      return steamClient.friends.getFriendRelationship(BigInt(idStr)) === 3;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+});
+
+ipcMain.handle('steam:addFriend', (_event, steamId64) => {
+  if (!steamClient || !steamId64) return false;
+  const idStr = String(steamId64);
+  knownFriendIds.add(idStr);
+  try {
+    if (typeof steamClient.overlay?.activateToWebPage === 'function') {
+      steamClient.overlay.activateToWebPage(`steam://friends/add/${idStr}`);
+      return true;
+    }
+    if (typeof steamClient.overlay?.activateDialogToUser === 'function') {
+      steamClient.overlay.activateDialogToUser(0, BigInt(idStr));
+      return true;
+    }
+  } catch (err) {
+    console.warn('[Steamworks] addFriend failed:', err?.message || err);
+  }
+  return false;
 });
 
 ipcMain.handle('steam:updateLobbyState', (_event, state, joinable = true) => {

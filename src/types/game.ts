@@ -351,4 +351,6 @@ export interface LobbyPlayerInfo {
   ready: boolean;
   isHost: boolean;
   joinedAt?: number;
+  steamId?: string;
+  steamLobbyId?: string;
 }

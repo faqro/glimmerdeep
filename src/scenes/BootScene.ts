@@ -15,6 +15,7 @@ export class BootScene extends Phaser.Scene {
     registerPixelFont(this);
     SoundSystem.startMusic();
     void steamSystem.refreshPlayerName();
+    void steamSystem.refreshSteamId();
     void steamSystem.refreshDlcStatus();
 
     this.scene.start('MenuScene');

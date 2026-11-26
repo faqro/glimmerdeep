@@ -84,19 +84,35 @@ export class MenuScene extends Phaser.Scene {
       }
     }
 
-    this.add.rectangle(180, 135, 360, 270, 0x0e0c21);
+    this.add.rectangle(180, 135, 360, 270, 0x0b0917);
+
+    // Subtle 16-bit cavern silhouette & glowing floor accents
+    const bgGfx = this.add.graphics();
+    bgGfx.fillStyle(0x110e26, 1);
+    bgGfx.fillRect(0, 68, 360, 202);
+    bgGfx.fillStyle(0x161230, 1);
+    bgGfx.fillRect(0, 214, 360, 56);
+    bgGfx.fillStyle(0x1e1840, 1);
+    bgGfx.fillRect(0, 214, 360, 2);
+    // Corner crystal accents
+    bgGfx.fillStyle(0x66ffd9, 0.45);
+    bgGfx.fillRect(14, 204, 4, 10);
+    bgGfx.fillRect(19, 208, 3, 6);
+    bgGfx.fillStyle(0xf49ac1, 0.45);
+    bgGfx.fillRect(342, 202, 4, 12);
+    bgGfx.fillRect(337, 207, 3, 7);
 
     const glow = this.add
-      .image(180, 72, 'glow_soft')
-      .setScale(3.5)
+      .image(180, 40, 'glow_soft')
+      .setScale(4.2)
       .setTint(0x9d7ce8)
-      .setAlpha(0.35)
+      .setAlpha(0.32)
       .setBlendMode(Phaser.BlendModes.ADD);
     this.tweens.add({ targets: glow, alpha: 0.55, duration: 2200, yoyo: true, repeat: -1 });
 
-    for (let i = 0; i < 18; i++) {
+    for (let i = 0; i < 20; i++) {
       const fx = Phaser.Math.Between(16, 344);
-      const fy = Phaser.Math.Between(16, 254);
+      const fy = Phaser.Math.Between(16, 232);
       const sp = this.add
         .image(fx, fy, 'particle_spark')
         .setTint(i % 2 === 0 ? 0xf49ac1 : 0x66ffd9)
@@ -109,13 +125,26 @@ export class MenuScene extends Phaser.Scene {
       });
     }
 
-    addPixelText(this, 180, 22, 'GLIMMERDEEP', 24, 0xf49ac1, 0.5, 0);
-    addPixelText(this, 180, 52, 'A 16-bit Cozy Dungeon Roguelike', 8, 0xb8a1ff, 0.5, 0);
+    // Title with crisp pixel shadow & divider
+    addPixelText(this, 182, 20, 'GLIMMERDEEP', 24, 0x100d24, 0.5, 0);
+    addPixelText(this, 180, 18, 'GLIMMERDEEP', 24, 0xf49ac1, 0.5, 0);
+    addPixelText(this, 180, 47, 'A 16-bit Cozy Dungeon Roguelike', 8, 0xb8a1ff, 0.5, 0);
+    bgGfx.fillStyle(0x5d4e9e, 0.55);
+    bgGfx.fillRect(72, 60, 216, 1);
 
-    this.add.image(96, 148, 'ui_panel').setDisplaySize(124, 126);
+    // Polished Left Character Card
+    this.add.rectangle(96, 146, 128, 138, 0x181430, 0.94).setStrokeStyle(2, 0x5d4e9e);
+    this.add.ellipse(96, 132, 46, 14, 0x261f47, 1).setStrokeStyle(1, 0x6c5bb3);
+    const charGlow = this.add
+      .image(96, 114, 'glow_soft')
+      .setScale(1.8)
+      .setTint(0x66ffd9)
+      .setAlpha(0.18)
+      .setBlendMode(Phaser.BlendModes.ADD);
+    this.tweens.add({ targets: charGlow, alpha: 0.32, duration: 1800, yoyo: true, repeat: -1 });
 
     const previewPalId = pickRandomPaletteId();
-    this.previewSprite = this.add.sprite(96, 122, `player_${previewPalId}`, 0).setScale(2);
+    this.previewSprite = this.add.sprite(96, 114, `player_${previewPalId}`, 0).setScale(2);
     this.time.addEvent({
       delay: 350,
       loop: true,
@@ -127,7 +156,7 @@ export class MenuScene extends Phaser.Scene {
     });
 
     this.dlcUnlocked = steamSystem.isAvatarDlcUnlocked();
-    this.skinsBtnBg = this.add.image(96, 152, 'ui_btn').setDisplaySize(76, 16).setVisible(false);
+    this.skinsBtnBg = this.add.image(96, 152, 'ui_btn').setDisplaySize(84, 16).setVisible(false);
     this.skinsBtnTxt = addPixelText(this, 96, 152, 'SKINS', 8, 0x66ffd9, 0.5, 0.5).setVisible(false);
     const openSkinBrowser = () => {
       if (!this.dlcUnlocked || this.joinModal.visible) return;
@@ -168,12 +197,12 @@ export class MenuScene extends Phaser.Scene {
       });
     }
 
-    addPixelText(this, 96, 166, 'NAME:', 8, 0x9d8ce0, 0.5, 0);
+    addPixelText(this, 96, 171, 'NAME:', 8, 0x9d8ce0, 0.5, 0);
     this.nameBoxBg = this.add
-      .rectangle(96, 186, 106, 18, 0x100d24)
+      .rectangle(96, 191, 108, 18, 0x100d24)
       .setStrokeStyle(1, 0x6c5bb3)
       .setVisible(!isSteam);
-    this.nameText = addPixelText(this, 96, 186, this.playerName, 8, isSteam ? 0x66ffd9 : 0xffffff, 0.5, 0.5);
+    this.nameText = addPixelText(this, 96, 191, this.playerName, 8, isSteam ? 0x66ffd9 : 0xffffff, 0.5, 0.5);
 
     if (!isMobileMode() && !isSteam) {
       this.nameBoxBg.setInteractive({ useHandCursor: true });
@@ -238,10 +267,11 @@ export class MenuScene extends Phaser.Scene {
       this.scene.start('SettingsScene');
     });
 
+    this.add.rectangle(180, 248, 360, 28, 0x0b0917, 0.72);
     this.bottomHintTxt = addPixelText(
       this,
       180,
-      248,
+      246,
       this.getBottomHintText(),
       8,
       0x7e71b8,
@@ -250,7 +280,7 @@ export class MenuScene extends Phaser.Scene {
       336
     );
 
-    addPixelText(this, 354, 264, `v${version}`, 8, 0x7e71b8, 1, 1);
+    addPixelText(this, 354, 265, `v${version}`, 8, 0x6c5bb3, 1, 1);
 
     this.buildJoinModal();
 
@@ -501,7 +531,7 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private createPixelButton(x: number, y: number, label: string, onClick: () => void): void {
-    const bg = this.add.image(x, y, 'ui_btn').setDisplaySize(136, 19);
+    const bg = this.add.image(x, y, 'ui_btn').setDisplaySize(142, 19);
     const txt = addPixelText(this, x, y, label, 8, 0xffffff, 0.5, 0.5);
     this.menuButtons.push({ bg, txt, onClick });
 

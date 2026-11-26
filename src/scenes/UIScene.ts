@@ -10,6 +10,7 @@ import { getControlIconTexture } from '../systems/ControlHints';
 import { GameAction, inputSystem, localCoopSession } from '../systems/InputSystem';
 import { net } from '../systems/MultiplayerSystem';
 import { filterProfanity, settingsSystem } from '../systems/SettingsSystem';
+import { isSteamworksBuild, steamSystem } from '../systems/SteamSystem';
 import { PlayerStateSnapshot, RoomData, ShopStockItem } from '../types/game';
 
 export interface UIStatePayload {
@@ -93,6 +94,10 @@ export class UIScene extends Phaser.Scene {
   private onSpectateNext?: () => void;
 
   private pauseButtons: Array<{ bg: Phaser.GameObjects.Image; txt: Phaser.GameObjects.BitmapText; action: () => void }> = [];
+  private pausePanel!: Phaser.GameObjects.Rectangle;
+  private pauseTitleTxt!: Phaser.GameObjects.BitmapText;
+  private pausePlayersPanel!: Phaser.GameObjects.Container;
+  private pausePlayersList!: Phaser.GameObjects.Container;
   private pauseFocusIndex = 0;
 
   private shopCards: Array<{ card: Phaser.GameObjects.Image; sold: boolean; idx: number }> = [];
@@ -470,8 +475,8 @@ export class UIScene extends Phaser.Scene {
     this.pauseOverlay = this.add.container(0, 0).setVisible(false).setDepth(70);
     this.pauseButtons = [];
     const dim = this.add.rectangle(180, 135, 360, 270, 0x0b0917, 0.75);
-    const panel = this.add.image(180, 135, 'ui_panel').setDisplaySize(180, 138);
-    const title = addPixelText(this, 180, 82, 'PAUSED', 8, 0xf49ac1, 0.5, 0.5);
+    this.pausePanel = this.add.rectangle(180, 135, 180, 138, 0x181430, 0.96).setStrokeStyle(2, 0x5d4e9e);
+    this.pauseTitleTxt = addPixelText(this, 180, 80, 'PAUSED', 8, 0xf49ac1, 0.5, 0.5);
 
     const mkBtn = (y: number, label: string, cb: () => void) => {
       const b = this.add.image(180, y, 'ui_btn').setDisplaySize(128, 20);
@@ -509,7 +514,73 @@ export class UIScene extends Phaser.Scene {
       this.onQuitCallback?.();
     });
 
-    this.pauseOverlay.add([dim, panel, title, ...resumeEls, muteBtn, muteTxt, ...fsEls, ...quitEls]);
+    this.pausePlayersPanel = this.add.container(0, 0).setVisible(false);
+    const pBg = this.add.rectangle(262, 135, 146, 138, 0x181430, 0.96).setStrokeStyle(2, 0x5d4e9e);
+    const pTitle = addPixelText(this, 262, 80, 'PLAYERS', 8, 0x66ffd9, 0.5, 0.5);
+    this.pausePlayersList = this.add.container(0, 0);
+    this.pausePlayersPanel.add([pBg, pTitle, this.pausePlayersList]);
+
+    this.pauseOverlay.add([
+      dim,
+      this.pausePanel,
+      this.pauseTitleTxt,
+      ...resumeEls,
+      muteBtn,
+      muteTxt,
+      ...fsEls,
+      ...quitEls,
+      this.pausePlayersPanel,
+    ]);
+  }
+
+  private refreshPausePlayersList(): void {
+    const isOnline = net.mode !== 'solo' && !localCoopSession.active;
+    this.pausePlayersPanel.setVisible(isOnline);
+    const menuX = isOnline ? 102 : 180;
+    this.pausePanel.setPosition(menuX, 135).setSize(isOnline ? 156 : 180, 138);
+    this.pauseTitleTxt.setX(menuX);
+    for (const b of this.pauseButtons) {
+      b.bg.setX(menuX).setDisplaySize(isOnline ? 120 : 128, 20);
+      b.txt.setX(menuX);
+    }
+
+    if (!isOnline) return;
+    this.pausePlayersList.removeAll(true);
+
+    const list = Array.from(net.players.values());
+    const localOnSteam = isSteamworksBuild();
+
+    list.forEach((p, idx) => {
+      const y = 100 + idx * 24;
+      const isSelf = p.peerId === net.localPeerId;
+      let textX = 198;
+
+      if (p.steamId) {
+        const stIc = this.add.image(202, y, 'ui_steam_icon');
+        this.pausePlayersList.add(stIc);
+        textX = 211;
+      }
+
+      const label = `${p.name.slice(0, 10)}${p.isHost ? '*' : ''}`;
+      const nm = addPixelText(this, textX, y, label, 8, isSelf ? 0xffe066 : 0xffffff, 0, 0.5);
+      this.pausePlayersList.add(nm);
+
+      if (localOnSteam && !isSelf && p.steamId) {
+        const targetSteamId = p.steamId;
+        void steamSystem.isFriend(targetSteamId).then((alreadyFriend) => {
+          if (alreadyFriend || !this.pauseOverlay.visible || !this.pausePlayersList.active) return;
+          const addBg = this.add.rectangle(322, y, 13, 13, 0x100d24).setStrokeStyle(1, 0x66ffd9);
+          const addTxt = addPixelText(this, 322, y, '+', 8, 0x66ffd9, 0.5, 0.5);
+          addBg.setInteractive({ useHandCursor: true }).on('pointerdown', () => {
+            SoundSystem.playPickup();
+            void steamSystem.addFriend(targetSteamId);
+            addTxt.setText('OK').setTint(0xffe066);
+            addBg.disableInteractive();
+          });
+          this.pausePlayersList.add([addBg, addTxt]);
+        });
+      }
+    });
   }
 
   setQuitHandler(cb: () => void): void {
@@ -537,6 +608,7 @@ export class UIScene extends Phaser.Scene {
       if (isMobileMode()) {
         mobileInput.clearQueuedActions();
       }
+      this.refreshPausePlayersList();
       this.pauseFocusIndex = 0;
       this.refreshPauseFocus();
     } else if (isMobileMode()) {

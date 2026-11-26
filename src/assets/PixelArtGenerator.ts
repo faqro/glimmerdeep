@@ -748,6 +748,27 @@ export class PixelArtGenerator {
       ],
       { o: '#0b0917', B: '#261f47', P: '#f49ac1' }
     );
+
+    // 9x9 Pixelated Steam Icon (blue circle + white piston/gear emblem)
+    const steamIc = this.createCanvas('ui_steam_icon', 9, 9);
+    this.drawGrid(
+      steamIc.ctx,
+      0,
+      0,
+      [
+        '..ooooo..',
+        '.oBBBBBo.',
+        'oBBBWWBBo',
+        'oBBWBBWBo',
+        'oBBWWWBBo',
+        'oWWWBWBBo',
+        '.oWWBBBo.',
+        '..ooooo..',
+        '.........',
+      ],
+      { o: '#0b0917', B: '#1b6496', W: '#e0f2fe' }
+    );
+    steamIc.tex.refresh();
   }
 
   private generateEnvironmentSprites(): void {

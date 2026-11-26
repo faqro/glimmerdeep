@@ -266,11 +266,18 @@ export class LobbyScene extends Phaser.Scene {
     list.forEach((p, idx) => {
       const y = rowStartY + idx * rowStep;
       const row = this.add.container(0, 0);
-      const sp = this.add.sprite(50, y, `player_${p.paletteId}`, 0);
+      const sp = this.add.sprite(48, y, `player_${p.paletteId}`, 0);
+      row.add(sp);
+      let nameX = 68;
+      if (p.steamId) {
+        const stIc = this.add.image(68, y, 'ui_steam_icon').setOrigin(0, 0.5);
+        row.add(stIc);
+        nameX = 80;
+      }
       const tag = p.isHost ? ' [HOST]' : '';
-      const nm = addPixelText(this, 72, y - 4, `${p.name}${tag}`, 8, 0xffffff, 0, 0);
+      const nm = addPixelText(this, nameX, y - 4, `${p.name}${tag}`, 8, 0xffffff, 0, 0);
       const rdy = addPixelText(this, 318, y - 4, p.ready ? 'READY' : 'WAIT...', 8, p.ready ? 0x66ffd9 : 0xf49ac1, 1, 0);
-      row.add([sp, nm, rdy]);
+      row.add([nm, rdy]);
       this.playerRows.push(row);
     });
 
