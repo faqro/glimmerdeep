@@ -82,9 +82,7 @@ jobs:
         env:
           STEAM_APP_ID: ${{ secrets.STEAM_APP_ID || '480' }}
           STEAM_DLC_APP_ID: ${{ secrets.STEAM_DLC_APP_ID || '0' }}
-        run: |
-          npx electron-builder --win dir --config.extraMetadata.steamworks=true --config.extraMetadata.steamAppId=%STEAM_APP_ID% --config.extraMetadata.steamDlcAppId=%STEAM_DLC_APP_ID%
-          echo %STEAM_APP_ID%> release-electron\win-unpacked\steam_appid.txt
+        run: npx electron-builder --win dir --config.extraMetadata.steamworks=true --config.extraMetadata.steamAppId=%STEAM_APP_ID% --config.extraMetadata.steamDlcAppId=%STEAM_DLC_APP_ID%
 
       - name: Upload Windows Steam depot artifact
         uses: actions/upload-artifact@v4
@@ -118,9 +116,7 @@ jobs:
         env:
           STEAM_APP_ID: ${{ secrets.STEAM_APP_ID || '480' }}
           STEAM_DLC_APP_ID: ${{ secrets.STEAM_DLC_APP_ID || '0' }}
-        run: |
-          npx electron-builder --linux dir --config.extraMetadata.steamworks=true --config.extraMetadata.steamAppId="$STEAM_APP_ID" --config.extraMetadata.steamDlcAppId="$STEAM_DLC_APP_ID"
-          echo "$STEAM_APP_ID" > release-electron/linux-unpacked/steam_appid.txt
+        run: npx electron-builder --linux dir --config.extraMetadata.steamworks=true --config.extraMetadata.steamAppId="$STEAM_APP_ID" --config.extraMetadata.steamDlcAppId="$STEAM_DLC_APP_ID"
 
       - name: Upload Linux Steam depot artifact
         uses: actions/upload-artifact@v4
@@ -157,7 +153,6 @@ jobs:
         run: |
           npx electron-builder --mac dir --config.extraMetadata.steamworks=true --config.extraMetadata.steamAppId="$STEAM_APP_ID" --config.extraMetadata.steamDlcAppId="$STEAM_DLC_APP_ID"
           MAC_DIR=$(find release-electron -maxdepth 1 -type d -name "mac*" | head -n 1)
-          echo "$STEAM_APP_ID" > "$MAC_DIR/steam_appid.txt"
           mv "$MAC_DIR" release-electron/mac-unpacked
 
       - name: Upload macOS Steam depot artifact
