@@ -164,8 +164,8 @@ const MOBILE_CSS = `
 
   .mc-stick-base {
     position: relative;
-    width: min(43vw, 21dvh, 176px);
-    height: min(43vw, 21dvh, 176px);
+    width: min(38vw, 152px);
+    height: min(38vw, 152px);
     border-radius: 50%;
     background: radial-gradient(circle at center, #1b1538 0%, #100d24 85%);
     border: 3px solid #6c5bb3;
@@ -200,8 +200,8 @@ const MOBILE_CSS = `
   }
 
   .mc-dpad {
-    width: min(43vw, 21dvh, 176px);
-    height: min(43vw, 21dvh, 176px);
+    width: min(38vw, 152px);
+    height: min(38vw, 152px);
     display: flex;
     align-items: center;
     justify-content: center;
