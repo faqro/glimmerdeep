@@ -16,6 +16,9 @@ node_modules
 dist
 dist-ssr
 dist-mobile
+release-electron
+release-artifacts
+steam-build
 
 # Local environment and editor files
 *.local

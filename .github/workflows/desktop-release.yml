@@ -31,8 +31,10 @@ jobs:
           VITE_STEAMWORKS: 'false'
         run: npm run build
 
-      - name: Package Windows Standalone (NSIS + Portable)
-        run: npx electron-builder --win nsis portable --config.extraMetadata.steamworks=false
+      - name: Package Windows Standalone (NSIS + ZIP)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win nsis zip --config.extraMetadata.steamworks=false
 
       - name: Prepare release artifacts
         shell: pwsh
@@ -40,7 +42,7 @@ jobs:
           TAG_NAME: ${{ github.event.release.tag_name || github.run_number }}
         run: |
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
-          Get-ChildItem -Path release-electron -Filter *.exe | ForEach-Object {
+          Get-ChildItem -Path release-electron -File | Where-Object { $_.Extension -in '.exe', '.zip' } | ForEach-Object {
             Copy-Item $_.FullName -Destination "release-artifacts/"
           }
 
@@ -48,13 +50,17 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: release-artifacts/*.exe
+          files: |
+            release-artifacts/*.exe
+            release-artifacts/*.zip
 
       - name: Upload Windows Standalone workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: glimmerdeep-windows-standalone
-          path: release-artifacts/*.exe
+          path: |
+            release-artifacts/*.exe
+            release-artifacts/*.zip
 
   build-steam-windows:
     name: Windows (Steamworks)
@@ -260,19 +266,29 @@ jobs:
 
       - name: Install SteamCMD & Upload Build
         env:
+          STEAM_APP_ID: ${{ secrets.STEAM_APP_ID }}
+          STEAM_DEPOT_ID_WIN: ${{ secrets.STEAM_DEPOT_ID_WIN }}
+          STEAM_DEPOT_ID_LINUX: ${{ secrets.STEAM_DEPOT_ID_LINUX }}
+          STEAM_DEPOT_ID_MAC: ${{ secrets.STEAM_DEPOT_ID_MAC }}
           STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
           STEAM_PASSWORD: ${{ secrets.STEAM_PASSWORD }}
           STEAM_CONFIG_VDF_BASE64: ${{ secrets.STEAM_CONFIG_VDF_BASE64 }}
         run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          echo steam steam/question select "I AGREE" | sudo debconf-set-selections
-          echo steam steam/license note '' | sudo debconf-set-selections
-          sudo apt-get install -y steamcmd
-          mkdir -p ~/.steam/steam/config
+          for var in STEAM_APP_ID STEAM_DEPOT_ID_WIN STEAM_DEPOT_ID_LINUX STEAM_DEPOT_ID_MAC STEAM_USERNAME; do
+            if [ -z "${!var}" ]; then
+              echo "Missing required GitHub secret: $var" >&2
+              exit 1
+            fi
+          done
+
+          mkdir -p ~/steamcmd/config ~/.steam/steam/config ~/.local/share/Steam/config
+          curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar zxf - -C ~/steamcmd
+
           if [ -n "$STEAM_CONFIG_VDF_BASE64" ]; then
-            echo "$STEAM_CONFIG_VDF_BASE64" | base64 --decode > ~/.steam/steam/config/config.vdf
-            /usr/games/steamcmd +login "$STEAM_USERNAME" +run_app_build "$(pwd)/steam-build/app_build.vdf" +quit
+            echo "$STEAM_CONFIG_VDF_BASE64" | tr -d '\r\n ' | base64 -d > ~/steamcmd/config/config.vdf
+            cp ~/steamcmd/config/config.vdf ~/.steam/steam/config/config.vdf
+            cp ~/steamcmd/config/config.vdf ~/.local/share/Steam/config/config.vdf
+            ~/steamcmd/steamcmd.sh +login "$STEAM_USERNAME" +run_app_build "$(pwd)/steam-build/app_build.vdf" +quit
           else
-            /usr/games/steamcmd +login "$STEAM_USERNAME" "$STEAM_PASSWORD" +run_app_build "$(pwd)/steam-build/app_build.vdf" +quit
+            ~/steamcmd/steamcmd.sh +login "$STEAM_USERNAME" "$STEAM_PASSWORD" +run_app_build "$(pwd)/steam-build/app_build.vdf" +quit
           fi
