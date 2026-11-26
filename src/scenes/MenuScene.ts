@@ -284,7 +284,7 @@ export class MenuScene extends Phaser.Scene {
       this.createPixelButton(256, btnY, 'LOCAL CO-OP', () => {
         if (this.joinModal.visible) return;
         SoundSystem.playPickup();
-        this.scene.start('LocalLobbyScene');
+        this.scene.start('LocalLobbyScene', { playerName: this.playerName.trim() || 'Wanderer' });
       });
       btnY += btnStep;
     }
@@ -331,9 +331,7 @@ export class MenuScene extends Phaser.Scene {
 
     this.buildJoinModal();
 
-    if (isMobileMode()) {
-      this.virtualKeyboard = new VirtualKeyboard(this);
-    }
+    this.virtualKeyboard = new VirtualKeyboard(this);
     this.refreshMobileFocus();
     this.unsubNav = inputSystem.onNav((dir) => this.handleMobileNav(dir));
     this.unsubBtn = inputSystem.onButton((btn) => this.handleMobileButton(btn));
@@ -508,22 +506,18 @@ export class MenuScene extends Phaser.Scene {
 
   private openJoinModal(): void {
     this.joinCode = '';
-    this.activeField = isMobileMode() ? 'none' : 'code';
+    this.activeField = isMobileMode() || inputSystem.controlType === 'gamepad' ? 'none' : 'code';
     this.modalFocusIndex = 0;
     this.joinModal.setVisible(true);
     this.refreshTextboxes();
-    if (isMobileMode()) {
-      this.refreshMobileFocus();
-    }
+    this.refreshMobileFocus();
   }
 
   private closeJoinModal(): void {
     this.joinModal.setVisible(false);
     this.activeField = 'none';
     this.refreshTextboxes();
-    if (isMobileMode()) {
-      this.refreshMobileFocus();
-    }
+    this.refreshMobileFocus();
   }
 
   private submitJoinCode(): void {
@@ -572,9 +566,7 @@ export class MenuScene extends Phaser.Scene {
       this.codeText.setText(this.joinCode);
     }
 
-    if (isMobileMode()) {
-      this.refreshMobileFocus();
-    }
+    this.refreshMobileFocus();
   }
 
   private createPixelButton(x: number, y: number, label: string, onClick: () => void): void {
@@ -632,29 +624,46 @@ export class MenuScene extends Phaser.Scene {
 
     const lastBtnIdx = this.menuButtons.length - 1;
     const nameIdx = this.menuButtons.length;
+    const skinsIdx = this.menuButtons.length + 1;
+    const petsIdx = this.menuButtons.length + 2;
+    const isSteam = isSteamworksBuild();
 
     if (dir === 'up') {
-      if (this.mobileFocusIndex === nameIdx) this.mobileFocusIndex = lastBtnIdx;
-      else if (this.mobileFocusIndex === 0) this.mobileFocusIndex = lastBtnIdx;
-      else this.mobileFocusIndex = this.mobileFocusIndex - 1;
-    } else if (dir === 'down') {
-      if (this.mobileFocusIndex === nameIdx) this.mobileFocusIndex = 0;
-      else if (this.mobileFocusIndex === lastBtnIdx) this.mobileFocusIndex = 0;
-      else this.mobileFocusIndex = this.mobileFocusIndex + 1;
-    } else if (dir === 'left') {
-      if (isSteamworksBuild()) {
-        if (this.dlcUnlocked) this.cyclePalette(-1);
-      } else if (this.mobileFocusIndex === nameIdx && this.dlcUnlocked) {
-        this.cyclePalette(-1);
+      if (this.mobileFocusIndex === nameIdx) {
+        this.mobileFocusIndex = this.dlcUnlocked ? skinsIdx : lastBtnIdx;
+      } else if (this.mobileFocusIndex === skinsIdx || this.mobileFocusIndex === petsIdx) {
+        this.mobileFocusIndex = !isSteam ? nameIdx : lastBtnIdx;
+      } else if (this.mobileFocusIndex === 0) {
+        this.mobileFocusIndex = lastBtnIdx;
       } else {
-        this.mobileFocusIndex = nameIdx;
+        this.mobileFocusIndex = this.mobileFocusIndex - 1;
+      }
+    } else if (dir === 'down') {
+      if (this.mobileFocusIndex === skinsIdx || this.mobileFocusIndex === petsIdx) {
+        this.mobileFocusIndex = !isSteam ? nameIdx : 0;
+      } else if (this.mobileFocusIndex === nameIdx) {
+        this.mobileFocusIndex = this.dlcUnlocked ? skinsIdx : 0;
+      } else if (this.mobileFocusIndex === lastBtnIdx) {
+        this.mobileFocusIndex = 0;
+      } else {
+        this.mobileFocusIndex = this.mobileFocusIndex + 1;
+      }
+    } else if (dir === 'left') {
+      if (this.mobileFocusIndex === petsIdx) {
+        this.mobileFocusIndex = skinsIdx;
+      } else if (this.mobileFocusIndex < this.menuButtons.length) {
+        if (this.dlcUnlocked && this.mobileFocusIndex <= 2) {
+          this.mobileFocusIndex = petsIdx;
+        } else if (!isSteam) {
+          this.mobileFocusIndex = nameIdx;
+        } else if (this.dlcUnlocked) {
+          this.mobileFocusIndex = petsIdx;
+        }
       }
     } else if (dir === 'right') {
-      if (isSteamworksBuild()) {
-        this.mobileFocusIndex = 0;
-      } else if (this.mobileFocusIndex === nameIdx && this.dlcUnlocked) {
-        this.cyclePalette(1);
-      } else if (this.mobileFocusIndex === nameIdx) {
+      if (this.mobileFocusIndex === skinsIdx) {
+        this.mobileFocusIndex = petsIdx;
+      } else if (this.mobileFocusIndex === petsIdx || this.mobileFocusIndex === nameIdx) {
         this.mobileFocusIndex = 0;
       }
     }
@@ -671,6 +680,10 @@ export class MenuScene extends Phaser.Scene {
       if (this.joinModal.visible) {
         SoundSystem.playHit();
         this.closeJoinModal();
+      } else if (this.activeField !== 'none') {
+        SoundSystem.playHit();
+        this.activeField = 'none';
+        this.refreshTextboxes();
       }
       return;
     }
@@ -713,14 +726,24 @@ export class MenuScene extends Phaser.Scene {
     }
 
     const nameIdx = this.menuButtons.length;
+    const skinsIdx = this.menuButtons.length + 1;
+    const petsIdx = this.menuButtons.length + 2;
+
+    if (this.mobileFocusIndex === skinsIdx && this.dlcUnlocked) {
+      SoundSystem.playPickup();
+      this.scene.start('SkinScene');
+      return;
+    }
+
+    if (this.mobileFocusIndex === petsIdx && this.dlcUnlocked) {
+      SoundSystem.playPickup();
+      this.scene.start('PetScene');
+      return;
+    }
 
     if (this.mobileFocusIndex === nameIdx && !isSteamworksBuild()) {
-      if (!isMobileMode()) {
-        this.activeField = this.activeField === 'name' ? 'none' : 'name';
-        this.refreshTextboxes();
-        return;
-      }
       SoundSystem.playSwing();
+      this.activeField = 'none';
       this.virtualKeyboard?.open({
         title: 'ENTER USERNAME',
         initialValue: this.playerName,
@@ -751,12 +774,24 @@ export class MenuScene extends Phaser.Scene {
   private refreshMobileFocus(): void {
     const showFocus = isMobileMode() || inputSystem.controlType === 'gamepad';
     const nameIdx = this.menuButtons.length;
+    const skinsIdx = this.menuButtons.length + 1;
+    const petsIdx = this.menuButtons.length + 2;
 
     this.menuButtons.forEach((b, idx) => {
       const focused = showFocus && !this.joinModal.visible && this.mobileFocusIndex === idx;
       b.bg.setTexture(focused ? 'ui_btn_hover' : 'ui_btn');
       b.txt.setTint(focused ? 0xffe066 : 0xffffff);
     });
+
+    if (this.dlcUnlocked) {
+      const skinsFocused = showFocus && !this.joinModal.visible && this.mobileFocusIndex === skinsIdx;
+      this.skinsBtnBg?.setTexture(skinsFocused ? 'ui_btn_hover' : 'ui_btn');
+      this.skinsBtnTxt?.setTint(skinsFocused ? 0xffe066 : 0x66ffd9);
+
+      const petsFocused = showFocus && !this.joinModal.visible && this.mobileFocusIndex === petsIdx;
+      this.petsBtnBg?.setTexture(petsFocused ? 'ui_btn_hover' : 'ui_btn');
+      this.petsBtnTxt?.setTint(petsFocused ? 0xffe066 : 0x66ffd9);
+    }
 
     if (showFocus && !this.joinModal.visible && this.mobileFocusIndex === nameIdx) {
       this.nameBoxBg.setStrokeStyle(2, 0xffe066);

@@ -3,6 +3,7 @@ import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
 import { ALL_SELECTABLE_AVATARS, PLAYER_PALETTES } from '../data/palettes';
 import { getSavedPetId } from '../data/pets';
+import { NavDir, VirtualButton } from '../mobile/MobileInput';
 import { inputSystem, localCoopSession, LocalPlayerConfig } from '../systems/InputSystem';
 import { net } from '../systems/MultiplayerSystem';
 import { steamSystem } from '../systems/SteamSystem';
@@ -31,17 +32,34 @@ export class LocalLobbyScene extends Phaser.Scene {
   private statusHint!: Phaser.GameObjects.BitmapText;
   private createdAtMs = 0;
   private dlcUnlocked = false;
+  private hostPlayerName = 'Local Co-op';
+  private focusArea: 'slots' | 'bottom' = 'slots';
+  private bottomFocusIdx: 0 | 1 = 0; // 0: BACK, 1: START RUN
+  private unsubNav?: () => void;
+  private unsubBtn?: () => void;
+  private unsubCtrl?: () => void;
 
   constructor() {
     super({ key: 'LocalLobbyScene' });
   }
 
-  create(): void {
+  create(data?: { playerName?: string }): void {
     this.slots = [null, null, null, null];
     this.slotUIs = [];
     this.usedPadIndices.clear();
     this.createdAtMs = performance.now();
     this.dlcUnlocked = steamSystem.isAvatarDlcUnlocked();
+    let resolvedName = data?.playerName?.trim() || '';
+    if (!resolvedName) {
+      try {
+        resolvedName = localStorage.getItem('glimmerdeep_username')?.trim() || '';
+      } catch {
+        // ignore storage errors
+      }
+    }
+    this.hostPlayerName = resolvedName || 'Local Co-op';
+    this.focusArea = 'slots';
+    this.bottomFocusIdx = 0;
     localCoopSession.active = false;
     localCoopSession.players = [];
 
@@ -122,22 +140,22 @@ export class LocalLobbyScene extends Phaser.Scene {
     });
 
     this.input.keyboard?.on('keydown-LEFT', () => {
-      if (this.dlcUnlocked && this.slots[0]?.inputType === 'keyboard') {
+      if (this.focusArea === 'slots' && this.slots[0]?.inputType === 'keyboard') {
         this.cyclePlayerSkin(0, -1);
       }
     });
     this.input.keyboard?.on('keydown-RIGHT', () => {
-      if (this.dlcUnlocked && this.slots[0]?.inputType === 'keyboard') {
+      if (this.focusArea === 'slots' && this.slots[0]?.inputType === 'keyboard') {
         this.cyclePlayerSkin(0, 1);
       }
     });
     this.input.keyboard?.on('keydown-A', () => {
-      if (this.dlcUnlocked && this.slots[0]?.inputType === 'keyboard') {
+      if (this.focusArea === 'slots' && this.slots[0]?.inputType === 'keyboard') {
         this.cyclePlayerSkin(0, -1);
       }
     });
     this.input.keyboard?.on('keydown-D', () => {
-      if (this.dlcUnlocked && this.slots[0]?.inputType === 'keyboard') {
+      if (this.focusArea === 'slots' && this.slots[0]?.inputType === 'keyboard') {
         this.cyclePlayerSkin(0, 1);
       }
     });
@@ -148,6 +166,15 @@ export class LocalLobbyScene extends Phaser.Scene {
 
     this.input.keyboard?.on('keydown-ESC', () => {
       this.goBack();
+    });
+
+    this.unsubNav = inputSystem.onNav((dir) => this.handleNav(dir));
+    this.unsubBtn = inputSystem.onButton((btn) => this.handleButton(btn));
+    this.unsubCtrl = inputSystem.onControlTypeChange(() => this.refreshUI());
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.unsubNav?.();
+      this.unsubBtn?.();
+      this.unsubCtrl?.();
     });
 
     if (!this.dlcUnlocked) {
@@ -177,13 +204,15 @@ export class LocalLobbyScene extends Phaser.Scene {
   }
 
   private cyclePlayerSkin(slotIndex: number, dir: -1 | 1): void {
-    if (!this.dlcUnlocked) return;
     const cfg = this.slots[slotIndex];
     if (!cfg) return;
-    const curIdx = ALL_SELECTABLE_AVATARS.findIndex((a) => a.id === cfg.paletteId);
-    const len = ALL_SELECTABLE_AVATARS.length;
+    const pool = this.dlcUnlocked
+      ? ALL_SELECTABLE_AVATARS
+      : ALL_SELECTABLE_AVATARS.filter((a) => !a.isDlc);
+    const curIdx = pool.findIndex((a) => a.id === cfg.paletteId);
+    const len = pool.length;
     const nextIdx = (((curIdx >= 0 ? curIdx : 0) + dir) % len + len) % len;
-    cfg.paletteId = ALL_SELECTABLE_AVATARS[nextIdx].id;
+    cfg.paletteId = pool[nextIdx].id;
     SoundSystem.playSwing();
     this.refreshUI();
   }
@@ -208,9 +237,47 @@ export class LocalLobbyScene extends Phaser.Scene {
     SoundSystem.playUnlock();
     localCoopSession.active = true;
     localCoopSession.players = joined;
-    net.startSolo('Local Co-op', joined[0].paletteId, steamSystem.isAvatarDlcUnlocked() ? getSavedPetId() : null);
+    net.startSolo(this.hostPlayerName, joined[0].paletteId, steamSystem.isAvatarDlcUnlocked() ? getSavedPetId() : null);
     const seed = getDailySeed(0);
     this.scene.start('GameScene', { levelIndex: 0, floorSeed: seed, resetRun: true });
+  }
+
+  private handleNav(dir: NavDir): void {
+    if (performance.now() - this.createdAtMs < 250) return;
+    if (dir === 'up' || dir === 'down') {
+      SoundSystem.playSwing();
+      if (this.focusArea === 'slots') {
+        this.focusArea = 'bottom';
+        this.bottomFocusIdx = this.getJoinedPlayers().length >= 2 ? 1 : 0;
+      } else {
+        this.focusArea = 'slots';
+      }
+      this.refreshUI();
+      return;
+    }
+
+    if (this.focusArea === 'bottom' && (dir === 'left' || dir === 'right')) {
+      SoundSystem.playSwing();
+      this.bottomFocusIdx = this.bottomFocusIdx === 0 ? 1 : 0;
+      this.refreshUI();
+    }
+  }
+
+  private handleButton(btn: VirtualButton): void {
+    if (performance.now() - this.createdAtMs < 250) return;
+    if (btn === 'esc') {
+      this.goBack();
+      return;
+    }
+    if (btn === 'e' || btn === 'space') {
+      if (this.focusArea === 'bottom') {
+        if (this.bottomFocusIdx === 0) {
+          this.goBack();
+        } else {
+          this.tryStartRun();
+        }
+      }
+    }
   }
 
   private refreshUI(): void {
@@ -220,19 +287,11 @@ export class LocalLobbyScene extends Phaser.Scene {
       if (cfg) {
         ui.panel.setStrokeStyle(2, 0x66ffd9);
         ui.sprite.setTexture(`player_${cfg.paletteId}`, 1).setAlpha(1);
-        ui.prevBtn.setVisible(this.dlcUnlocked);
-        ui.nextBtn.setVisible(this.dlcUnlocked);
+        ui.prevBtn.setVisible(true).setAlpha(this.focusArea === 'slots' ? 1 : 0.3);
+        ui.nextBtn.setVisible(true).setAlpha(this.focusArea === 'slots' ? 1 : 0.3);
         ui.statusTxt.setText('JOINED!').setTint(0x66ffd9);
         const skinLabel = ALL_SELECTABLE_AVATARS.find((a) => a.id === cfg.paletteId)?.label ?? cfg.paletteId.toUpperCase();
-        ui.subTxt
-          .setText(
-            this.dlcUnlocked
-              ? skinLabel
-              : cfg.inputType === 'gamepad'
-                ? `CONTROLLER ${cfg.padIndex + 1}`
-                : 'READY'
-          )
-          .setTint(this.dlcUnlocked ? 0xffe066 : 0xffffff);
+        ui.subTxt.setText(skinLabel).setTint(0xffe066);
       } else {
         const defPal = PLAYER_PALETTES[i % PLAYER_PALETTES.length];
         ui.panel.setStrokeStyle(2, 0x4a3b7d);
@@ -245,20 +304,27 @@ export class LocalLobbyScene extends Phaser.Scene {
     }
 
     const count = this.getJoinedPlayers().length;
+    const showFocus = inputSystem.controlType === 'gamepad';
+    const backFocused = showFocus && this.focusArea === 'bottom' && this.bottomFocusIdx === 0;
+    const startFocused = showFocus && this.focusArea === 'bottom' && this.bottomFocusIdx === 1;
+
+    this.backBtn.setTexture(backFocused ? 'ui_btn_hover' : 'ui_btn');
+    this.backTxt.setTint(backFocused ? 0xffe066 : 0xffffff);
+
     if (count >= 2) {
       this.statusHint
         .setText(`${count} PLAYERS READY - PRESS START`)
         .setTint(0x66ffd9);
-      this.startBtn.setAlpha(1);
-      this.startTxt.setTint(0xffffff);
+      this.startBtn.setAlpha(1).setTexture(startFocused ? 'ui_btn_hover' : 'ui_btn');
+      this.startTxt.setTint(startFocused ? 0xffe066 : 0xffffff);
     } else if (count === 1) {
       this.statusHint.setText('NEED AT LEAST 2 PLAYERS TO START').setTint(0xffe066);
-      this.startBtn.setAlpha(0.45);
-      this.startTxt.setTint(0x9d8ce0);
+      this.startBtn.setAlpha(0.45).setTexture(startFocused ? 'ui_btn_hover' : 'ui_btn');
+      this.startTxt.setTint(startFocused ? 0xffe066 : 0x9d8ce0);
     } else {
       this.statusHint.setText('WAITING FOR PLAYERS (MIN 2)...').setTint(0x9d8ce0);
-      this.startBtn.setAlpha(0.45);
-      this.startTxt.setTint(0x9d8ce0);
+      this.startBtn.setAlpha(0.45).setTexture(startFocused ? 'ui_btn_hover' : 'ui_btn');
+      this.startTxt.setTint(startFocused ? 0xffe066 : 0x9d8ce0);
     }
   }
 
@@ -275,15 +341,13 @@ export class LocalLobbyScene extends Phaser.Scene {
       }
     }
 
-    // Allow joined gamepad players to cycle their skins with Left/Right when DLC is unlocked
-    if (this.dlcUnlocked) {
-      for (let i = 0; i < 4; i++) {
-        const cfg = this.slots[i];
-        if (!cfg || cfg.inputType !== 'gamepad') continue;
-        const dir = inputSystem.consumePadNavHorizontal(cfg.padIndex);
-        if (dir !== 0) {
-          this.cyclePlayerSkin(i, dir);
-        }
+    // Allow joined gamepad players to cycle their skins with Left/Right only when slots are focused
+    for (let i = 0; i < 4; i++) {
+      const cfg = this.slots[i];
+      if (!cfg || cfg.inputType !== 'gamepad') continue;
+      const dir = inputSystem.consumePadNavHorizontal(cfg.padIndex);
+      if (this.focusArea === 'slots' && dir !== 0) {
+        this.cyclePlayerSkin(i, dir);
       }
     }
 

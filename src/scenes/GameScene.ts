@@ -184,6 +184,7 @@ interface ActiveLootObj {
 interface ActiveSkeleton {
   uid: string;
   staffInstanceId: string;
+  ownerId?: string;
   sprite: Phaser.Physics.Arcade.Sprite;
   hp: number;
   maxHp: number;
@@ -195,6 +196,7 @@ interface ActiveSkeleton {
 interface CarriedSkeletonState {
   uid: string;
   staffInstanceId: string;
+  ownerId?: string;
   hp: number;
   maxHp: number;
   formationIndex: number;
@@ -230,6 +232,10 @@ interface LocalPlayerActor {
   windSlowMs: number;
   windSlowTinted: boolean;
   respawnAnimMs: number;
+  beamDamageTickMs: number;
+  flameDamageTickMs: number;
+  cometTrailActiveMs: number;
+  cometTrailAccumMs: number;
 }
 
 export class GameScene extends Phaser.Scene {
@@ -461,6 +467,10 @@ export class GameScene extends Phaser.Scene {
     super({ key: 'GameScene' });
   }
 
+  private getRenderScale(): number {
+    return localCoopSession.active ? 4 : 1;
+  }
+
   create(data: {
     levelIndex?: number;
     floorSeed?: number;
@@ -575,14 +585,14 @@ export class GameScene extends Phaser.Scene {
       : net.mode === 'solo'
         ? 1
         : Math.max(1, net.players.size);
-    if (this.playerState.name === 'ADMIN') {
+    if (this.playerState.name === 'ADMIN' || net.localName === 'ADMIN') {
       JournalSystem.unlockAll();
     }
     if (this.playerState.name === 'ADMIN12345' || net.localName === 'ADMIN12345') {
       grantAdminMasterUnlock();
     }
     this.isTestRoom =
-      this.playerState.name === 'TESTER' &&
+      (this.playerState.name === 'TESTER' || net.localName === 'TESTER') &&
       (data.resetRun || !data.carryPlayer) &&
       !data.exitedTestRoom;
     const cheatNames = new Set(['ADMIN', 'ADMIN2', 'TESTER', 'ADMIN12345']);
@@ -633,8 +643,15 @@ export class GameScene extends Phaser.Scene {
     this.skeletonGroup = this.physics.add.group();
     this.beamGfx = this.add.graphics().setDepth(12);
 
+    const renderScale = this.getRenderScale();
+    const targetW = 360 * renderScale;
+    const targetH = 270 * renderScale;
+    if (this.scale.width !== targetW || this.scale.height !== targetH) {
+      this.scale.setGameSize(targetW, targetH);
+    }
+
     this.physics.world.setBounds(0, 0, 176, 176);
-    this.cameras.main.setZoom(localCoopSession.active ? 0.84 : 1.18);
+    this.cameras.main.setZoom((localCoopSession.active ? 0.84 : 1.18) * renderScale);
     this.cameras.main.centerOn(88, 88);
     const origShake = this.cameras.main.shake.bind(this.cameras.main);
     this.cameras.main.shake = ((
@@ -645,7 +662,9 @@ export class GameScene extends Phaser.Scene {
       context?: unknown
     ) => {
       if (!settingsSystem.current.screenShake) return this.cameras.main;
-      return origShake(duration, intensity, force, callback, context);
+      const scale = this.getRenderScale();
+      const scaledIntensity = typeof intensity === 'number' ? intensity / (scale * scale) : intensity;
+      return origShake(duration, scaledIntensity, force, callback, context);
     }) as typeof this.cameras.main.shake;
 
     this.localPlayers = [];
@@ -658,10 +677,10 @@ export class GameScene extends Phaser.Scene {
         const st: PlayerStateSnapshot = carried
           ? {
               ...carried,
-              gx: this.levelIndex === 6 ? 0 : 0,
-              gy: this.levelIndex === 6 ? 1 : 2,
-              x: this.levelIndex === 6 ? 36 : 88,
-              y: this.levelIndex === 6 ? 72 : 88,
+              gx: carried.downed ? -1 : 0,
+              gy: carried.downed ? -1 : this.levelIndex === 6 ? 1 : 2,
+              x: carried.downed ? carried.x : this.levelIndex === 6 ? 36 : 88,
+              y: carried.downed ? carried.y : this.levelIndex === 6 ? 72 : 88,
               inExitReady: false,
             }
           : {
@@ -685,7 +704,10 @@ export class GameScene extends Phaser.Scene {
               downedTimerMs: 0,
               dodging: false,
               activeSlot: 0,
-              inventory: [createItemInstance('moonblade'), createItemInstance('heartdew_potion'), null],
+              inventory:
+                net.localName === 'TESTER' && !data.exitedTestRoom
+                  ? [null, null, null]
+                  : [createItemInstance('moonblade'), createItemInstance('heartdew_potion'), null],
               statusEffects: [],
               inExitReady: false,
               animState: 'idle',
@@ -733,6 +755,10 @@ export class GameScene extends Phaser.Scene {
           windSlowMs: 0,
           windSlowTinted: false,
           respawnAnimMs: 0,
+          beamDamageTickMs: 0,
+          flameDamageTickMs: 0,
+          cometTrailActiveMs: 0,
+          cometTrailAccumMs: 0,
         });
       });
 
@@ -817,6 +843,7 @@ export class GameScene extends Phaser.Scene {
         this.summonedSkeletons.push({
           uid: cs.uid,
           staffInstanceId: cs.staffInstanceId,
+          ownerId: cs.ownerId,
           sprite: skSprite,
           hp: cs.hp,
           maxHp: cs.maxHp,
@@ -877,6 +904,7 @@ export class GameScene extends Phaser.Scene {
       if (!this.ui || this.ui.isChatOpen()) return;
       if (this.ui.isOverlayOpen()) {
         this.ui.closeShop();
+        this.ui.closeMap();
         this.paused = this.ui.togglePause(false);
       } else {
         this.paused = this.ui.togglePause();
@@ -892,7 +920,10 @@ export class GameScene extends Phaser.Scene {
       } else if (
         ev.key === 'Backspace' &&
         !ev.repeat &&
-        (this.playerState.name === 'ADMIN' || this.playerState.name === 'ADMIN2')
+        (this.playerState.name === 'ADMIN' ||
+          this.playerState.name === 'ADMIN2' ||
+          net.localName === 'ADMIN' ||
+          net.localName === 'ADMIN2')
       ) {
         ev.preventDefault();
         if (!this.paused && !this.ui.isOverlayOpen() && !this.transitioningLevel) {
@@ -903,6 +934,9 @@ export class GameScene extends Phaser.Scene {
     window.addEventListener('keydown', onWindowKeyDown);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       window.removeEventListener('keydown', onWindowKeyDown);
+      if (this.scale.width !== 360 || this.scale.height !== 270) {
+        this.scale.setGameSize(360, 270);
+      }
       this.nyarGfx = undefined;
       this.witchGfx = undefined;
       this.witchLaserState = 'idle';
@@ -966,7 +1000,9 @@ export class GameScene extends Phaser.Scene {
       }
     });
     kb.on('keydown-E', () => {
-      if (!this.paused && !this.ui.isChatOpen()) runForKeyboardPlayer(() => this.handleInteract());
+      if (!this.paused && !this.ui.isOverlayOpen() && !this.ui.isChatOpen()) {
+        runForKeyboardPlayer(() => this.handleInteract());
+      }
     });
     kb.on('keydown-T', () => {
       if (
@@ -1024,6 +1060,7 @@ export class GameScene extends Phaser.Scene {
         } else if (btn === 'esc') {
           if (this.ui.isOverlayOpen()) {
             this.ui.closeShop();
+            this.ui.closeMap();
             this.paused = this.ui.togglePause(false);
           } else {
             this.paused = this.ui.togglePause();
@@ -1796,20 +1833,21 @@ export class GameScene extends Phaser.Scene {
     this.nyarWaitToastCooldownMs = 0;
 
     if (localCoopSession.active) {
+      const renderScale = this.getRenderScale();
       const cam = this.cameras.main;
       cam.stopFollow();
       cam.removeBounds();
       if (room.type === 'boss' && this.levelIndex === 6) {
         // Final Boss Room: zoomed out so the entire room is visible at once without scrolling
         const fitZoom = Math.min(254 / this.roomWidthPx, 240 / this.roomHeightPx);
-        cam.setZoom(Math.max(0.55, Math.min(0.75, fitZoom)));
+        cam.setZoom(Math.max(0.55, Math.min(0.75, fitZoom)) * renderScale);
         cam.centerOn(this.roomWidthPx / 2, this.roomHeightPx / 2);
       } else if (wTiles > 11 || hTiles > 11) {
         // Level 7 hallway: zoomed out, centered on average player position in update()
-        cam.setZoom(0.84);
+        cam.setZoom(0.84 * renderScale);
         cam.centerOn(spawnX, this.roomHeightPx / 2);
       } else {
-        cam.setZoom(0.84);
+        cam.setZoom(0.84 * renderScale);
         cam.centerOn(88, 88);
       }
     } else if (wTiles > 11 || hTiles > 11) {
@@ -1850,6 +1888,15 @@ export class GameScene extends Phaser.Scene {
         { dx: 6, dy: 4 },
       ];
       this.localPlayers.forEach((lp, idx) => {
+        if (lp.state.downed) {
+          const inThisRoom = lp.state.gx === gx && lp.state.gy === gy;
+          lp.state.vx = 0;
+          lp.state.vy = 0;
+          lp.spikePinnedMs = 0;
+          lp.sprite.setPosition(lp.state.x, lp.state.y).setVelocity(0, 0).setVisible(inThisRoom);
+          lp.nameTag.setPosition(lp.state.x, lp.state.y - 12).setVisible(inThisRoom);
+          return;
+        }
         const off = this.localPlayers.length > 1 ? spread[idx % spread.length] : { dx: 0, dy: 0 };
         const px = Phaser.Math.Clamp(spawnX + off.dx, 22, Math.max(22, this.roomWidthPx - 22));
         const py = Phaser.Math.Clamp(spawnY + off.dy, 22, Math.max(22, this.roomHeightPx - 22));
@@ -1863,6 +1910,28 @@ export class GameScene extends Phaser.Scene {
         lp.sprite.setPosition(px, py).setVelocity(0, 0).setVisible(true);
         lp.nameTag.setPosition(px, py - 12).setVisible(true);
       });
+      const petOwner = this.localPlayers.find((lp) => !lp.state.downed) ?? this.localPlayers[0];
+      this.spawnOrResetPlayerPet(petOwner && !petOwner.state.downed ? petOwner.sprite.x : spawnX, petOwner && !petOwner.state.downed ? petOwner.sprite.y : spawnY);
+      const skOffsets = [
+        { dx: -12, dy: -8 },
+        { dx: 12, dy: -8 },
+        { dx: -12, dy: 8 },
+        { dx: 12, dy: 8 },
+      ];
+      for (const sk of this.summonedSkeletons) {
+        if (!sk.sprite.active) continue;
+        const ownerActor = sk.ownerId ? this.localPlayers.find((lp) => lp.state.id === sk.ownerId) : undefined;
+        const baseX = ownerActor && !ownerActor.state.downed ? ownerActor.sprite.x : spawnX;
+        const baseY = ownerActor && !ownerActor.state.downed ? ownerActor.sprite.y : spawnY;
+        const off = skOffsets[sk.formationIndex % skOffsets.length];
+        sk.sprite
+          .setPosition(
+            Phaser.Math.Clamp(baseX + off.dx, 24, Math.max(24, this.roomWidthPx - 24)),
+            Phaser.Math.Clamp(baseY + off.dy, 24, Math.max(24, this.roomHeightPx - 24))
+          )
+          .setVelocity(0, 0)
+          .setVisible(true);
+      }
     } else if (!isSpectating) {
       this.playerState.gx = gx;
       this.playerState.gy = gy;
@@ -2588,8 +2657,8 @@ export class GameScene extends Phaser.Scene {
 
     // Spawn Room Loot
     for (const l of room.loot) {
-      if (l.collected) continue;
-      this.createLootObject(l.uid, l.kind, l.x, l.y, l.itemId, l.amount, l.uses, l.bonusItemId);
+      if (l.collected && l.kind !== 'chest') continue;
+      this.createLootObject(l.uid, l.kind, l.x, l.y, l.itemId, l.amount, l.uses, l.bonusItemId, l.collected);
     }
 
     this.updateDoorVisuals();
@@ -2864,17 +2933,18 @@ export class GameScene extends Phaser.Scene {
     itemId?: string,
     amount?: number,
     uses?: number,
-    bonusItemId?: string
+    bonusItemId?: string,
+    collected = false
   ): void {
     if (this.lootObjs.some((l) => l.uid === uid)) return;
     let key = 'item_shard';
     if (kind === 'heart') key = 'item_heart';
-    else if (kind === 'chest') key = 'obj_chest_closed';
+    else if (kind === 'chest') key = collected ? 'obj_chest_open' : 'obj_chest_closed';
     else if (kind === 'item' && itemId) key = `item_${itemId}`;
 
     const sp = this.add.image(x, y, this.textures.exists(key) ? key : 'item_shard').setDepth(6);
     this.roomGroup.add(sp);
-    this.lootObjs.push({ uid, kind, sprite: sp, itemId, bonusItemId, uses, amount, collected: false });
+    this.lootObjs.push({ uid, kind, sprite: sp, itemId, bonusItemId, uses, amount, collected });
   }
 
   private spawnRoomLoot(
@@ -3264,7 +3334,7 @@ export class GameScene extends Phaser.Scene {
       this.ui.showToast(`+${heal} HP!`, '#ff5d8f');
     } else if (item.id === 'syringe') {
       const heal = Math.round(3 * modMult);
-      if (net.mode === 'solo') {
+      if (net.mode === 'solo' && !localCoopSession.active) {
         this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + heal);
         SoundSystem.playHeal();
         this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x66ffd9, 8);
@@ -3292,15 +3362,17 @@ export class GameScene extends Phaser.Scene {
           true,
           heal
         );
-        net.broadcastAttack({
-          peerId: this.playerState.id,
-          gx: this.currentRoom.gx,
-          gy: this.currentRoom.gy,
-          x: this.playerSprite.x,
-          y: this.playerSprite.y,
-          angle,
-          weaponId: 'syringe_shot',
-        });
+        if (net.mode !== 'solo') {
+          net.broadcastAttack({
+            peerId: this.playerState.id,
+            gx: this.currentRoom.gx,
+            gy: this.currentRoom.gy,
+            x: this.playerSprite.x,
+            y: this.playerSprite.y,
+            angle,
+            weaponId: 'syringe_shot',
+          });
+        }
       }
     } else if (item.id === 'fairy_dust') {
       this.playerState.stamina = Math.min(this.playerState.maxStamina, this.playerState.stamina + 2);
@@ -3363,55 +3435,105 @@ export class GameScene extends Phaser.Scene {
         this.createPlayerProjectile(this.playerSprite.x, this.playerSprite.y, a, 210, 2, 0xff75c3, false, false, 1, false, false);
       }
     } else if (item.id === 'revive_totem') {
-      // Pick the downed ally who has been dead the longest (smallest remaining downedTimerMs)
-      const downedAllies = Array.from(this.remotePlayers.values())
-        .filter((p) => p.downed)
-        .sort((a, b) => a.downedTimerMs - b.downedTimerMs);
-      const longestDowned = downedAllies[0];
-      if (longestDowned) {
-        net.broadcastInteract({
-          peerId: this.playerState.id,
-          gx: longestDowned.gx,
-          gy: longestDowned.gy,
-          kind: 'revive',
-          targetId: longestDowned.id,
-          itemId: 'revive_totem',
-        });
-        if (longestDowned.gx === this.currentRoom.gx && longestDowned.gy === this.currentRoom.gy) {
-          this.playRipOutAnimationForRemote(longestDowned.id, 0xffe066);
+      if (localCoopSession.active) {
+        const downedLocal = this.localPlayers
+          .filter((lp) => lp.state.downed)
+          .sort((a, b) => a.state.downedTimerMs - b.state.downedTimerMs)[0];
+        if (downedLocal) {
+          downedLocal.state.downed = false;
+          downedLocal.state.hp = Math.max(4, Math.floor(downedLocal.state.maxHp / 2));
+          downedLocal.invulnMs = 1500;
+          downedLocal.state.gx = this.currentRoom.gx;
+          downedLocal.state.gy = this.currentRoom.gy;
+          downedLocal.state.x = this.playerSprite.x;
+          downedLocal.state.y = this.playerSprite.y;
+          downedLocal.sprite.setPosition(this.playerSprite.x, this.playerSprite.y).setFrame(0).setDepth(10).setVisible(true);
+          downedLocal.nameTag.setPosition(this.playerSprite.x, this.playerSprite.y - 12).setVisible(true);
+          SoundSystem.playHeal();
+          this.spawnParticles(downedLocal.sprite.x, downedLocal.sprite.y, 0xffe066, 12);
+          this.runFlags.revivedAnyone = true;
+          this.ui.showToast(`Revived ${downedLocal.state.name}!`, '#ffe066');
+        } else {
+          this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 4);
+          SoundSystem.playHeal();
         }
-        SoundSystem.playHeal();
-        this.runFlags.revivedAnyone = true;
-        this.ui.showToast(`Revived ${longestDowned.name}!`, '#ffe066');
       } else {
-        this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 4);
-        SoundSystem.playHeal();
+        // Pick the downed ally who has been dead the longest (smallest remaining downedTimerMs)
+        const downedAllies = Array.from(this.remotePlayers.values())
+          .filter((p) => p.downed)
+          .sort((a, b) => a.downedTimerMs - b.downedTimerMs);
+        const longestDowned = downedAllies[0];
+        if (longestDowned) {
+          net.broadcastInteract({
+            peerId: this.playerState.id,
+            gx: longestDowned.gx,
+            gy: longestDowned.gy,
+            kind: 'revive',
+            targetId: longestDowned.id,
+            itemId: 'revive_totem',
+          });
+          if (longestDowned.gx === this.currentRoom.gx && longestDowned.gy === this.currentRoom.gy) {
+            this.playRipOutAnimationForRemote(longestDowned.id, 0xffe066);
+          }
+          SoundSystem.playHeal();
+          this.runFlags.revivedAnyone = true;
+          this.ui.showToast(`Revived ${longestDowned.name}!`, '#ffe066');
+        } else {
+          this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 4);
+          SoundSystem.playHeal();
+        }
       }
     } else if (item.id === 'necromancy_altar') {
-      const downedAllies = Array.from(this.remotePlayers.values()).filter((p) => p.downed);
-      if (downedAllies.length > 0) {
-        net.broadcastInteract({
-          peerId: this.playerState.id,
-          gx: this.currentRoom.gx,
-          gy: this.currentRoom.gy,
-          kind: 'revive',
-          targetId: 'all',
-          itemId: 'necromancy_altar',
-        });
-        for (const ally of downedAllies) {
-          if (ally.gx === this.currentRoom.gx && ally.gy === this.currentRoom.gy) {
-            this.playRipOutAnimationForRemote(ally.id, 0xc084fc);
+      if (localCoopSession.active) {
+        const downedLocals = this.localPlayers.filter((lp) => lp.state.downed);
+        if (downedLocals.length > 0) {
+          for (const lp of downedLocals) {
+            lp.state.downed = false;
+            lp.state.hp = Math.max(4, Math.floor(lp.state.maxHp / 2));
+            lp.invulnMs = 1500;
+            lp.state.gx = this.currentRoom.gx;
+            lp.state.gy = this.currentRoom.gy;
+            lp.state.x = this.playerSprite.x;
+            lp.state.y = this.playerSprite.y;
+            lp.sprite.setPosition(this.playerSprite.x, this.playerSprite.y).setFrame(0).setDepth(10).setVisible(true);
+            lp.nameTag.setPosition(this.playerSprite.x, this.playerSprite.y - 12).setVisible(true);
+            this.spawnParticles(lp.sprite.x, lp.sprite.y, 0xc084fc, 10);
           }
+          SoundSystem.playHeal();
+          this.runFlags.revivedAnyone = true;
+          this.ui.showToast('Necromancy Altar revived all allies!', '#c084fc');
+        } else {
+          this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 6);
+          SoundSystem.playHeal();
         }
-        SoundSystem.playHeal();
-        this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0xc084fc, 14);
-        this.ui.showToast('Necromancy Altar revived all allies!', '#c084fc');
       } else {
-        this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 6);
-        SoundSystem.playHeal();
+        const downedAllies = Array.from(this.remotePlayers.values()).filter((p) => p.downed);
+        if (downedAllies.length > 0) {
+          net.broadcastInteract({
+            peerId: this.playerState.id,
+            gx: this.currentRoom.gx,
+            gy: this.currentRoom.gy,
+            kind: 'revive',
+            targetId: 'all',
+            itemId: 'necromancy_altar',
+          });
+          for (const ally of downedAllies) {
+            if (ally.gx === this.currentRoom.gx && ally.gy === this.currentRoom.gy) {
+              this.playRipOutAnimationForRemote(ally.id, 0xc084fc);
+            }
+          }
+          SoundSystem.playHeal();
+          this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0xc084fc, 14);
+          this.ui.showToast('Necromancy Altar revived all allies!', '#c084fc');
+        } else {
+          this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 6);
+          SoundSystem.playHeal();
+        }
       }
     } else if (item.id === 'lucky_backpack') {
-      const hasDownedAlly = Array.from(this.remotePlayers.values()).some((p) => p.downed);
+      const hasDownedAlly = localCoopSession.active
+        ? this.localPlayers.some((lp) => lp.state.downed)
+        : Array.from(this.remotePlayers.values()).some((p) => p.downed);
       const bladeStyles = new Set(['melee_arc', 'heavy_sword', 'echo_blade', 'frost_blade', 'venom_blade']);
       const hasBlade = this.playerState.inventory.some(
         (s) => s !== null && s.category === 'weapon' && WEAPONS[s.id] && bladeStyles.has(WEAPONS[s.id].style)
@@ -3579,37 +3701,110 @@ export class GameScene extends Phaser.Scene {
       }
       this.ui.showToast('Gravity Jar pulled foes in!', '#c084fc');
     } else if (item.id === 'chaos_dice') {
+      const px = this.playerSprite.x;
+      const py = this.playerSprite.y;
+      const diceIcon = this.add.image(px, py - 12, 'item_chaos_dice').setDepth(16).setScale(1.1);
+      this.roomGroup.add(diceIcon);
+      this.tweens.add({
+        targets: diceIcon,
+        y: py - 24,
+        angle: 360,
+        alpha: 0,
+        duration: 420,
+        ease: 'Quad.Out',
+        onComplete: () => diceIcon.destroy(),
+      });
+
       const roll = Math.floor(Math.random() * 4);
       if (roll === 0) {
         let converted = 0;
         for (let i = this.projectiles.length - 1; i >= 0; i--) {
           const p = this.projectiles[i];
           if (!p.fromPlayer) {
-            this.spawnParticles(p.sprite.x, p.sprite.y, 0x66ffd9, 4);
+            this.spawnParticles(p.sprite.x, p.sprite.y, 0x66ffd9, 5);
             p.sprite.destroy();
             this.projectiles.splice(i, 1);
             converted++;
           }
         }
         if (converted > 0) this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 1);
+        const vanishRing = this.add.circle(px, py, 10, 0x66ffd9, 0.16).setStrokeStyle(1.8, 0x66ffd9, 0.95).setDepth(13);
+        this.roomGroup.add(vanishRing);
+        this.tweens.add({
+          targets: vanishRing,
+          radius: 72,
+          alpha: 0,
+          duration: 320,
+          ease: 'Cubic.Out',
+          onComplete: () => vanishRing.destroy(),
+        });
+        this.spawnParticles(px, py, 0x66ffd9, 10);
         SoundSystem.playHeal();
         this.ui.showToast('Chaos: Bullets vanished!', '#66ffd9');
       } else if (roll === 1) {
+        const barrageRing = this.add.circle(px, py, 6, 0xffe066, 0.25).setStrokeStyle(1.8, 0xffe066, 0.95).setDepth(13);
+        this.roomGroup.add(barrageRing);
+        this.tweens.add({
+          targets: barrageRing,
+          radius: 26,
+          alpha: 0,
+          duration: 240,
+          ease: 'Quad.Out',
+          onComplete: () => barrageRing.destroy(),
+        });
+        this.spawnParticles(px, py, 0xffe066, 8);
         SoundSystem.playShoot();
         for (let i = 0; i < 12; i++) {
           const a = Math.random() * Math.PI * 2;
-          this.createPlayerProjectile(this.playerSprite.x, this.playerSprite.y, a, 195, 2, 0xffe066, false, false, 2, false, false);
+          this.createPlayerProjectile(px, py, a, 195, 2, 0xffe066, false, false, 2, false, false);
         }
         this.ui.showToast('Chaos: Bouncing Barrage!', '#ffe066');
       } else if (roll === 2) {
         this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + 3);
         StatusEffectManager.addEffect(this.playerState.statusEffects, 'moonblessed', 10000);
+        const blessRing = this.add.circle(px, py, 8, 0xff75c3, 0.22).setStrokeStyle(1.8, 0xff75c3, 0.95).setDepth(13);
+        this.roomGroup.add(blessRing);
+        this.tweens.add({
+          targets: blessRing,
+          radius: 30,
+          alpha: 0,
+          duration: 340,
+          ease: 'Quad.Out',
+          onComplete: () => blessRing.destroy(),
+        });
+        this.spawnParticles(px, py, 0xff75c3, 12);
+        this.spawnParticles(px, py, 0xffe066, 6);
         SoundSystem.playHeal();
         this.ui.showToast('Chaos: +3 HP & Moonblessed!', '#ff75c3');
       } else {
         const target = this.activeEnemies.find((e) => e.sprite.active);
+        const tx = target ? target.sprite.x : Phaser.Math.Clamp(px + Math.cos(this.playerState.aimAngle) * 44, 24, Math.max(24, this.roomWidthPx - 24));
+        const ty = target ? target.sprite.y : Phaser.Math.Clamp(py + Math.sin(this.playerState.aimAngle) * 44, 24, Math.max(24, this.roomHeightPx - 24));
+        const boltGfx = this.add.graphics().setDepth(15);
+        this.roomGroup.add(boltGfx);
+        boltGfx.lineStyle(4, 0x6ef3ff, 0.45);
+        boltGfx.beginPath();
+        boltGfx.moveTo(tx, Math.max(0, ty - 90));
+        boltGfx.lineTo(tx - 6, ty - 56);
+        boltGfx.lineTo(tx + 7, ty - 28);
+        boltGfx.lineTo(tx, ty);
+        boltGfx.strokePath();
+        boltGfx.lineStyle(1.6, 0xffffff, 0.95);
+        boltGfx.beginPath();
+        boltGfx.moveTo(tx, Math.max(0, ty - 90));
+        boltGfx.lineTo(tx - 6, ty - 56);
+        boltGfx.lineTo(tx + 7, ty - 28);
+        boltGfx.lineTo(tx, ty);
+        boltGfx.strokePath();
+        this.tweens.add({
+          targets: boltGfx,
+          alpha: 0,
+          duration: 240,
+          onComplete: () => boltGfx.destroy(),
+        });
+        this.spawnParticles(tx, ty, 0x6ef3ff, 14);
+        this.cameras.main.shake(110, 0.009);
         if (target) {
-          this.spawnParticles(target.sprite.x, target.sprite.y, 0x6ef3ff, 14);
           this.damageEnemy(target, 7);
         }
         SoundSystem.playExplosion();
@@ -3705,6 +3900,7 @@ export class GameScene extends Phaser.Scene {
       }
       this.ui.showToast('Disco Prism!', '#ffe066');
     } else if (item.id === 'meteor_whistle') {
+      const casterSprite = this.playerSprite;
       SoundSystem.playPickup();
       this.ui.showToast('Meteors incoming!', '#ff6b35');
       for (let m = 0; m < 3; m++) {
@@ -3712,12 +3908,14 @@ export class GameScene extends Phaser.Scene {
           if (!this.scene.isActive('GameScene')) return;
           const alive = this.activeEnemies.filter((e) => e.sprite.active);
           const target = alive.length > 0 ? alive[Math.floor(Math.random() * alive.length)] : null;
+          const baseX = casterSprite.active ? casterSprite.x : this.playerSprite.x;
+          const baseY = casterSprite.active ? casterSprite.y : this.playerSprite.y;
           const mx = target
             ? target.sprite.x
-            : Phaser.Math.Clamp(this.playerSprite.x + Phaser.Math.Between(-64, 64), 32, Math.max(32, this.roomWidthPx - 32));
+            : Phaser.Math.Clamp(baseX + Phaser.Math.Between(-64, 64), 32, Math.max(32, this.roomWidthPx - 32));
           const my = target
             ? target.sprite.y
-            : Phaser.Math.Clamp(this.playerSprite.y + Phaser.Math.Between(-64, 64), 32, Math.max(32, this.roomHeightPx - 32));
+            : Phaser.Math.Clamp(baseY + Phaser.Math.Between(-64, 64), 32, Math.max(32, this.roomHeightPx - 32));
 
           // Ground shadow + warning ring
           const shadow = this.add.circle(mx, my, 12, 0x0b0917, 0.5).setScale(0.25).setDepth(3);
@@ -3868,6 +4066,13 @@ export class GameScene extends Phaser.Scene {
     for (const e of [...this.activeEnemies]) {
       if (e.sprite.active && Phaser.Math.Distance.Between(x, y, e.sprite.x, e.sprite.y) <= 68) {
         this.damageEnemy(e, 10);
+      }
+    }
+
+    for (const obj of [...this.crateGroup.getChildren()]) {
+      const cs = obj as Phaser.Physics.Arcade.Sprite;
+      if (cs.active && Phaser.Math.Distance.Between(x, y, cs.x, cs.y) <= 68) {
+        this.smashCrate(cs);
       }
     }
 
@@ -4346,10 +4551,15 @@ export class GameScene extends Phaser.Scene {
         // Echo Dagger sends out a sonic wave ripple (45 deg arc, knockback only) and repeats the slash after 220ms
         if (w?.style === 'echo_blade') {
           this.spawnEchoSonicWave(x, y, angle, true);
+          const echoActor = this.activeLocalActor;
+          const echoAngle = angle;
           this.time.delayedCall(220, () => {
-            if (!this.playerSprite.active) return;
-            const ex = this.playerSprite.x + Math.cos(angle) * 16;
-            const ey = this.playerSprite.y + Math.sin(angle) * 16;
+            if (!this.scene.isActive('GameScene')) return;
+            const actorSprite = echoActor ? echoActor.sprite : this.playerSprite;
+            const actorDowned = echoActor ? echoActor.state.downed : this.playerState.downed;
+            if (!actorSprite.active || actorDowned) return;
+            const ex = actorSprite.x + Math.cos(echoAngle) * 16;
+            const ey = actorSprite.y + Math.sin(echoAngle) * 16;
             const echoSlash = this.add.circle(ex, ey, 13, 0xc084fc, 0.45).setDepth(12);
             this.tweens.add({ targets: echoSlash, scale: 1.3, alpha: 0, duration: 140, onComplete: () => echoSlash.destroy() });
             for (const e of [...this.activeEnemies]) {
@@ -4526,6 +4736,7 @@ export class GameScene extends Phaser.Scene {
         this.summonedSkeletons.push({
           uid: `sk_${Date.now()}_${idx}_${Math.floor(Math.random() * 9999)}`,
           staffInstanceId: staffId,
+          ownerId: this.playerState.id,
           sprite: skSprite,
           hp: 10,
           maxHp: 10,
@@ -4653,11 +4864,13 @@ export class GameScene extends Phaser.Scene {
     healAmount = 3,
     freezes = false
   ): void {
-    const sp = this.physics.add
-      .sprite(x, y, boomerang ? 'item_dream_reaper' : 'proj_orb')
-      .setDepth(11);
-    if (!boomerang) {
+    const textureKey = boomerang ? 'item_dream_reaper' : healsAlly ? 'item_syringe' : 'proj_orb';
+    const sp = this.physics.add.sprite(x, y, textureKey).setDepth(11);
+    if (!boomerang && !healsAlly) {
       sp.setTint(color);
+    }
+    if (healsAlly) {
+      sp.setRotation(angle).setScale(0.9);
     }
     this.projectiles.push({
       uid: `p_${this.playerState.id}_${++this.projSeq}`,
@@ -4681,6 +4894,8 @@ export class GameScene extends Phaser.Scene {
       slimeSplatter,
       healsAlly,
       healAmount,
+      textureKey,
+      rotateToVelocity: healsAlly,
       startX: x,
       startY: y,
       hitUids: new Set(),
@@ -4760,7 +4975,7 @@ export class GameScene extends Phaser.Scene {
 
   private damageEnemy(enemy: ActiveEnemy, dmg: number, knockbackAngle?: number): void {
     this.runFlags.hurtAnyEnemy = true;
-    if (this.playerState.name === 'ADMIN') {
+    if (this.playerState.name === 'ADMIN' || net.localName === 'ADMIN') {
       dmg = Math.max(dmg, enemy.hp, 9999);
     }
     enemy.hitFlashMs = 120;
@@ -5036,7 +5251,28 @@ export class GameScene extends Phaser.Scene {
       SoundSystem.playHeal();
       this.spawnParticles(shrineX, shrineY, 0xff5d8f, 10);
 
-      if (net.mode !== 'solo') {
+      if (localCoopSession.active) {
+        const downedLocals = this.localPlayers
+          .filter((lp) => lp.state.downed)
+          .sort((a, b) => a.state.downedTimerMs - b.state.downedTimerMs);
+        if (downedLocals.length > 0) {
+          const longestDowned = downedLocals[0];
+          this.runFlags.revivedAnyone = true;
+          const halfHp = Math.max(1, Math.floor(longestDowned.state.maxHp / 2));
+          longestDowned.state.downed = false;
+          longestDowned.state.hp = Math.min(longestDowned.state.maxHp, halfHp);
+          longestDowned.invulnMs = 1500;
+          longestDowned.state.gx = this.currentRoom.gx;
+          longestDowned.state.gy = this.currentRoom.gy;
+          longestDowned.state.x = shrineX;
+          longestDowned.state.y = shrineY + 12;
+          longestDowned.sprite.setPosition(shrineX, shrineY + 12).setFrame(0).setDepth(10).setVisible(true);
+          longestDowned.nameTag.setPosition(shrineX, shrineY).setVisible(true);
+          this.spawnParticles(longestDowned.sprite.x, longestDowned.sprite.y, 0x66ffd9, 10);
+          this.ui.showToast(`Shrine restored +${heal} HP & revived ${longestDowned.state.name}!`, '#66ffd9');
+          return;
+        }
+      } else if (net.mode !== 'solo') {
         const downedAllies = Array.from(this.remotePlayers.values())
           .filter((p) => p.downed)
           .sort((a, b) => a.downedTimerMs - b.downedTimerMs);
@@ -5088,7 +5324,32 @@ export class GameScene extends Phaser.Scene {
         const model = this.currentRoom.pillars[pObj.idx];
         if (!model || model.used) continue;
         if (Phaser.Math.Distance.Between(px, py, pObj.x, pObj.y) < 32) {
-          if (net.mode === 'solo') {
+          if (localCoopSession.active) {
+            const downedLocals = this.localPlayers
+              .filter((lp) => lp.state.downed)
+              .sort((a, b) => a.state.downedTimerMs - b.state.downedTimerMs);
+            if (downedLocals.length === 0) {
+              this.ui.showToast('No downed allies to revive!', '#ffe066');
+              return;
+            }
+            const longestDowned = downedLocals[0];
+            model.used = true;
+            this.drawPillarVisual(pObj.gfx, pObj.tx, pObj.ty, true);
+            longestDowned.state.downed = false;
+            longestDowned.state.hp = Math.max(4, Math.floor(longestDowned.state.maxHp / 2));
+            longestDowned.invulnMs = 1500;
+            longestDowned.state.gx = this.currentRoom.gx;
+            longestDowned.state.gy = this.currentRoom.gy;
+            longestDowned.state.x = pObj.x;
+            longestDowned.state.y = pObj.y + 12;
+            longestDowned.sprite.setPosition(pObj.x, pObj.y + 12).setFrame(0).setDepth(10).setVisible(true);
+            longestDowned.nameTag.setPosition(pObj.x, pObj.y).setVisible(true);
+            this.runFlags.revivedAnyone = true;
+            SoundSystem.playHeal();
+            this.spawnParticles(pObj.x, pObj.y, 0xffe066, 12);
+            this.spawnParticles(pObj.x, pObj.y, 0x94a3b8, 8);
+            this.ui.showToast(`Pillar revived ${longestDowned.state.name}!`, '#ffe066');
+          } else if (net.mode === 'solo') {
             if (this.playerState.hp >= this.playerState.maxHp) {
               this.ui.showToast('Already at full HP!', '#ffe066');
               return;
@@ -5262,41 +5523,51 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private openMerchantShop(): void {
+  private openMerchantShop(buyerOverride?: LocalPlayerActor | null): void {
+    const buyerActor = buyerOverride !== undefined ? buyerOverride : this.activeLocalActor;
     const stock = this.currentRoom.shopStock!;
-    this.ui.openShop(stock, this.playerState.shards, (idx) => {
-      const entry = stock[idx];
-      if (!entry || entry.sold) return;
-      if (this.playerState.shards < entry.price) {
-        this.ui.showToast('Not enough shards!', '#ff5d8f');
-        return;
+    const buyerShards = buyerActor ? buyerActor.state.shards : this.playerState.shards;
+    this.ui.openShop(stock, buyerShards, (idx) => {
+      const executePurchase = () => {
+        const entry = stock[idx];
+        if (!entry || entry.sold) return;
+        if (this.playerState.shards < entry.price) {
+          this.ui.showToast('Not enough shards!', '#ff5d8f');
+          return;
+        }
+        const newItem = createItemInstance(entry.itemId);
+        if (!newItem) return;
+        this.playerState.shards -= entry.price;
+        entry.sold = true;
+        net.broadcastInteract({
+          peerId: this.playerState.id,
+          gx: this.currentRoom.gx,
+          gy: this.currentRoom.gy,
+          kind: 'buy',
+          uses: idx,
+        });
+        const res = addItemToSlots(this.playerState.inventory, this.playerState.activeSlot, newItem);
+        if (res.replaced) {
+          this.spawnPersistentFloorItem(res.replaced.id, this.playerSprite.x, this.playerSprite.y + 12, res.replaced.uses);
+        }
+        SoundSystem.playMerchantPurchase();
+        this.runFlags.boughtAnything = true;
+        this.ui.showToast(`Bought ${newItem.name}!`, '#66ffd9');
+        if (this.isTutorial && this.currentRoom.isTutorialRoom && entry.itemId === 'starstring_bow') {
+          this.currentRoom.doorsLocked = false;
+          this.currentRoom.cleared = true;
+          this.updateDoorVisuals();
+          SoundSystem.playUnlock();
+          this.ui.showToast('Bought Starstring Bow! Head East!', '#66ffd9');
+        }
+        this.openMerchantShop(buyerActor);
+      };
+
+      if (buyerActor) {
+        this.withLocalPlayer(buyerActor, executePurchase);
+      } else {
+        executePurchase();
       }
-      const newItem = createItemInstance(entry.itemId);
-      if (!newItem) return;
-      this.playerState.shards -= entry.price;
-      entry.sold = true;
-      net.broadcastInteract({
-        peerId: this.playerState.id,
-        gx: this.currentRoom.gx,
-        gy: this.currentRoom.gy,
-        kind: 'buy',
-        uses: idx,
-      });
-      const res = addItemToSlots(this.playerState.inventory, this.playerState.activeSlot, newItem);
-      if (res.replaced) {
-        this.spawnPersistentFloorItem(res.replaced.id, this.playerSprite.x, this.playerSprite.y + 12, res.replaced.uses);
-      }
-      SoundSystem.playMerchantPurchase();
-      this.runFlags.boughtAnything = true;
-      this.ui.showToast(`Bought ${newItem.name}!`, '#66ffd9');
-      if (this.isTutorial && this.currentRoom.isTutorialRoom && entry.itemId === 'starstring_bow') {
-        this.currentRoom.doorsLocked = false;
-        this.currentRoom.cleared = true;
-        this.updateDoorVisuals();
-        SoundSystem.playUnlock();
-        this.ui.showToast('Bought Starstring Bow! Head East!', '#66ffd9');
-      }
-      this.openMerchantShop();
     });
   }
 
@@ -5452,6 +5723,10 @@ export class GameScene extends Phaser.Scene {
     const prevWindMs = this.playerWindSlowMs;
     const prevWindTinted = this.playerWindSlowTinted;
     const prevRespawn = this.respawnAnimMs;
+    const prevBeamTick = this.beamDamageTickMs;
+    const prevFlameTick = this.flameDamageTickMs;
+    const prevCometActive = this.cometTrailActiveMs;
+    const prevCometAccum = this.cometTrailAccumMs;
 
     this.activeLocalActor = lp;
     this.playerState = lp.state;
@@ -5472,6 +5747,10 @@ export class GameScene extends Phaser.Scene {
     this.playerWindSlowMs = lp.windSlowMs;
     this.playerWindSlowTinted = lp.windSlowTinted;
     this.respawnAnimMs = lp.respawnAnimMs;
+    this.beamDamageTickMs = lp.beamDamageTickMs;
+    this.flameDamageTickMs = lp.flameDamageTickMs;
+    this.cometTrailActiveMs = lp.cometTrailActiveMs;
+    this.cometTrailAccumMs = lp.cometTrailAccumMs;
 
     try {
       return fn();
@@ -5490,6 +5769,10 @@ export class GameScene extends Phaser.Scene {
       lp.windSlowMs = this.playerWindSlowMs;
       lp.windSlowTinted = this.playerWindSlowTinted;
       lp.respawnAnimMs = this.respawnAnimMs;
+      lp.beamDamageTickMs = this.beamDamageTickMs;
+      lp.flameDamageTickMs = this.flameDamageTickMs;
+      lp.cometTrailActiveMs = this.cometTrailActiveMs;
+      lp.cometTrailAccumMs = this.cometTrailAccumMs;
 
       this.activeLocalActor = prevActor;
       this.playerState = prevState;
@@ -5510,6 +5793,10 @@ export class GameScene extends Phaser.Scene {
       this.playerWindSlowMs = prevWindMs;
       this.playerWindSlowTinted = prevWindTinted;
       this.respawnAnimMs = prevRespawn;
+      this.beamDamageTickMs = prevBeamTick;
+      this.flameDamageTickMs = prevFlameTick;
+      this.cometTrailActiveMs = prevCometActive;
+      this.cometTrailAccumMs = prevCometAccum;
     }
   }
 
@@ -5533,6 +5820,7 @@ export class GameScene extends Phaser.Scene {
       .map((s) => ({
         uid: s.uid,
         staffInstanceId: s.staffInstanceId,
+        ownerId: s.ownerId,
         hp: s.hp,
         maxHp: s.maxHp,
         formationIndex: s.formationIndex,
@@ -5540,7 +5828,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private damagePlayer(rawDmg: number): void {
-    if (this.playerState.name === 'ADMIN') return;
+    if (this.playerState.name === 'ADMIN' || net.localName === 'ADMIN') return;
     if (this.invulnMs > 0 || this.dodgeMs > 0 || this.playerState.downed) return;
 
     const coreIdx = hasArtifact(this.playerState.inventory, 'everheart_core');
@@ -5652,11 +5940,12 @@ export class GameScene extends Phaser.Scene {
     if (localCoopSession.active) {
       this.playerState.downed = true;
       this.playerState.downedTimerMs = 20000;
-      this.playerSprite.setFrame(5).setDepth(7);
+      this.playerSprite.setFrame(5).setDepth(3);
       const anyAlive = this.localPlayers.some((lp) => !lp.state.downed);
       if (!anyAlive) {
         this.triggerGameOver(false);
       } else {
+        this.dropAllHeldItems();
         this.ui.showToast(`${this.playerState.name} is down!`, '#ff5d8f');
       }
       return;
@@ -5673,7 +5962,7 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.playerState.downed = true;
       this.playerState.downedTimerMs = 20000;
-      this.playerSprite.setFrame(5).setDepth(7);
+      this.playerSprite.setFrame(5).setDepth(3);
       const anyAlive = Array.from(this.remotePlayers.values()).some((p) => !p.downed);
       if (!anyAlive) {
         net.broadcastPlayerState(this.playerState);
@@ -5710,6 +5999,31 @@ export class GameScene extends Phaser.Scene {
   }
 
   private reviveLongestDownedOnBossDefeat(): void {
+    if (localCoopSession.active) {
+      const downedLocals = this.localPlayers
+        .filter((lp) => lp.state.downed)
+        .sort((a, b) => a.state.downedTimerMs - b.state.downedTimerMs);
+      if (downedLocals.length === 0) return;
+      const longestDowned = downedLocals[0];
+      const halfHp = Math.max(1, Math.floor(longestDowned.state.maxHp / 2));
+      const aliveAnchor = this.localPlayers.find((lp) => !lp.state.downed);
+      const rx = aliveAnchor ? aliveAnchor.sprite.x : 88;
+      const ry = aliveAnchor ? aliveAnchor.sprite.y : 88;
+      longestDowned.state.downed = false;
+      longestDowned.state.hp = Math.min(longestDowned.state.maxHp, halfHp);
+      longestDowned.invulnMs = 1500;
+      longestDowned.state.gx = this.currentRoom.gx;
+      longestDowned.state.gy = this.currentRoom.gy;
+      longestDowned.state.x = rx;
+      longestDowned.state.y = ry;
+      longestDowned.sprite.setPosition(rx, ry).setFrame(0).setDepth(10).setVisible(true);
+      longestDowned.nameTag.setPosition(rx, ry - 12).setVisible(true);
+      SoundSystem.playHeal();
+      this.spawnParticles(rx, ry, 0x66ffd9, 12);
+      this.ui.showToast(`${longestDowned.state.name} was ripped from the earth!`, '#66ffd9');
+      return;
+    }
+
     if (net.mode === 'solo') return;
 
     const downedCandidates: PlayerStateSnapshot[] = [];
@@ -5752,6 +6066,7 @@ export class GameScene extends Phaser.Scene {
     if (this.currentRoom.gx !== this.playerState.gx || this.currentRoom.gy !== this.playerState.gy) {
       this.loadRoom(this.playerState.gx, this.playerState.gy, this.playerState.x, this.playerState.y);
     }
+    this.spawnOrResetPlayerPet(this.playerState.x, this.playerState.y);
     if (ripOutAnim) {
       this.respawnAnimMs = 560;
       this.playRipOutAnimation(this.playerSprite, this.playerState.x, this.playerState.y, accentColor, () => {
@@ -5990,6 +6305,7 @@ export class GameScene extends Phaser.Scene {
     if (anyPadPause && !this.ui.isChatOpen()) {
       if (this.ui.isOverlayOpen()) {
         this.ui.closeShop();
+        this.ui.closeMap();
         this.paused = this.ui.togglePause(false);
       } else {
         this.paused = this.ui.togglePause();
@@ -6022,9 +6338,12 @@ export class GameScene extends Phaser.Scene {
     this.giantStompCooldownMs = Math.max(0, this.giantStompCooldownMs - delta);
 
     if (localCoopSession.active && this.localPlayers.length > 0) {
+      this.beamGfx.clear();
+      let anyLaserActive = this.witchLaserState === 'sweeping';
+      let anyFlameActive = false;
       for (const lp of this.localPlayers) {
         this.withLocalPlayer(lp, () => {
-          if (!this.ui.isOverlayOpen() && !this.playerState.downed && lp.inputType === 'gamepad') {
+          if (!this.ui.isOverlayOpen() && !this.ui.wasShopClosedRecently() && !this.playerState.downed && lp.inputType === 'gamepad') {
             if (inputSystem.consumePadAction(lp.padIndex, 'prevSlot')) {
               this.playerState.activeSlot = (this.playerState.activeSlot + 2) % 3;
             }
@@ -6035,43 +6354,68 @@ export class GameScene extends Phaser.Scene {
               this.dropActiveItem();
             }
             if (inputSystem.consumePadAction(lp.padIndex, 'interact')) {
-              this.handleLocalInteractOrRevive(lp);
+              this.handleInteract();
             }
             if (inputSystem.consumePadAction(lp.padIndex, 'secondary')) {
               this.handleSecondaryAction();
             }
           }
           this.updateSinglePlayerTick(time, delta);
+          if (this.beamDamageTickMs > 0) anyLaserActive = true;
+          if (this.flameDamageTickMs > 0) anyFlameActive = true;
           lp.nameTag.setPosition(Math.round(this.playerSprite.x), Math.round(this.playerSprite.y - 12));
         });
       }
+      SoundSystem.setLaserActive(anyLaserActive);
+      SoundSystem.setFlamethrowerActive(anyFlameActive);
 
-      // Level 7 Hallway: center camera on average position of all players & prevent going off-camera
-      if (this.currentRoom.hallwayDoors && (this.currentRoom.widthTiles ?? 11) > 11) {
+      // Scrolling wide/tall rooms (Level 7 Hallway & Test Room): center camera on average position of all players & prevent going off-camera
+      const wTiles = this.currentRoom.widthTiles ?? 11;
+      const hTiles = this.currentRoom.heightTiles ?? 11;
+      if (!(this.currentRoom.type === 'boss' && this.levelIndex === 6) && (wTiles > 11 || hTiles > 11)) {
         const alive = this.localPlayers.filter((lp) => !lp.state.downed);
         const group = alive.length > 0 ? alive : this.localPlayers;
         const avgX = group.reduce((acc, lp) => acc + lp.sprite.x, 0) / group.length;
+        const avgY = group.reduce((acc, lp) => acc + lp.sprite.y, 0) / group.length;
         const cam = this.cameras.main;
         const halfViewW = cam.width / cam.zoom / 2;
+        const halfViewH = cam.height / cam.zoom / 2;
         const minCamX = Math.min(this.roomWidthPx / 2, halfViewW - 12);
         const maxCamX = Math.max(this.roomWidthPx / 2, this.roomWidthPx - halfViewW + 12);
-        const camX = Phaser.Math.Clamp(avgX, minCamX, maxCamX);
-        cam.centerOn(camX, this.roomHeightPx / 2);
+        const camX = wTiles > 11 ? Phaser.Math.Clamp(avgX, minCamX, maxCamX) : this.roomWidthPx / 2;
+        const minCamY = Math.min(this.roomHeightPx / 2, halfViewH - 12);
+        const maxCamY = Math.max(this.roomHeightPx / 2, this.roomHeightPx - halfViewH + 12);
+        const camY = hTiles > 11 ? Phaser.Math.Clamp(avgY, minCamY, maxCamY) : this.roomHeightPx / 2;
+        cam.centerOn(camX, camY);
 
         const clampMinX = Math.max(16, camX - halfViewW + 14);
         const clampMaxX = Math.min(this.roomWidthPx - 16, camX + halfViewW - 14);
+        const clampMinY = Math.max(16, camY - halfViewH + 14);
+        const clampMaxY = Math.min(this.roomHeightPx - 16, camY + halfViewH - 14);
         for (const lp of this.localPlayers) {
-          if (lp.sprite.x < clampMinX) {
-            lp.sprite.x = clampMinX;
-            lp.state.x = clampMinX;
-          } else if (lp.sprite.x > clampMaxX) {
-            lp.sprite.x = clampMaxX;
-            lp.state.x = clampMaxX;
+          if (lp.state.downed && (lp.state.gx !== this.currentRoom.gx || lp.state.gy !== this.currentRoom.gy)) continue;
+          if (wTiles > 11) {
+            if (lp.sprite.x < clampMinX) {
+              lp.sprite.x = clampMinX;
+              lp.state.x = clampMinX;
+            } else if (lp.sprite.x > clampMaxX) {
+              lp.sprite.x = clampMaxX;
+              lp.state.x = clampMaxX;
+            }
+          }
+          if (hTiles > 11) {
+            if (lp.sprite.y < clampMinY) {
+              lp.sprite.y = clampMinY;
+              lp.state.y = clampMinY;
+            } else if (lp.sprite.y > clampMaxY) {
+              lp.sprite.y = clampMaxY;
+              lp.state.y = clampMaxY;
+            }
           }
         }
       }
     } else {
-      if (!this.ui.isOverlayOpen() && !this.ui.isChatOpen() && !this.playerState.downed) {
+      if (!this.ui.isOverlayOpen() && !this.ui.wasShopClosedRecently() && !this.ui.isChatOpen() && !this.playerState.downed) {
         if (inputSystem.consumeAction('prevSlot')) {
           this.playerState.activeSlot = (this.playerState.activeSlot + 2) % 3;
         }
@@ -6108,26 +6452,6 @@ export class GameScene extends Phaser.Scene {
     this.updateFloorWeather(delta);
     this.syncMultiplayer(delta);
     this.pushUIUpdate();
-  }
-
-  private handleLocalInteractOrRevive(lp: LocalPlayerActor): void {
-    // Check if an injured/downed local teammate is nearby to revive
-    for (const other of this.localPlayers) {
-      if (other === lp || !other.state.downed) continue;
-      const d = Phaser.Math.Distance.Between(lp.sprite.x, lp.sprite.y, other.sprite.x, other.sprite.y);
-      if (d < 26) {
-        other.state.downed = false;
-        other.state.hp = Math.max(4, Math.floor(other.state.maxHp / 2));
-        other.invulnMs = 1500;
-        other.sprite.setFrame(0).setDepth(10);
-        this.runFlags.revivedAnyone = true;
-        SoundSystem.playHeal();
-        this.spawnParticles(other.sprite.x, other.sprite.y, 0x66ffd9, 10);
-        this.ui.showToast(`${other.state.name} revived!`, '#66ffd9');
-        return;
-      }
-    }
-    this.handleInteract();
   }
 
   private updateSinglePlayerTick(time: number, delta: number): void {
@@ -6171,6 +6495,22 @@ export class GameScene extends Phaser.Scene {
           this.giantStompCooldownMs = 380;
           break;
         }
+      }
+    }
+    if (isGiant && !this.playerState.downed) {
+      let smashedAny = false;
+      for (const c of [...this.crateGroup.getChildren()]) {
+        const cs = c as Phaser.Physics.Arcade.Sprite;
+        if (!cs.active) continue;
+        if (Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, cs.x, cs.y) < 20) {
+          this.smashCrate(cs);
+          this.spawnParticles(cs.x, cs.y, 0xff9f1c, 6);
+          smashedAny = true;
+        }
+      }
+      if (smashedAny) {
+        SoundSystem.playStomp();
+        this.cameras.main.shake(70, 0.005);
       }
     }
     if (StatusEffectManager.has(this.playerState.statusEffects, 'burning')) {
@@ -6231,18 +6571,23 @@ export class GameScene extends Phaser.Scene {
       const isWindSlowed = !this.playerState.downed && this.playerWindSlowMs > 0;
       const isSlimeSlowed = !this.playerState.downed && StatusEffectManager.has(this.playerState.statusEffects, 'sluggish');
       if (isWindSlowed) {
-        if (!this.playerWindSlowTinted) {
-          this.playerSprite.setTint(0x7dd3fc);
+        if (!this.playerWindSlowTinted || this.playerSprite.tintMode !== Phaser.TintModes.MULTIPLY) {
+          this.playerSprite.setTint(0x7dd3fc).setTintMode(Phaser.TintModes.MULTIPLY);
           this.playerWindSlowTinted = true;
           this.playerSlowTinted = false;
         }
       } else if (isSlimeSlowed) {
-        if (!this.playerSlowTinted || this.playerWindSlowTinted) {
-          this.playerSprite.setTint(0x55ff88);
+        if (!this.playerSlowTinted || this.playerWindSlowTinted || this.playerSprite.tintMode !== Phaser.TintModes.MULTIPLY) {
+          this.playerSprite.setTint(0x55ff88).setTintMode(Phaser.TintModes.MULTIPLY);
           this.playerSlowTinted = true;
           this.playerWindSlowTinted = false;
         }
-      } else if (this.playerSlowTinted || this.playerWindSlowTinted) {
+      } else if (
+        this.playerSlowTinted ||
+        this.playerWindSlowTinted ||
+        this.playerSprite.tintMode !== Phaser.TintModes.MULTIPLY ||
+        this.playerSprite.tintTopLeft !== 0xffffff
+      ) {
         this.playerSprite.clearTint();
         this.playerSlowTinted = false;
         this.playerWindSlowTinted = false;
@@ -6258,7 +6603,7 @@ export class GameScene extends Phaser.Scene {
       this.playerSprite.setVelocity(0, 0);
       this.playerState.vx = 0;
       this.playerState.vy = 0;
-      this.playerSprite.setFrame(5).setDepth(7);
+      this.playerSprite.setFrame(5).setDepth(3);
       this.playerState.downedTimerMs -= delta;
       if (localCoopSession.active) {
         const anyAlive = this.localPlayers.some((lp) => !lp.state.downed);
@@ -6305,7 +6650,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (this.respawnAnimMs > 0 || this.ui?.isChatOpen()) {
+    if (this.respawnAnimMs > 0 || this.ui?.isChatOpen() || this.ui?.isOverlayOpen()) {
       this.playerSprite.setVelocity(0, 0);
       this.playerState.vx = 0;
       this.playerState.vy = 0;
@@ -6338,7 +6683,7 @@ export class GameScene extends Phaser.Scene {
         if (!this.ui.isOverlayOpen() && (inputSystem.consumePadAction(padIdx, 'attack') || inputSystem.isPadActionHeld(padIdx, 'attack'))) {
           this.handlePrimaryAttack();
         }
-        wantDodge = inputSystem.consumePadAction(padIdx, 'dodge');
+        wantDodge = !this.ui.wasShopClosedRecently() && inputSystem.consumePadAction(padIdx, 'dodge');
       }
     } else {
       if (this.keys.a.isDown || this.keys.left.isDown) dx -= 1;
@@ -6377,7 +6722,7 @@ export class GameScene extends Phaser.Scene {
       wantDodge =
         Phaser.Input.Keyboard.JustDown(this.keys.space) ||
         Phaser.Input.Keyboard.JustDown(this.keys.shift) ||
-        inputSystem.consumeAction('dodge') ||
+        (!this.ui.wasShopClosedRecently() && inputSystem.consumeAction('dodge')) ||
         (isMobileMode() && mobileInput.consumeDodge());
     }
 
@@ -6431,7 +6776,26 @@ export class GameScene extends Phaser.Scene {
       this.playerSprite.setVelocity(this.dodgeVx, this.dodgeVy);
       this.playerSprite.setFrame(4);
       this.playerState.dodging = true;
+      if (this.cometTrailActiveMs > 0 && this.playerSprite.active) {
+        this.cometTrailActiveMs -= delta;
+        this.cometTrailAccumMs += delta;
+        while (this.cometTrailAccumMs >= 20) {
+          this.cometTrailAccumMs -= 20;
+          const cx = this.playerSprite.x + Phaser.Math.FloatBetween(-2, 2);
+          const cy = this.playerSprite.y + Phaser.Math.FloatBetween(-2, 2);
+          const g = this.add.graphics().setDepth(3);
+          g.fillStyle(0xffd275, 0.35);
+          g.fillCircle(cx, cy, 2.8);
+          g.fillStyle(0xffe066, 0.9);
+          g.fillCircle(cx, cy, 1.6);
+          g.fillStyle(0xffffff, 0.95);
+          g.fillCircle(cx + Phaser.Math.FloatBetween(-1, 1), cy + Phaser.Math.FloatBetween(-1, 1), 0.8);
+          this.roomGroup.add(g);
+          this.cometTrailNodes.push({ x: cx, y: cy, gfx: g, lifeMs: 1100, hitUids: new Set() });
+        }
+      }
     } else {
+      this.cometTrailActiveMs = 0;
       this.playerState.dodging = false;
       const modMult = this.floor.modifier === 'enchanted_floors' ? 1.15 : 1;
       const windMult = this.playerWindSlowMs > 0 ? 0.5 : 1;
@@ -6475,6 +6839,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnObsidianAxeSlam(originX: number, originY: number, angle: number, isLocal: boolean): void {
+    const ownerSprite = isLocal ? this.playerSprite : null;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
     const slamX = originX + cos * 24;
@@ -6523,8 +6888,8 @@ export class GameScene extends Phaser.Scene {
           duration: 370,
           ease: 'Sine.easeInOut',
           onUpdate: () => {
-            const px = isLocal && this.playerSprite.active ? this.playerSprite.x : originX;
-            const py = isLocal && this.playerSprite.active ? this.playerSprite.y : originY;
+            const px = ownerSprite && ownerSprite.active ? ownerSprite.x : originX;
+            const py = ownerSprite && ownerSprite.active ? ownerSprite.y : originY;
             const curX = Phaser.Math.Linear(slamX, px + cos * 6, dragState.t);
             const curY = Phaser.Math.Linear(slamY, py + sin * 6, dragState.t);
             if (axe.active) {
@@ -6588,6 +6953,7 @@ export class GameScene extends Phaser.Scene {
     this.roomGroup.add(katana);
     this.roomGroup.add(trailGfx);
 
+    const ownerSprite = isLocal ? this.playerSprite : null;
     const state = { a: startA, alpha: 1 };
     this.tweens.add({
       targets: state,
@@ -6595,8 +6961,8 @@ export class GameScene extends Phaser.Scene {
       duration: swipeDuration,
       ease: 'Cubic.Out',
       onUpdate: () => {
-        const px = isLocal && this.playerSprite.active ? this.playerSprite.x : originX;
-        const py = isLocal && this.playerSprite.active ? this.playerSprite.y : originY;
+        const px = ownerSprite && ownerSprite.active ? ownerSprite.x : originX;
+        const py = ownerSprite && ownerSprite.active ? ownerSprite.y : originY;
         if (katana.active) {
           katana.setPosition(px + Math.cos(state.a) * radialOffset, py + Math.sin(state.a) * radialOffset);
           katana.setRotation(state.a + rotOffset);
@@ -6632,6 +6998,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnThornWhipAnim(originX: number, originY: number, angle: number, range: number): void {
+    const ownerSprite = this.playerSprite;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
     const perpX = -sin;
@@ -6643,8 +7010,8 @@ export class GameScene extends Phaser.Scene {
     const drawWhip = (len: number, waveAmp: number, alpha: number) => {
       if (!gfx.active) return;
       gfx.clear();
-      const px0 = this.playerSprite.active ? this.playerSprite.x : originX;
-      const py0 = this.playerSprite.active ? this.playerSprite.y : originY;
+      const px0 = ownerSprite.active ? ownerSprite.x : originX;
+      const py0 = ownerSprite.active ? ownerSprite.y : originY;
       const segments = 8;
       const pts: Array<{ x: number; y: number }> = [];
       for (let i = 0; i <= segments; i++) {
@@ -6690,8 +7057,8 @@ export class GameScene extends Phaser.Scene {
       onUpdate: () => drawWhip(whipState.len, whipState.wave, whipState.alpha),
       onComplete: () => {
         if (!gfx.active) return;
-        const tipX = (this.playerSprite.active ? this.playerSprite.x : originX) + cos * maxLen;
-        const tipY = (this.playerSprite.active ? this.playerSprite.y : originY) + sin * maxLen;
+        const tipX = (ownerSprite.active ? ownerSprite.x : originX) + cos * maxLen;
+        const tipY = (ownerSprite.active ? ownerSprite.y : originY) + sin * maxLen;
         this.spawnParticles(tipX, tipY, 0x34d399, 3);
         this.tweens.add({
           targets: whipState,
@@ -6898,10 +7265,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateBeamWeapon(delta: number): void {
-    this.beamGfx.clear();
+    const isLocalCoopActor = Boolean(this.activeLocalActor);
+    if (!isLocalCoopActor) {
+      this.beamGfx.clear();
+    }
     if (this.playerState.downed || this.dodgeMs > 0 || this.ui.isOverlayOpen()) {
       this.beamDamageTickMs = 0;
-      SoundSystem.setLaserActive(this.witchLaserState === 'sweeping');
+      if (!isLocalCoopActor) SoundSystem.setLaserActive(this.witchLaserState === 'sweeping');
       return;
     }
 
@@ -6909,26 +7279,33 @@ export class GameScene extends Phaser.Scene {
     const w = activeItem?.category === 'weapon' ? WEAPONS[activeItem.id] : undefined;
     if (!activeItem || !w || w.style !== 'beam_prism') {
       this.beamDamageTickMs = 0;
-      SoundSystem.setLaserActive(this.witchLaserState === 'sweeping');
+      if (!isLocalCoopActor) SoundSystem.setLaserActive(this.witchLaserState === 'sweeping');
       return;
     }
 
-    const holdingShoot = isMobileMode()
-      ? mobileInput.dpadActive
-      : inputSystem.controlType === 'gamepad'
-        ? inputSystem.isActionHeld('attack')
-        : this.input.activePointer.leftButtonDown();
+    const holdingShoot = this.activeLocalActor
+      ? this.activeLocalActor.inputType === 'gamepad'
+        ? inputSystem.isPadActionHeld(this.activeLocalActor.padIndex, 'attack')
+        : this.input.activePointer.leftButtonDown()
+      : isMobileMode()
+        ? mobileInput.dpadActive
+        : inputSystem.controlType === 'gamepad'
+          ? inputSystem.isActionHeld('attack')
+          : this.input.activePointer.leftButtonDown();
 
     if (!holdingShoot) {
       this.beamDamageTickMs = 0;
-      SoundSystem.setLaserActive(this.witchLaserState === 'sweeping');
+      if (!isLocalCoopActor) SoundSystem.setLaserActive(this.witchLaserState === 'sweeping');
       return;
     }
 
     if (this.beamDamageTickMs === 0) {
       SoundSystem.playLaserPowerup();
+      if (isLocalCoopActor) {
+        this.beamDamageTickMs = 1;
+      }
     }
-    SoundSystem.setLaserActive(true);
+    if (!isLocalCoopActor) SoundSystem.setLaserActive(true);
 
     const angle = isMobileMode()
       ? mobileInput.dpadDirX !== 0 || mobileInput.dpadDirY !== 0
@@ -7092,10 +7469,20 @@ export class GameScene extends Phaser.Scene {
         }
         startX = remote.sprite.x;
         startY = remote.sprite.y;
-      } else if (this.playerState.downed) {
-        b.gfx.destroy();
-        this.prismBeams.splice(i, 1);
-        continue;
+      } else {
+        const localOwner =
+          localCoopSession.active && this.localPlayers.length > 0
+            ? this.localPlayers.find((lp) => lp.state.id === b.ownerId)
+            : undefined;
+        const ownerSprite = localOwner ? localOwner.sprite : this.playerSprite;
+        const ownerDowned = localOwner ? localOwner.state.downed : this.playerState.downed;
+        if (!ownerSprite.active || ownerDowned) {
+          b.gfx.destroy();
+          this.prismBeams.splice(i, 1);
+          continue;
+        }
+        startX = ownerSprite.x;
+        startY = ownerSprite.y;
       }
 
       const cos = Math.cos(b.angle);
@@ -7178,6 +7565,18 @@ export class GameScene extends Phaser.Scene {
             this.damageEnemy(e, b.damage);
           }
         }
+        for (const obj of [...this.crateGroup.getChildren()]) {
+          const cs = obj as Phaser.Physics.Arcade.Sprite;
+          if (!cs.active) continue;
+          const dx = cs.x - startX;
+          const dy = cs.y - startY;
+          const along = dx * cos + dy * sin;
+          if (along < 0 || along > beamLen + 9) continue;
+          const perp = Math.abs(-sin * dx + cos * dy);
+          if (perp <= 9) {
+            this.smashCrate(cs);
+          }
+        }
       }
     }
   }
@@ -7188,20 +7587,25 @@ export class GameScene extends Phaser.Scene {
     }
     const activeItem = this.playerState.inventory[this.playerState.activeSlot];
     if (!activeItem || activeItem.id !== 'aurora_harp') return;
-    const holdingShoot = isMobileMode()
-      ? mobileInput.dpadActive
-      : inputSystem.controlType === 'gamepad'
-        ? inputSystem.isActionHeld('attack')
-        : this.input.activePointer.leftButtonDown();
+    const holdingShoot = this.activeLocalActor
+      ? this.activeLocalActor.inputType === 'gamepad'
+        ? inputSystem.isPadActionHeld(this.activeLocalActor.padIndex, 'attack')
+        : this.input.activePointer.leftButtonDown()
+      : isMobileMode()
+        ? mobileInput.dpadActive
+        : inputSystem.controlType === 'gamepad'
+          ? inputSystem.isActionHeld('attack')
+          : this.input.activePointer.leftButtonDown();
     if (holdingShoot) {
       this.handlePrimaryAttack();
     }
   }
 
   private updateFlamethrowerWeapon(delta: number): void {
+    const isLocalCoopActor = Boolean(this.activeLocalActor);
     if (this.playerState.downed || this.dodgeMs > 0 || this.ui.isOverlayOpen()) {
       this.flameDamageTickMs = 0;
-      SoundSystem.setFlamethrowerActive(false);
+      if (!isLocalCoopActor) SoundSystem.setFlamethrowerActive(false);
       return;
     }
 
@@ -7209,23 +7613,30 @@ export class GameScene extends Phaser.Scene {
     const w = activeItem?.category === 'weapon' ? WEAPONS[activeItem.id] : undefined;
     if (!activeItem || !w || w.style !== 'flamethrower') {
       this.flameDamageTickMs = 0;
-      SoundSystem.setFlamethrowerActive(false);
+      if (!isLocalCoopActor) SoundSystem.setFlamethrowerActive(false);
       return;
     }
 
-    const holdingShoot = isMobileMode()
-      ? mobileInput.dpadActive
-      : inputSystem.controlType === 'gamepad'
-        ? inputSystem.isActionHeld('attack')
-        : this.input.activePointer.leftButtonDown();
+    const holdingShoot = this.activeLocalActor
+      ? this.activeLocalActor.inputType === 'gamepad'
+        ? inputSystem.isPadActionHeld(this.activeLocalActor.padIndex, 'attack')
+        : this.input.activePointer.leftButtonDown()
+      : isMobileMode()
+        ? mobileInput.dpadActive
+        : inputSystem.controlType === 'gamepad'
+          ? inputSystem.isActionHeld('attack')
+          : this.input.activePointer.leftButtonDown();
 
     if (!holdingShoot) {
       this.flameDamageTickMs = 0;
-      SoundSystem.setFlamethrowerActive(false);
+      if (!isLocalCoopActor) SoundSystem.setFlamethrowerActive(false);
       return;
     }
 
-    SoundSystem.setFlamethrowerActive(true);
+    if (isLocalCoopActor && this.flameDamageTickMs === 0) {
+      this.flameDamageTickMs = 1;
+    }
+    if (!isLocalCoopActor) SoundSystem.setFlamethrowerActive(true);
 
     const angle = isMobileMode()
       ? mobileInput.dpadDirX !== 0 || mobileInput.dpadDirY !== 0
@@ -7509,7 +7920,14 @@ export class GameScene extends Phaser.Scene {
       }
       sk.sprite.setFrame(frame);
 
-      if (this.playerState.downed) {
+      const ownerActor =
+        localCoopSession.active && sk.ownerId
+          ? this.localPlayers.find((lp) => lp.state.id === sk.ownerId)
+          : undefined;
+      const ownerSprite = ownerActor ? ownerActor.sprite : this.playerSprite;
+      const ownerDowned = ownerActor ? ownerActor.state.downed : this.playerState.downed;
+
+      if (ownerDowned) {
         sk.sprite.setVelocity(0, 0);
         continue;
       }
@@ -7549,8 +7967,8 @@ export class GameScene extends Phaser.Scene {
         }
       } else {
         const orbitAngle = (sk.formationIndex * Math.PI) / 2;
-        const targetX = Phaser.Math.Clamp(this.playerSprite.x + Math.cos(orbitAngle) * 18, 22, Math.max(22, this.roomWidthPx - 22));
-        const targetY = Phaser.Math.Clamp(this.playerSprite.y + Math.sin(orbitAngle) * 18, 22, Math.max(22, this.roomHeightPx - 22));
+        const targetX = Phaser.Math.Clamp(ownerSprite.x + Math.cos(orbitAngle) * 18, 22, Math.max(22, this.roomWidthPx - 22));
+        const targetY = Phaser.Math.Clamp(ownerSprite.y + Math.sin(orbitAngle) * 18, 22, Math.max(22, this.roomHeightPx - 22));
         const dist = Phaser.Math.Distance.Between(sk.sprite.x, sk.sprite.y, targetX, targetY);
         if (dist > 6) {
           const waypoint = this.getSkeletonPathWaypoint(sk.sprite.x, sk.sprite.y, targetX, targetY);
@@ -7789,12 +8207,15 @@ export class GameScene extends Phaser.Scene {
 
   private updatePets(time: number, delta: number): void {
     if (this.playerPet) {
-      const p1Sprite = localCoopSession.active ? (this.localPlayers[0]?.sprite ?? this.playerSprite) : this.playerSprite;
-      const visible = p1Sprite.visible;
+      const ownerActor = localCoopSession.active
+        ? (this.localPlayers.find((lp) => !lp.state.downed) ?? this.localPlayers[0])
+        : undefined;
+      const ownerSprite = ownerActor ? ownerActor.sprite : this.playerSprite;
+      const visible = ownerSprite.visible;
       this.playerPet.sprite.setVisible(visible);
       this.playerPet.shadow.setVisible(visible);
       if (visible) {
-        this.updateSinglePet(this.playerPet, p1Sprite.x, p1Sprite.y, p1Sprite.flipX, time, delta);
+        this.updateSinglePet(this.playerPet, ownerSprite.x, ownerSprite.y, ownerSprite.flipX, time, delta);
       }
     }
 
@@ -7817,6 +8238,11 @@ export class GameScene extends Phaser.Scene {
         if (rp) this.destroyPet(rp);
         rp = this.createActivePet(petDef, rState.x, rState.y);
         this.remotePets.set(peerId, rp);
+      } else if (Phaser.Math.Distance.Between(rp.x, rp.y, rState.x, rState.y) > 48) {
+        rp.x = rState.x;
+        rp.y = rState.y;
+        rp.sprite.setPosition(rp.x, rp.y - rp.z);
+        rp.shadow.setPosition(rp.x, rp.y + 5);
       }
       rp.sprite.setVisible(true);
       rp.shadow.setVisible(true);
@@ -8048,14 +8474,31 @@ export class GameScene extends Phaser.Scene {
       const dist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, px, py);
       const angle = Phaser.Math.Angle.Between(e.sprite.x, e.sprite.y, px, py);
 
-      // Contact damage against local host player
-      const hostDist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, hostX, hostY);
-      if (hostDist < (e.isBoss ? 20 : 12) && !StatusEffectManager.has(this.playerState.statusEffects, 'giant')) {
-        if (e.defId === 'mycelium_mite' && this.invulnMs <= 0 && this.dodgeMs <= 0 && !this.playerState.downed) {
-          StatusEffectManager.addEffect(this.playerState.statusEffects, 'poisoned', 2500);
-          this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x9ef01a, 4);
+      // Contact damage against local player(s)
+      const hitDist = e.isBoss ? 20 : 12;
+      if (localCoopSession.active && this.localPlayers.length > 0) {
+        for (const lp of this.localPlayers) {
+          if (lp.state.downed) continue;
+          const lpDist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, lp.sprite.x, lp.sprite.y);
+          if (lpDist < hitDist && !StatusEffectManager.has(lp.state.statusEffects, 'giant')) {
+            this.withLocalPlayer(lp, () => {
+              if (e.defId === 'mycelium_mite' && this.invulnMs <= 0 && this.dodgeMs <= 0 && !this.playerState.downed) {
+                StatusEffectManager.addEffect(this.playerState.statusEffects, 'poisoned', 2500);
+                this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x9ef01a, 4);
+              }
+              this.damagePlayer(e.damage);
+            });
+          }
         }
-        this.damagePlayer(e.damage);
+      } else {
+        const hostDist = Phaser.Math.Distance.Between(e.sprite.x, e.sprite.y, hostX, hostY);
+        if (hostDist < hitDist && !StatusEffectManager.has(this.playerState.statusEffects, 'giant')) {
+          if (e.defId === 'mycelium_mite' && this.invulnMs <= 0 && this.dodgeMs <= 0 && !this.playerState.downed) {
+            StatusEffectManager.addEffect(this.playerState.statusEffects, 'poisoned', 2500);
+            this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x9ef01a, 4);
+          }
+          this.damagePlayer(e.damage);
+        }
       }
 
       // Contact damage against summoned skeletons
@@ -8567,7 +9010,14 @@ export class GameScene extends Phaser.Scene {
 
   private areAllLevel7ChambersCleared(): boolean {
     if (this.levelIndex !== 6) return false;
-    if (this.playerState.name === 'ADMIN' || this.playerState.name === 'ADMIN2') return true;
+    if (
+      this.playerState.name === 'ADMIN' ||
+      this.playerState.name === 'ADMIN2' ||
+      net.localName === 'ADMIN' ||
+      net.localName === 'ADMIN2'
+    ) {
+      return true;
+    }
     return this.countClearedLevel7Chambers() >= 8;
   }
 
@@ -8590,9 +9040,15 @@ export class GameScene extends Phaser.Scene {
       this.nyarWaitToastCooldownMs = Math.max(0, this.nyarWaitToastCooldownMs - delta);
     }
 
-    // Hallway mystery whispers as the player walks further right
+    // Hallway mystery whispers as any alive player walks further right
     if (this.currentRoom.gx === 0 && this.currentRoom.gy === 1) {
-      const px = this.playerSprite.x;
+      const px =
+        localCoopSession.active && this.localPlayers.length > 0
+          ? Math.max(
+              ...this.localPlayers.filter((lp) => !lp.state.downed).map((lp) => lp.sprite.x),
+              this.playerSprite.x
+            )
+          : this.playerSprite.x;
       if (px > 140 && this.l7WhisperStep < 1) {
         this.l7WhisperStep = 1;
         SoundSystem.playBossAwaken();
@@ -8614,7 +9070,10 @@ export class GameScene extends Phaser.Scene {
       !this.nyarlathotepSummoning &&
       !this.currentRoom.bossDefeated
     ) {
-      const localTriggered = !this.playerState.downed && this.playerSprite.x >= 68;
+      const localTriggered =
+        localCoopSession.active && this.localPlayers.length > 0
+          ? this.localPlayers.some((lp) => !lp.state.downed && lp.sprite.x >= 68)
+          : !this.playerState.downed && this.playerSprite.x >= 68;
       const remoteTriggered =
         net.mode !== 'solo' &&
         Array.from(this.remotePlayers.values()).some(
@@ -8665,8 +9124,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buildNyarDialogue(prev: { fought: number; beaten: number }): { opening: string; taunts: string[] } {
-    const name = this.playerState.name || 'Wanderer';
-    const playerCount = net.mode === 'solo' ? 1 : Math.max(1, net.players.size);
+    const name = (localCoopSession.active ? net.localName : this.playerState.name) || 'Wanderer';
+    const playerCount = localCoopSession.active
+      ? Math.max(1, this.localPlayers.length)
+      : net.mode === 'solo'
+        ? 1
+        : Math.max(1, net.players.size);
     const isSolo = playerCount === 1;
 
     let opening = isSolo
@@ -9083,27 +9546,47 @@ export class GameScene extends Phaser.Scene {
           break;
         }
 
-        if (
-          !this.playerState.downed &&
-          this.nyarBeamHitCooldownMs <= 0 &&
-          Phaser.Math.Distance.Between(rx, ry, this.playerSprite.x, this.playerSprite.y) < 9
-        ) {
-          const activeItem = this.playerState.inventory[this.playerState.activeSlot];
-          const canDeflect =
-            StatusEffectManager.has(this.playerState.statusEffects, 'starward') ||
-            activeItem?.id === 'starcleaver' ||
-            activeItem?.id === 'astral_greatsword' ||
-            hasArtifact(this.playerState.inventory, 'disco_prism') !== -1;
-          this.nyarBeamHitCooldownMs = 450;
-          if (canDeflect) {
-            SoundSystem.playSwing();
-            this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x6ef3ff, 8);
-          } else {
-            this.damagePlayer(2);
+        if (this.nyarBeamHitCooldownMs <= 0) {
+          const beamTargets =
+            localCoopSession.active && this.localPlayers.length > 0
+              ? this.localPlayers.filter((lp) => !lp.state.downed)
+              : !this.playerState.downed
+                ? [null]
+                : [];
+          let hitTarget: LocalPlayerActor | null | undefined = undefined;
+          for (const cand of beamTargets) {
+            const cx = cand ? cand.sprite.x : this.playerSprite.x;
+            const cy = cand ? cand.sprite.y : this.playerSprite.y;
+            if (Phaser.Math.Distance.Between(rx, ry, cx, cy) < 9) {
+              hitTarget = cand;
+              break;
+            }
           }
-          endX = rx;
-          endY = ry;
-          break;
+          if (hitTarget !== undefined) {
+            const applyBeamHit = () => {
+              const activeItem = this.playerState.inventory[this.playerState.activeSlot];
+              const canDeflect =
+                StatusEffectManager.has(this.playerState.statusEffects, 'starward') ||
+                activeItem?.id === 'starcleaver' ||
+                activeItem?.id === 'astral_greatsword' ||
+                hasArtifact(this.playerState.inventory, 'disco_prism') !== -1;
+              this.nyarBeamHitCooldownMs = 450;
+              if (canDeflect) {
+                SoundSystem.playSwing();
+                this.spawnParticles(this.playerSprite.x, this.playerSprite.y, 0x6ef3ff, 8);
+              } else {
+                this.damagePlayer(2);
+              }
+            };
+            if (hitTarget) {
+              this.withLocalPlayer(hitTarget, applyBeamHit);
+            } else {
+              applyBeamHit();
+            }
+            endX = rx;
+            endY = ry;
+            break;
+          }
         }
       }
 
@@ -9170,18 +9653,26 @@ export class GameScene extends Phaser.Scene {
       if (this.nyarRainTimerMs <= 0) {
         this.nyarRainTimerMs = 4000;
         let floorItemCount = this.currentRoom.loot.filter((l) => !l.collected && l.kind === 'item').length;
-        const playerCount = net.mode === 'solo' ? 1 : Math.max(1, net.players.size);
-        const anyLowHp =
-          (!this.playerState.downed && this.playerState.hp < 8) ||
-          Array.from(this.remotePlayers.values()).some((p) => !p.downed && p.hp < 8);
+        const playerCount = localCoopSession.active
+          ? Math.max(1, this.localPlayers.length)
+          : net.mode === 'solo'
+            ? 1
+            : Math.max(1, net.players.size);
+        const anyLowHp = localCoopSession.active
+          ? this.localPlayers.some((lp) => !lp.state.downed && lp.state.hp < 8)
+          : (!this.playerState.downed && this.playerState.hp < 8) ||
+            Array.from(this.remotePlayers.values()).some((p) => !p.downed && p.hp < 8);
         const heartdewOnFloor = this.currentRoom.loot.some(
           (l) => !l.collected && l.kind === 'item' && l.itemId === 'heartdew_potion'
         );
-        const heartdewHeld =
-          this.playerState.inventory.some((it) => it && it.id === 'heartdew_potion' && it.uses > 0) ||
-          Array.from(this.remotePlayers.values()).some((p) =>
-            p.inventory.some((it) => it && it.id === 'heartdew_potion' && it.uses > 0)
-          );
+        const heartdewHeld = localCoopSession.active
+          ? this.localPlayers.some((lp) =>
+              lp.state.inventory.some((it) => it && it.id === 'heartdew_potion' && it.uses > 0)
+            )
+          : this.playerState.inventory.some((it) => it && it.id === 'heartdew_potion' && it.uses > 0) ||
+            Array.from(this.remotePlayers.values()).some((p) =>
+              p.inventory.some((it) => it && it.id === 'heartdew_potion' && it.uses > 0)
+            );
         let forceHeartdew = false;
         if (anyLowHp && !heartdewOnFloor && !heartdewHeld) {
           if (playerCount >= 2) {
@@ -9430,16 +9921,33 @@ export class GameScene extends Phaser.Scene {
             endY = ry;
             break;
           }
-          if (
-            !this.playerState.downed &&
-            this.witchLaserHitCooldownMs <= 0 &&
-            Phaser.Math.Distance.Between(rx, ry, this.playerSprite.x, this.playerSprite.y) < 9
-          ) {
-            this.witchLaserHitCooldownMs = 450;
-            this.damagePlayer(e.damage);
-            endX = rx;
-            endY = ry;
-            break;
+          if (this.witchLaserHitCooldownMs <= 0) {
+            const laserTargets =
+              localCoopSession.active && this.localPlayers.length > 0
+                ? this.localPlayers.filter((lp) => !lp.state.downed)
+                : !this.playerState.downed
+                  ? [null]
+                  : [];
+            let hitLaserTarget: LocalPlayerActor | null | undefined = undefined;
+            for (const cand of laserTargets) {
+              const cx = cand ? cand.sprite.x : this.playerSprite.x;
+              const cy = cand ? cand.sprite.y : this.playerSprite.y;
+              if (Phaser.Math.Distance.Between(rx, ry, cx, cy) < 9) {
+                hitLaserTarget = cand;
+                break;
+              }
+            }
+            if (hitLaserTarget !== undefined) {
+              this.witchLaserHitCooldownMs = 450;
+              if (hitLaserTarget) {
+                this.withLocalPlayer(hitLaserTarget, () => this.damagePlayer(e.damage));
+              } else {
+                this.damagePlayer(e.damage);
+              }
+              endX = rx;
+              endY = ry;
+              break;
+            }
           }
         }
 
@@ -9512,9 +10020,18 @@ export class GameScene extends Phaser.Scene {
           gfx.fillCircle(th.x, th.y, 14);
           gfx.lineStyle(2, 0xff47b6, 0.9 * fade);
           gfx.strokeCircle(th.x, th.y, 14);
-          if (!th.hit && !this.playerState.downed && Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, th.x, th.y) <= 14) {
-            th.hit = true;
-            this.damagePlayer(e.damage);
+          if (!th.hit) {
+            if (localCoopSession.active && this.localPlayers.length > 0) {
+              for (const lp of this.localPlayers) {
+                if (!lp.state.downed && Phaser.Math.Distance.Between(lp.sprite.x, lp.sprite.y, th.x, th.y) <= 14) {
+                  th.hit = true;
+                  this.withLocalPlayer(lp, () => this.damagePlayer(e.damage));
+                }
+              }
+            } else if (!this.playerState.downed && Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, th.x, th.y) <= 14) {
+              th.hit = true;
+              this.damagePlayer(e.damage);
+            }
           }
           if (th.timerMs <= 0) {
             this.everheartThorns.splice(i, 1);
@@ -9532,11 +10049,22 @@ export class GameScene extends Phaser.Scene {
         gfx.lineStyle(1.2, 0xffffff, alpha * 0.7);
         gfx.strokeCircle(pulse.x, pulse.y, pulse.radius);
 
-        if (!pulse.hit && !this.playerState.downed && this.dodgeMs <= 0) {
-          const pd = Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, pulse.x, pulse.y);
-          if (Math.abs(pd - pulse.radius) < 6) {
-            pulse.hit = true;
-            this.damagePlayer(Math.max(1, e.damage - 1));
+        if (!pulse.hit) {
+          if (localCoopSession.active && this.localPlayers.length > 0) {
+            for (const lp of this.localPlayers) {
+              if (lp.state.downed || lp.dodgeMs > 0) continue;
+              const pd = Phaser.Math.Distance.Between(lp.sprite.x, lp.sprite.y, pulse.x, pulse.y);
+              if (Math.abs(pd - pulse.radius) < 6) {
+                pulse.hit = true;
+                this.withLocalPlayer(lp, () => this.damagePlayer(Math.max(1, e.damage - 1)));
+              }
+            }
+          } else if (!this.playerState.downed && this.dodgeMs <= 0) {
+            const pd = Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, pulse.x, pulse.y);
+            if (Math.abs(pd - pulse.radius) < 6) {
+              pulse.hit = true;
+              this.damagePlayer(Math.max(1, e.damage - 1));
+            }
           }
         }
         if (pulse.radius >= pulse.maxRadius) {
@@ -9642,40 +10170,58 @@ export class GameScene extends Phaser.Scene {
   }
 
   private tryEnemyProjectileHitLocal(p: ActiveProjectile): boolean {
-    const distToPlayer = Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, this.playerSprite.x, this.playerSprite.y);
-    if (StatusEffectManager.has(this.playerState.statusEffects, 'starward') && distToPlayer < 15) {
-      p.fromPlayer = true;
-      p.ownerId = this.playerState.id;
-      p.vx *= -1.45;
-      p.vy *= -1.45;
-      p.lifeMs = 1400;
-      p.hitUids.clear();
-      p.sprite.setTint(0x6ef3ff);
-      SoundSystem.playSwing();
-      this.spawnParticles(p.sprite.x, p.sprite.y, 0x6ef3ff, 4);
+    const tryHitActivePlayer = (): 'reflect' | 'hit' | 'miss' => {
+      const distToPlayer = Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, this.playerSprite.x, this.playerSprite.y);
+      if (StatusEffectManager.has(this.playerState.statusEffects, 'starward') && distToPlayer < 15) {
+        p.fromPlayer = true;
+        p.ownerId = this.playerState.id;
+        p.vx *= -1.45;
+        p.vy *= -1.45;
+        p.lifeMs = 1400;
+        p.hitUids.clear();
+        p.sprite.setTint(0x6ef3ff);
+        SoundSystem.playSwing();
+        this.spawnParticles(p.sprite.x, p.sprite.y, 0x6ef3ff, 4);
+        return 'reflect';
+      }
+      if (distToPlayer < 10) {
+        if (p.shooterUid) {
+          const shooter = this.activeEnemies.find((e) => e.uid === p.shooterUid);
+          if (shooter) shooter.blockedShots = 0;
+        }
+        if (p.burns) {
+          StatusEffectManager.addEffect(this.playerState.statusEffects, 'burning', 3000);
+        }
+        if (p.inflictEffect) {
+          StatusEffectManager.addEffect(this.playerState.statusEffects, p.inflictEffect, p.inflictDurationMs ?? 2500);
+        }
+        if (p.slimeSplatter) {
+          this.spawnSlimeSplatter(p.sprite.x, p.sprite.y, true);
+        }
+        if (p.sporeBurst) {
+          this.spawnEnemySporeBurst(p.sprite.x, p.sprite.y, p.damage, p.color);
+        }
+        this.damagePlayer(p.damage);
+        return 'hit';
+      }
+      return 'miss';
+    };
+
+    if (localCoopSession.active && this.localPlayers.length > 0) {
+      for (const lp of this.localPlayers) {
+        if (lp.state.downed) continue;
+        let hitOrReflect: string = 'miss';
+        this.withLocalPlayer(lp, () => {
+          hitOrReflect = tryHitActivePlayer();
+        });
+        if (hitOrReflect === 'reflect') return false;
+        if (hitOrReflect === 'hit') return true;
+      }
       return false;
     }
-    if (distToPlayer < 10) {
-      if (p.shooterUid) {
-        const shooter = this.activeEnemies.find((e) => e.uid === p.shooterUid);
-        if (shooter) shooter.blockedShots = 0;
-      }
-      if (p.burns) {
-        StatusEffectManager.addEffect(this.playerState.statusEffects, 'burning', 3000);
-      }
-      if (p.inflictEffect) {
-        StatusEffectManager.addEffect(this.playerState.statusEffects, p.inflictEffect, p.inflictDurationMs ?? 2500);
-      }
-      if (p.slimeSplatter) {
-        this.spawnSlimeSplatter(p.sprite.x, p.sprite.y, true);
-      }
-      if (p.sporeBurst) {
-        this.spawnEnemySporeBurst(p.sprite.x, p.sprite.y, p.damage, p.color);
-      }
-      this.damagePlayer(p.damage);
-      return true;
-    }
-    return false;
+
+    if (this.playerState.downed) return false;
+    return tryHitActivePlayer() === 'hit';
   }
 
   private updateProjectiles(delta: number): void {
@@ -9691,6 +10237,8 @@ export class GameScene extends Phaser.Scene {
           this.spawnSlimeSplatter(p.sprite.x, p.sprite.y, true);
         } else if (p.bubbled && p.sprite.active) {
           this.spawnParticles(p.sprite.x, p.sprite.y, 0x6ef3ff, 4);
+        } else if (p.healsAlly && !p.fromRemoteEvent && p.sprite.active) {
+          this.spawnPersistentFloorItem('syringe', p.sprite.x, p.sprite.y, 1);
         }
         p.bubbleGfx?.destroy();
         p.sprite.destroy();
@@ -9780,13 +10328,18 @@ export class GameScene extends Phaser.Scene {
         p.hitUids.clear();
       }
       if (p.boomerang && p.returning) {
-        const distToOwner = Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, this.playerSprite.x, this.playerSprite.y);
+        const ownerActor =
+          localCoopSession.active && this.localPlayers.length > 0
+            ? this.localPlayers.find((lp) => lp.state.id === p.ownerId)
+            : undefined;
+        const ownerSprite = ownerActor ? ownerActor.sprite : this.playerSprite;
+        const distToOwner = Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, ownerSprite.x, ownerSprite.y);
         if (distToOwner < 14) {
           p.sprite.destroy();
           this.projectiles.splice(i, 1);
           continue;
         }
-        const retA = Phaser.Math.Angle.Between(p.sprite.x, p.sprite.y, this.playerSprite.x, this.playerSprite.y);
+        const retA = Phaser.Math.Angle.Between(p.sprite.x, p.sprite.y, ownerSprite.x, ownerSprite.y);
         p.vx = Math.cos(retA) * 300;
         p.vy = Math.sin(retA) * 300;
       }
@@ -9932,7 +10485,7 @@ export class GameScene extends Phaser.Scene {
             const dx = p.sprite.x - crate.x;
             const dy = p.sprite.y - crate.y;
             if (Math.abs(dx) < hw && Math.abs(dy) < hh) {
-              if (p.fromPlayer && !p.fromRemoteEvent) {
+              if (p.fromPlayer && !p.fromRemoteEvent && !p.slimeSplatter) {
                 this.smashCrate(crate);
               }
               if (p.bouncesLeft > 0) {
@@ -9989,6 +10542,14 @@ export class GameScene extends Phaser.Scene {
           this.spawnStarShatterShards(sx, sy, p.ownerId);
         } else if (p.sporeBurst) {
           this.spawnEnemySporeBurst(p.sprite.x, p.sprite.y, p.damage, p.color);
+        } else if (p.healsAlly) {
+          const spd = Math.hypot(p.vx, p.vy) || 1;
+          const dropX = p.sprite.x - (p.vx / spd) * 6;
+          const dropY = p.sprite.y - (p.vy / spd) * 6;
+          this.spawnParticles(dropX, dropY, 0x66ffd9, 4);
+          if (!p.fromRemoteEvent) {
+            this.spawnPersistentFloorItem('syringe', dropX, dropY, 1);
+          }
         } else {
           if (p.slimeSplatter) {
             this.spawnSlimeSplatter(p.sprite.x, p.sprite.y, !p.fromPlayer);
@@ -10001,7 +10562,24 @@ export class GameScene extends Phaser.Scene {
       }
 
       if (p.fromPlayer && p.healsAlly) {
-        if (p.ownerId === this.playerState.id) {
+        if (localCoopSession.active && this.localPlayers.length > 0) {
+          let healedAlly = false;
+          for (const lp of this.localPlayers) {
+            if (lp.state.id === p.ownerId || lp.state.downed) continue;
+            if (Phaser.Math.Distance.Between(p.sprite.x, p.sprite.y, lp.sprite.x, lp.sprite.y) < 14) {
+              const heal = p.healAmount ?? 3;
+              lp.state.hp = Math.min(lp.state.maxHp, lp.state.hp + heal);
+              SoundSystem.playHeal();
+              this.spawnParticles(lp.sprite.x, lp.sprite.y, 0x66ffd9, 10);
+              this.ui.showToast(`Healed ${lp.state.name} (+${heal} HP)!`, '#66ffd9');
+              p.sprite.destroy();
+              this.projectiles.splice(i, 1);
+              healedAlly = true;
+              break;
+            }
+          }
+          if (healedAlly) continue;
+        } else if (p.ownerId === this.playerState.id) {
           let healedAlly = false;
           for (const ally of this.remotePlayers.values()) {
             if (ally.downed || ally.gx !== this.currentRoom.gx || ally.gy !== this.currentRoom.gy) continue;
@@ -10255,7 +10833,17 @@ export class GameScene extends Phaser.Scene {
         s.gfx.setAlpha(s.lifeMs / 1000);
       }
       if (s.fromEnemy) {
-        if (
+        if (localCoopSession.active && this.localPlayers.length > 0) {
+          for (const lp of this.localPlayers) {
+            if (
+              lp.sprite.active &&
+              !lp.state.downed &&
+              Phaser.Math.Distance.Between(lp.sprite.x, lp.sprite.y, s.x, s.y) <= s.radius
+            ) {
+              StatusEffectManager.addEffect(lp.state.statusEffects, 'sluggish', 800);
+            }
+          }
+        } else if (
           this.playerSprite.active &&
           !this.playerState.downed &&
           Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, s.x, s.y) <= s.radius
@@ -10274,27 +10862,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateCometTrail(delta: number): void {
-    if (this.cometTrailActiveMs > 0 && this.dodgeMs > 0 && this.playerSprite.active) {
-      this.cometTrailActiveMs -= delta;
-      this.cometTrailAccumMs += delta;
-      while (this.cometTrailAccumMs >= 20) {
-        this.cometTrailAccumMs -= 20;
-        const cx = this.playerSprite.x + Phaser.Math.FloatBetween(-2, 2);
-        const cy = this.playerSprite.y + Phaser.Math.FloatBetween(-2, 2);
-        const g = this.add.graphics().setDepth(3);
-        g.fillStyle(0xffd275, 0.35);
-        g.fillCircle(cx, cy, 2.8);
-        g.fillStyle(0xffe066, 0.9);
-        g.fillCircle(cx, cy, 1.6);
-        g.fillStyle(0xffffff, 0.95);
-        g.fillCircle(cx + Phaser.Math.FloatBetween(-1, 1), cy + Phaser.Math.FloatBetween(-1, 1), 0.8);
-        this.roomGroup.add(g);
-        this.cometTrailNodes.push({ x: cx, y: cy, gfx: g, lifeMs: 1100, hitUids: new Set() });
-      }
-    } else if (this.dodgeMs <= 0) {
-      this.cometTrailActiveMs = 0;
-    }
-
     for (let i = this.cometTrailNodes.length - 1; i >= 0; i--) {
       const node = this.cometTrailNodes[i];
       node.lifeMs -= delta;
@@ -10342,7 +10909,25 @@ export class GameScene extends Phaser.Scene {
       }
       h.glow.setAlpha(0.24 + Math.sin(now * 0.004 + h.phase) * 0.08);
       h.tickMs = Math.max(0, h.tickMs - delta);
-      if (Phaser.Math.Distance.Between(px, py, h.x, h.y) < h.radius) {
+      const shouldDmg = h.tickMs <= 0;
+      let anyHit = false;
+      if (localCoopSession.active && this.localPlayers.length > 0) {
+        for (const lp of this.localPlayers) {
+          if (lp.state.downed) continue;
+          if (Phaser.Math.Distance.Between(lp.sprite.x, lp.sprite.y, h.x, h.y) < h.radius) {
+            const existingBurn = lp.state.statusEffects.find((e) => e.id === 'burning');
+            if (existingBurn) {
+              existingBurn.remainingMs = 3000;
+            } else {
+              StatusEffectManager.addEffect(lp.state.statusEffects, 'burning', 3000);
+            }
+            if (shouldDmg) {
+              anyHit = true;
+              this.withLocalPlayer(lp, () => this.damagePlayer(1));
+            }
+          }
+        }
+      } else if (!this.playerState.downed && Phaser.Math.Distance.Between(px, py, h.x, h.y) < h.radius) {
         // Reset burning to 3 seconds every time player touches lava/hazard
         const existingBurn = this.playerState.statusEffects.find((e) => e.id === 'burning');
         if (existingBurn) {
@@ -10350,15 +10935,51 @@ export class GameScene extends Phaser.Scene {
         } else {
           StatusEffectManager.addEffect(this.playerState.statusEffects, 'burning', 3000);
         }
-        if (h.tickMs <= 0) {
-          h.tickMs = 900;
+        if (shouldDmg) {
+          anyHit = true;
           this.damagePlayer(1);
         }
+      }
+      if (anyHit) {
+        h.tickMs = 900;
       }
     }
 
     for (const s of this.spikeTraps) {
-      const onGrate = !this.playerState.downed && this.dodgeMs <= 0 && Phaser.Math.Distance.Between(px, py, s.x, s.y) < 10;
+      const onGrateLocal =
+        localCoopSession.active && this.localPlayers.length > 0
+          ? this.localPlayers.filter(
+              (lp) =>
+                !lp.state.downed &&
+                lp.dodgeMs <= 0 &&
+                Phaser.Math.Distance.Between(lp.sprite.x, lp.sprite.y, s.x, s.y) < 10
+            )
+          : [];
+      const onGrateSingle =
+        !localCoopSession.active &&
+        !this.playerState.downed &&
+        this.dodgeMs <= 0 &&
+        Phaser.Math.Distance.Between(px, py, s.x, s.y) < 10;
+      const onGrate = onGrateLocal.length > 0 || onGrateSingle;
+
+      const stabPlayersOnGrate = (pinDuration: number) => {
+        if (localCoopSession.active && this.localPlayers.length > 0) {
+          for (const lp of onGrateLocal) {
+            this.withLocalPlayer(lp, () => {
+              this.spikePinnedMs = Math.max(this.spikePinnedMs, pinDuration);
+              this.dodgeMs = 0;
+              this.damagePlayer(1);
+            });
+          }
+        } else if (onGrateSingle) {
+          this.spikePinnedMs = Math.max(this.spikePinnedMs, pinDuration);
+          this.dodgeMs = 0;
+          this.damagePlayer(1);
+        }
+        if (!this.usedCheatsInRun) steamSystem.recordSpikeStab();
+        this.ui.showToast('Stabbed by spikes!', '#ff5d8f');
+      };
+
       if (s.state === 'idle') {
         if (onGrate) {
           s.state = 'armed';
@@ -10379,11 +11000,7 @@ export class GameScene extends Phaser.Scene {
           s.sprite.setTexture('obj_spike_active');
           if (onGrate) {
             s.hitThisCycle = true;
-            this.spikePinnedMs = 1000;
-            this.dodgeMs = 0;
-            this.damagePlayer(1);
-            if (!this.usedCheatsInRun) steamSystem.recordSpikeStab();
-            this.ui.showToast('Stabbed by spikes!', '#ff5d8f');
+            stabPlayersOnGrate(1000);
           }
         }
       } else {
@@ -10393,11 +11010,7 @@ export class GameScene extends Phaser.Scene {
         }
         if (onGrate && !s.hitThisCycle) {
           s.hitThisCycle = true;
-          this.spikePinnedMs = Math.max(this.spikePinnedMs, s.activeMs);
-          this.dodgeMs = 0;
-          this.damagePlayer(1);
-          if (!this.usedCheatsInRun) steamSystem.recordSpikeStab();
-          this.ui.showToast('Stabbed by spikes!', '#ff5d8f');
+          stabPlayersOnGrate(s.activeMs);
         }
         if (s.activeMs <= 0) {
           s.state = 'idle';
@@ -10408,15 +11021,38 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    const attract = hasArtifact(this.playerState.inventory, 'moth_crown') !== -1;
+    const attractors =
+      localCoopSession.active && this.localPlayers.length > 0
+        ? this.localPlayers.filter((lp) => !lp.state.downed && hasArtifact(lp.state.inventory, 'moth_crown') !== -1)
+        : [];
+    const attractSingle = !localCoopSession.active && hasArtifact(this.playerState.inventory, 'moth_crown') !== -1;
 
     for (const l of this.lootObjs) {
       if (l.collected) continue;
-      const d = Phaser.Math.Distance.Between(px, py, l.sprite.x, l.sprite.y);
-      if (attract && (l.kind === 'shard' || l.kind === 'heart') && d < 80) {
-        const a = Phaser.Math.Angle.Between(l.sprite.x, l.sprite.y, px, py);
-        l.sprite.x += Math.cos(a) * 1.8;
-        l.sprite.y += Math.sin(a) * 1.8;
+      if (l.kind === 'shard' || l.kind === 'heart') {
+        if (localCoopSession.active) {
+          let bestAttractor: LocalPlayerActor | null = null;
+          let bestDist = 80;
+          for (const lp of attractors) {
+            const dist = Phaser.Math.Distance.Between(lp.sprite.x, lp.sprite.y, l.sprite.x, l.sprite.y);
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestAttractor = lp;
+            }
+          }
+          if (bestAttractor) {
+            const a = Phaser.Math.Angle.Between(l.sprite.x, l.sprite.y, bestAttractor.sprite.x, bestAttractor.sprite.y);
+            l.sprite.x += Math.cos(a) * 1.8;
+            l.sprite.y += Math.sin(a) * 1.8;
+          }
+        } else if (attractSingle) {
+          const d = Phaser.Math.Distance.Between(px, py, l.sprite.x, l.sprite.y);
+          if (d < 80) {
+            const a = Phaser.Math.Angle.Between(l.sprite.x, l.sprite.y, px, py);
+            l.sprite.x += Math.cos(a) * 1.8;
+            l.sprite.y += Math.sin(a) * 1.8;
+          }
+        }
       }
 
       const collector = localCoopSession.active ? this.getNearestAliveLocalPlayer(l.sprite.x, l.sprite.y) : null;
@@ -10484,8 +11120,16 @@ export class GameScene extends Phaser.Scene {
     const plates = this.currentRoom.puzzlePlates;
     if (!plates) return;
 
+    const actors =
+      localCoopSession.active && this.localPlayers.length > 0
+        ? this.localPlayers.filter((lp) => !lp.state.downed).map((lp) => lp.sprite)
+        : !this.playerState.downed
+          ? [this.playerSprite]
+          : [];
+    if (actors.length === 0) return;
+
     for (const sp of this.specialObjs.plates) {
-      if (Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, sp.x, sp.y) < 12) {
+      if (actors.some((actor) => Phaser.Math.Distance.Between(actor.x, actor.y, sp.x, sp.y) < 12)) {
         const model = plates.find((p) => p.id === sp.id);
         if (!model || model.activated) continue;
 
@@ -10505,6 +11149,7 @@ export class GameScene extends Phaser.Scene {
           SoundSystem.playHit();
           this.ui.showToast(`Wrong order! Step 1 -> ... -> ${plates.length}`, '#ff5d8f');
         }
+        break;
       }
     }
   }
@@ -10618,79 +11263,107 @@ export class GameScene extends Phaser.Scene {
       this.currentRoom.puzzleKind !== 'block_push' ||
       this.currentRoom.puzzleSolved ||
       this.blockPushCooldownMs > 0 ||
-      this.playerState.downed
+      this.ui.isOverlayOpen()
     ) {
       return;
     }
     const bp = this.currentRoom.puzzleBlock;
     if (!bp) return;
 
-    let moveX = 0;
-    let moveY = 0;
-    if (this.keys.a.isDown || this.keys.left.isDown) moveX -= 1;
-    if (this.keys.d.isDown || this.keys.right.isDown) moveX += 1;
-    if (this.keys.w.isDown || this.keys.up.isDown) moveY -= 1;
-    if (this.keys.s.isDown || this.keys.down.isDown) moveY += 1;
-    if (isMobileMode()) {
-      if (Math.abs(mobileInput.moveX) > 0.25) moveX = Math.sign(mobileInput.moveX);
-      if (Math.abs(mobileInput.moveY) > 0.25) moveY = Math.sign(mobileInput.moveY);
-    }
-    if (moveX === 0 && moveY === 0) return;
-
-    const px = this.playerSprite.x;
-    const py = this.playerSprite.y;
-
-    for (const bVis of this.specialObjs.blocks) {
-      const model = bp.blocks.find((b) => b.id === bVis.id);
-      if (!model) continue;
-      const bx = bVis.sprite.x;
-      const by = bVis.sprite.y;
-      const dx = bx - px;
-      const dy = by - py;
-      if (Math.hypot(dx, dy) > 19) continue;
-
-      let stepX = 0;
-      let stepY = 0;
-      if (Math.abs(dx) >= Math.abs(dy)) {
-        stepX = dx > 0 ? 1 : -1;
-        if (moveX !== stepX) continue;
-      } else {
-        stepY = dy > 0 ? 1 : -1;
-        if (moveY !== stepY) continue;
+    const pushers: Array<{ x: number; y: number; moveX: number; moveY: number }> = [];
+    if (localCoopSession.active && this.localPlayers.length > 0) {
+      for (const lp of this.localPlayers) {
+        if (lp.state.downed) continue;
+        let mx = 0;
+        let my = 0;
+        if (lp.inputType === 'keyboard') {
+          if (this.keys.a.isDown || this.keys.left.isDown) mx -= 1;
+          if (this.keys.d.isDown || this.keys.right.isDown) mx += 1;
+          if (this.keys.w.isDown || this.keys.up.isDown) my -= 1;
+          if (this.keys.s.isDown || this.keys.down.isDown) my += 1;
+        } else {
+          const pm = inputSystem.getPadMoveVector(lp.padIndex);
+          if (Math.abs(pm.x) > 0.25) mx = Math.sign(pm.x);
+          if (Math.abs(pm.y) > 0.25) my = Math.sign(pm.y);
+        }
+        if (mx !== 0 || my !== 0) {
+          pushers.push({ x: lp.sprite.x, y: lp.sprite.y, moveX: mx, moveY: my });
+        }
       }
+    } else if (!this.playerState.downed) {
+      let mx = 0;
+      let my = 0;
+      if (this.keys.a.isDown || this.keys.left.isDown) mx -= 1;
+      if (this.keys.d.isDown || this.keys.right.isDown) mx += 1;
+      if (this.keys.w.isDown || this.keys.up.isDown) my -= 1;
+      if (this.keys.s.isDown || this.keys.down.isDown) my += 1;
+      const padMove = inputSystem.getMoveVector();
+      if (Math.abs(padMove.x) > 0.25) mx = Math.sign(padMove.x);
+      if (Math.abs(padMove.y) > 0.25) my = Math.sign(padMove.y);
+      if (isMobileMode()) {
+        if (Math.abs(mobileInput.moveX) > 0.25) mx = Math.sign(mobileInput.moveX);
+        if (Math.abs(mobileInput.moveY) > 0.25) my = Math.sign(mobileInput.moveY);
+      }
+      if (mx !== 0 || my !== 0) {
+        pushers.push({ x: this.playerSprite.x, y: this.playerSprite.y, moveX: mx, moveY: my });
+      }
+    }
+    if (pushers.length === 0) return;
 
-      const ntx = model.tx + stepX;
-      const nty = model.ty + stepY;
-      if (ntx < 1 || ntx > 9 || nty < 1 || nty > 9) continue;
-      if (ntx === bp.resetTx && nty === bp.resetTy) continue;
-      if (this.currentRoom.puzzleObstacles?.some((o) => o.tx === ntx && o.ty === nty)) continue;
-      if (bp.blocks.some((other) => other.id !== model.id && other.tx === ntx && other.ty === nty)) continue;
+    for (const pusher of pushers) {
+      const { x: px, y: py, moveX, moveY } = pusher;
+      for (const bVis of this.specialObjs.blocks) {
+        const model = bp.blocks.find((b) => b.id === bVis.id);
+        if (!model) continue;
+        const bx = bVis.sprite.x;
+        const by = bVis.sprite.y;
+        const dx = bx - px;
+        const dy = by - py;
+        if (Math.hypot(dx, dy) > 19) continue;
 
-      model.tx = ntx;
-      model.ty = nty;
-      this.blockPushCooldownMs = 210;
-      const targetBlockY = nty * 16 + 8;
-      bVis.sprite.setDepth(6 + (targetBlockY + 4) / 1000);
-      this.tweens.add({
-        targets: bVis.sprite,
-        x: ntx * 16 + 8,
-        y: targetBlockY,
-        duration: 110,
-        ease: 'Quad.easeOut',
-      });
-      SoundSystem.playSwing();
-      net.broadcastInteract({
-        peerId: this.playerState.id,
-        gx: this.currentRoom.gx,
-        gy: this.currentRoom.gy,
-        kind: 'block',
-        targetId: model.id,
-        x: ntx,
-        y: nty,
-      });
-      this.refreshBlockGoalVisuals();
-      this.checkBlockPuzzleSolved();
-      break;
+        let stepX = 0;
+        let stepY = 0;
+        if (Math.abs(dx) >= Math.abs(dy)) {
+          stepX = dx > 0 ? 1 : -1;
+          if (moveX !== stepX) continue;
+        } else {
+          stepY = dy > 0 ? 1 : -1;
+          if (moveY !== stepY) continue;
+        }
+
+        const ntx = model.tx + stepX;
+        const nty = model.ty + stepY;
+        if (ntx < 1 || ntx > 9 || nty < 1 || nty > 9) continue;
+        if (ntx === bp.resetTx && nty === bp.resetTy) continue;
+        if (this.currentRoom.puzzleObstacles?.some((o) => o.tx === ntx && o.ty === nty)) continue;
+        if (bp.blocks.some((other) => other.id !== model.id && other.tx === ntx && other.ty === nty)) continue;
+
+        model.tx = ntx;
+        model.ty = nty;
+        this.blockPushCooldownMs = 210;
+        const targetBlockY = nty * 16 + 8;
+        bVis.sprite.setDepth(6 + (targetBlockY + 4) / 1000);
+        this.tweens.add({
+          targets: bVis.sprite,
+          x: ntx * 16 + 8,
+          y: targetBlockY,
+          duration: 110,
+          ease: 'Quad.easeOut',
+        });
+        SoundSystem.playSwing();
+        net.broadcastInteract({
+          peerId: this.playerState.id,
+          gx: this.currentRoom.gx,
+          gy: this.currentRoom.gy,
+          kind: 'block',
+          targetId: model.id,
+          x: ntx,
+          y: nty,
+        });
+        this.refreshBlockGoalVisuals();
+        this.checkBlockPuzzleSolved();
+        return;
+      }
     }
   }
 
@@ -10963,7 +11636,23 @@ export class GameScene extends Phaser.Scene {
       if (this.testHealingPad.cooldownMs > 0) {
         this.testHealingPad.cooldownMs -= delta;
       }
-      if (
+      if (localCoopSession.active && this.localPlayers.length > 0) {
+        for (const lp of this.localPlayers) {
+          if (
+            !lp.state.downed &&
+            Phaser.Math.Distance.Between(lp.sprite.x, lp.sprite.y, this.testHealingPad.x, this.testHealingPad.y) <= 14 &&
+            lp.state.hp < lp.state.maxHp
+          ) {
+            lp.state.hp = lp.state.maxHp;
+            if (this.testHealingPad.cooldownMs <= 0) {
+              this.testHealingPad.cooldownMs = 800;
+              SoundSystem.playHeal();
+              this.spawnParticles(lp.sprite.x, lp.sprite.y, 0x66ffd9, 10);
+              this.ui.showToast('Fully healed!', '#66ffd9');
+            }
+          }
+        }
+      } else if (
         !this.playerState.downed &&
         Phaser.Math.Distance.Between(this.playerSprite.x, this.playerSprite.y, this.testHealingPad.x, this.testHealingPad.y) <= 14 &&
         this.playerState.hp < this.playerState.maxHp
@@ -10978,10 +11667,16 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    if (this.playerState.downed) return;
+    const anyAliveLocal = localCoopSession.active
+      ? this.localPlayers.some((lp) => !lp.state.downed)
+      : !this.playerState.downed;
+    if (!anyAliveLocal) return;
     if (!this.isRoomAuthority()) return;
 
-    if (this.playerSprite.x < 20 * 16) {
+    const allOutsideDungeon = localCoopSession.active
+      ? this.localPlayers.every((lp) => lp.state.downed || lp.sprite.x < 20 * 16)
+      : this.playerSprite.x < 20 * 16;
+    if (allOutsideDungeon) {
       this.testSpawnCooldownMs = 0;
       this.testWaveCount = 4;
       if (this.activeEnemies.length > 0) {
@@ -10990,7 +11685,10 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (this.playerSprite.x < 21 * 16) {
+    const anyInDungeon = localCoopSession.active
+      ? this.localPlayers.some((lp) => !lp.state.downed && lp.sprite.x >= 21 * 16)
+      : this.playerSprite.x >= 21 * 16;
+    if (!anyInDungeon) {
       return;
     }
 
@@ -11051,6 +11749,7 @@ export class GameScene extends Phaser.Scene {
               levelIndex: 0,
               floorSeed: getDailySeed(0),
               carryPlayer: this.playerState,
+              carryLocalPlayers: localCoopSession.active ? this.localPlayers.map((lp) => lp.state) : undefined,
               carrySkeletons: this.getCarriedSkeletons(),
               exitedTestRoom: true,
             });
@@ -11406,11 +12105,8 @@ export class GameScene extends Phaser.Scene {
               Phaser.Math.Linear(vis.sprite.y, predY, playerLerp)
             );
           }
-          if (!st.downed) {
-            vis.sprite.setDepth(6 + (vis.sprite.y + 6) / 1000);
-          }
           vis.sprite.setFlipX(st.flipX);
-          vis.sprite.setDepth(st.downed ? 7 : 10);
+          vis.sprite.setDepth(st.downed ? 3 : 6 + (vis.sprite.y + 6) / 1000);
           const pFrame = st.downed
             ? 5
             : st.dodging
@@ -11593,75 +12289,94 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private pushUIUpdate(): void {
-    const px = this.playerSprite.x;
-    const py = this.playerSprite.y;
-    let promptText = '';
-
+  private getPromptForActor(px: number, py: number, inventory: PlayerStateSnapshot['inventory']): string {
     if (this.specialObjs.merchant && Phaser.Math.Distance.Between(px, py, this.specialObjs.merchant.x, this.specialObjs.merchant.y) < 34) {
-      promptText = `[${getControlActionText('interact')}] Talk to Mimi`;
-    } else if (this.specialObjs.shrine && !this.currentRoom.healingUsed && Phaser.Math.Distance.Between(px, py, this.specialObjs.shrine.x, this.specialObjs.shrine.y) < 32) {
-      promptText = `[${getControlActionText('interact')}] Drink from Healing Shrine`;
-    } else if (this.specialObjs.altar && !this.currentRoom.eventUsed && Phaser.Math.Distance.Between(px, py, 88, 84) < 32) {
-      promptText = '[E] Inspect Altar';
-    } else if (
+      return `[${getControlActionText('interact')}] Talk to Mimi`;
+    }
+    if (this.specialObjs.shrine && !this.currentRoom.healingUsed && Phaser.Math.Distance.Between(px, py, this.specialObjs.shrine.x, this.specialObjs.shrine.y) < 32) {
+      return `[${getControlActionText('interact')}] Drink from Healing Shrine`;
+    }
+    if (this.specialObjs.altar && !this.currentRoom.eventUsed && Phaser.Math.Distance.Between(px, py, 88, 84) < 32) {
+      return '[E] Inspect Altar';
+    }
+    if (
       this.specialObjs.portal &&
       Phaser.Math.Distance.Between(px, py, this.specialObjs.portal.x, this.specialObjs.portal.y) < 32
     ) {
-      promptText = '[E] Enter Portal';
-    } else if (
+      return '[E] Enter Portal';
+    }
+    if (
       this.currentRoom.pillars &&
       this.pillarObjs.some(
         (po) => !this.currentRoom.pillars![po.idx]?.used && Phaser.Math.Distance.Between(px, py, po.x, po.y) < 32
       )
     ) {
-      promptText =
-        net.mode === 'solo' ? '[E] Pillar Blessing (+2 Hearts)' : '[E] Pillar Revive';
-    } else if (
+      return net.mode === 'solo' && !localCoopSession.active ? '[E] Pillar Blessing (+2 Hearts)' : '[E] Pillar Revive';
+    }
+    if (
       (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
       !this.currentRoom.puzzleSolved &&
       this.specialObjs.resetRune &&
       Phaser.Math.Distance.Between(px, py, this.specialObjs.resetRune.x, this.specialObjs.resetRune.y) < 26
     ) {
-      promptText = '[E] Reset Blocks';
-    } else if (
+      return '[E] Reset Blocks';
+    }
+    if (
       (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
       !this.currentRoom.puzzleSolved &&
       this.specialObjs.mirrors.some((m) => Phaser.Math.Distance.Between(px, py, m.x, m.y) < 24)
     ) {
-      promptText = '[E] Rotate Mirror';
-    } else if (
+      return '[E] Rotate Mirror';
+    }
+    if (
       (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
       !this.currentRoom.puzzleSolved &&
       this.specialObjs.lights.some((l) => Phaser.Math.Distance.Between(px, py, l.x, l.y) < 16)
     ) {
-      promptText = '[E] Toggle Rune';
-    } else if (
+      return '[E] Toggle Rune';
+    }
+    if (
       (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
       !this.currentRoom.puzzleSolved &&
       this.specialObjs.simonCenter &&
       Phaser.Math.Distance.Between(px, py, this.specialObjs.simonCenter.x, this.specialObjs.simonCenter.y) < 20
     ) {
-      promptText = '[E] Play Sequence';
-    } else if (
+      return '[E] Play Sequence';
+    }
+    if (
       (this.currentRoom.type === 'puzzle' || this.currentRoom.type === 'secret') &&
       !this.currentRoom.puzzleSolved &&
       this.specialObjs.simonRunes.some((r) => Phaser.Math.Distance.Between(px, py, r.x, r.y) < 20)
     ) {
-      promptText = '[E] Activate Rune';
-    } else if (
-      hasArtifact(this.playerState.inventory, 'wandering_eye') !== -1 &&
+      return '[E] Activate Rune';
+    }
+    if (
+      hasArtifact(inventory, 'wandering_eye') !== -1 &&
       this.isNearClosedSecretWall(px, py)
     ) {
-      promptText = '[E] Open Secret Wall (Eye)';
-    } else {
-      for (const l of this.lootObjs) {
-        if (!l.collected && (l.kind === 'chest' || l.kind === 'item') && Phaser.Math.Distance.Between(px, py, l.sprite.x, l.sprite.y) < 26) {
-          promptText = l.kind === 'chest' ? '[E] Open Chest' : `[E] Pick up ${l.itemId?.replace(/_/g, ' ')}`;
-          break;
-        }
+      return '[E] Open Secret Wall (Eye)';
+    }
+    for (const l of this.lootObjs) {
+      if (!l.collected && (l.kind === 'chest' || l.kind === 'item') && Phaser.Math.Distance.Between(px, py, l.sprite.x, l.sprite.y) < 26) {
+        return l.kind === 'chest' ? '[E] Open Chest' : `[E] Pick up ${l.itemId?.replace(/_/g, ' ')}`;
       }
     }
+    return '';
+  }
+
+  private pushUIUpdate(): void {
+    const isLocalCoop = localCoopSession.active && this.localPlayers.length > 0;
+    const promptText = isLocalCoop
+      ? ''
+      : this.playerState.downed
+        ? ''
+        : this.getPromptForActor(this.playerSprite.x, this.playerSprite.y, this.playerState.inventory);
+    const localPrompts = isLocalCoop
+      ? this.localPlayers.map((lp) =>
+          lp.state.downed ? '' : this.getPromptForActor(lp.sprite.x, lp.sprite.y, lp.state.inventory)
+        )
+      : undefined;
+    const localInputTypes = isLocalCoop ? this.localPlayers.map((lp) => lp.inputType) : undefined;
 
     const bossEntity = this.activeEnemies.find((e) => e.isBoss);
     let bossInfo = null;
@@ -11686,6 +12401,8 @@ export class GameScene extends Phaser.Scene {
       currentRoom: this.currentRoom,
       bossInfo,
       promptText,
+      localPrompts,
+      localInputTypes,
       runElapsedMs: Math.max(0, Date.now() - this.runStartMs),
       spectating: spectateTarget
         ? { targetName: spectateTarget.name, count: this.getSpectateTargets().length }

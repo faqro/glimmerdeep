@@ -6,7 +6,7 @@ import { applyRarityTextStyle, ARTIFACTS, CONSUMABLES, STATUS_EFFECTS } from '..
 import { WEAPONS } from '../data/weapons';
 import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { VirtualKeyboard } from '../mobile/VirtualKeyboard';
-import { getControlIconTexture } from '../systems/ControlHints';
+import { getControlIconTexture, getGamepadButtonTexture } from '../systems/ControlHints';
 import { GameAction, inputSystem, localCoopSession } from '../systems/InputSystem';
 import { net } from '../systems/MultiplayerSystem';
 import { filterProfanity, settingsSystem } from '../systems/SettingsSystem';
@@ -23,6 +23,8 @@ export interface UIStatePayload {
   currentRoom: RoomData;
   bossInfo: { name: string; hp: number; maxHp: number; accent: number } | null;
   promptText: string;
+  localPrompts?: string[];
+  localInputTypes?: Array<'keyboard' | 'gamepad'>;
   runElapsedMs?: number;
   spectating?: { targetName: string; count: number } | null;
 }
@@ -59,6 +61,9 @@ export class UIScene extends Phaser.Scene {
     nameTxt: Phaser.GameObjects.BitmapText;
     shardTxt: Phaser.GameObjects.BitmapText;
     itemTxt: Phaser.GameObjects.BitmapText;
+    promptBg: Phaser.GameObjects.Rectangle;
+    promptIcon: Phaser.GameObjects.Image;
+    promptTxt: Phaser.GameObjects.BitmapText;
     slotBgs: Phaser.GameObjects.Image[];
     slotIcons: Phaser.GameObjects.Image[];
     slotBars: Phaser.GameObjects.Graphics[];
@@ -109,6 +114,7 @@ export class UIScene extends Phaser.Scene {
   private shopCloseTxt?: Phaser.GameObjects.BitmapText;
   private shopFocusRing?: Phaser.GameObjects.Rectangle;
   private overlayOpenedFrame = -1;
+  private shopClosedFrame = -1;
   private shopFocusIndex = 0; // 0..2 = cards, 3 = CLOSE
   private unsubNav?: () => void;
   private unsubBtn?: () => void;
@@ -133,6 +139,17 @@ export class UIScene extends Phaser.Scene {
   }
 
   create(): void {
+    const syncUiCamera = () => {
+      const uiScale = this.scale.width / 360;
+      this.cameras.main.setZoom(uiScale);
+      this.cameras.main.centerOn(180, 135);
+    };
+    syncUiCamera();
+    this.scale.on('resize', syncUiCamera);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.off('resize', syncUiCamera);
+    });
+
     // Left margin: Bigger 3-slot Inventory stacked vertically + item name & description
     this.slotBgs = [];
     this.slotIcons = [];
@@ -704,11 +721,25 @@ export class UIScene extends Phaser.Scene {
     this.onPauseChangeCallback = cb;
   }
 
-  toggleMap(): void {
-    const next = !this.mapOverlay.visible;
+  toggleMap(force?: boolean): void {
+    const next = force !== undefined ? force : !this.mapOverlay.visible;
     this.mapOverlay.setVisible(next);
-    if (next && this.lastPayload) {
-      this.renderFullMap(this.lastPayload);
+    if (next) {
+      this.overlayOpenedFrame = this.game.loop.frame;
+      if (this.lastPayload) {
+        this.renderFullMap(this.lastPayload);
+      }
+    } else {
+      this.shopClosedFrame = this.game.loop.frame;
+      if (isMobileMode()) {
+        mobileInput.clearQueuedActions();
+      }
+    }
+  }
+
+  closeMap(): void {
+    if (this.mapOverlay.visible) {
+      this.toggleMap(false);
     }
   }
 
@@ -731,7 +762,11 @@ export class UIScene extends Phaser.Scene {
   }
 
   isOverlayOpen(): boolean {
-    return this.pauseOverlay.visible || this.shopOverlay.visible;
+    return this.pauseOverlay.visible || this.shopOverlay.visible || this.mapOverlay.visible;
+  }
+
+  wasShopClosedRecently(): boolean {
+    return this.game.loop.frame <= this.shopClosedFrame + 1;
   }
 
   openShop(stock: ShopStockItem[], shards: number, onBuy: (idx: number) => void): void {
@@ -792,6 +827,7 @@ export class UIScene extends Phaser.Scene {
 
   closeShop(): void {
     this.shopOverlay.setVisible(false);
+    this.shopClosedFrame = this.game.loop.frame;
     if (isMobileMode()) {
       mobileInput.clearQueuedActions();
     }
@@ -844,7 +880,18 @@ export class UIScene extends Phaser.Scene {
       return;
     }
 
+    if (this.mapOverlay.visible) {
+      if (btn === 'esc') {
+        this.closeMap();
+      }
+      return;
+    }
+
     if (this.shopOverlay.visible) {
+      if (btn === 'esc') {
+        this.closeShop();
+        return;
+      }
       if (btn === 'e' || btn === 'space') {
         if (this.shopFocusIndex === 3) {
           this.closeShop();
@@ -909,9 +956,17 @@ export class UIScene extends Phaser.Scene {
     }
   }
 
+  private getToastY(isLocalCoop: boolean, hasBoss: boolean): number {
+    if (isLocalCoop) {
+      return hasBoss ? 82 : 60;
+    }
+    return hasBoss ? 31 : 12;
+  }
+
   showToast(message: string, color = '#66ffd9'): void {
     const tint = parseInt(color.replace('#', ''), 16) || 0x66ffd9;
-    this.toastTxt.setY(this.bossContainer?.visible ? 31 : 12);
+    const isLocalCoop = !!(this.lastPayload?.localPlayers && this.lastPayload.localPlayers.length > 0);
+    this.toastTxt.setY(this.getToastY(isLocalCoop, Boolean(this.bossContainer?.visible)));
     this.toastTxt.setText(message).setTint(tint).setVisible(true);
     this.toastTimer?.remove(false);
     this.toastTimer = this.time.delayedCall(2600, () => {
@@ -952,7 +1007,7 @@ export class UIScene extends Phaser.Scene {
         slotBars.push(sbar);
       }
 
-      const itemTxt = addPixelText(this, 4, 31, '', 8, 0xb8a1ff, 0, 0, 96);
+      const itemTxt = addPixelText(this, 4, 31, '', 6, 0xb8a1ff, 0, 0, 94);
 
       const hearts: Phaser.GameObjects.Image[] = [];
       for (let h = 0; h < 8; h++) {
@@ -972,6 +1027,11 @@ export class UIScene extends Phaser.Scene {
         stams.push(sti);
       }
 
+      const promptY = pIdx < 2 ? 62 : -6;
+      const promptBg = this.add.rectangle(51, promptY, 96, 9, 0x100d24, 0.88).setStrokeStyle(1, 0x5d4e9e).setVisible(false);
+      const promptIcon = this.add.image(12, promptY, 'key_e').setScale(0.5).setVisible(false);
+      const promptTxt = addPixelText(this, 20, promptY, '', 4, 0xffffff, 0, 0.5, 86).setVisible(false);
+
       container.add([
         bg,
         nameTxt,
@@ -984,12 +1044,18 @@ export class UIScene extends Phaser.Scene {
         ...hearts,
         ...shields,
         ...stams,
+        promptBg,
+        promptIcon,
+        promptTxt,
       ]);
       this.localCornerHUDs.push({
         container,
         nameTxt,
         shardTxt,
         itemTxt,
+        promptBg,
+        promptIcon,
+        promptTxt,
         slotBgs,
         slotIcons,
         slotBars,
@@ -1011,7 +1077,7 @@ export class UIScene extends Phaser.Scene {
     }
 
     if (isLocalCoop && payload.localPlayers) {
-      this.updateLocalCornerHUDs(payload.localPlayers);
+      this.updateLocalCornerHUDs(payload.localPlayers, payload.localPrompts, payload.localInputTypes);
     } else {
       for (const ch of this.localCornerHUDs) {
         ch.container.setVisible(false);
@@ -1029,7 +1095,7 @@ export class UIScene extends Phaser.Scene {
       this.spectateBar.setVisible(false);
     }
 
-    if (payload.promptText && !payload.spectating) {
+    if (!isLocalCoop && payload.promptText && !payload.spectating) {
       let label = payload.promptText;
       let action: GameAction | null = null;
       if (label.startsWith('[E] ')) {
@@ -1069,7 +1135,7 @@ export class UIScene extends Phaser.Scene {
 
     if (payload.bossInfo && payload.bossInfo.hp > 0) {
       this.bossContainer.setVisible(true);
-      this.toastTxt.setY(31);
+      this.toastTxt.setY(this.getToastY(isLocalCoop, true));
       this.bossNameTxt.setText(payload.bossInfo.name.toUpperCase());
       this.bossBarGfx.clear();
       const pct = Math.max(0, payload.bossInfo.hp / payload.bossInfo.maxHp);
@@ -1079,18 +1145,18 @@ export class UIScene extends Phaser.Scene {
       this.bossBarGfx.fillRect(-83, 6, Math.floor(166 * pct), 3);
     } else {
       this.bossContainer.setVisible(false);
-      this.toastTxt.setY(12);
+      this.toastTxt.setY(this.getToastY(isLocalCoop, false));
     }
 
     const hasBoss = !!(payload.bossInfo && payload.bossInfo.hp > 0);
     if (isLocalCoop) {
       const mapCenterY = hasBoss ? 48 : 26;
       this.minimapPanel.setPosition(180, mapCenterY).setDisplaySize(44, 44);
-      this.roomCoordTxt.setPosition(208, mapCenterY);
+      this.roomCoordTxt.setFontSize(6).setPosition(180, mapCenterY + 24);
       this.renderMinimap(payload.rooms, payload.currentRoom, 162, mapCenterY - 18);
     } else {
       this.minimapPanel.setPosition(323, 32).setDisplaySize(50, 50);
-      this.roomCoordTxt.setPosition(323, 61);
+      this.roomCoordTxt.setFontSize(8).setPosition(323, 61);
       this.renderMinimap(payload.rooms, payload.currentRoom, 305, 14);
     }
     const col = String.fromCharCode(65 + payload.currentRoom.gx);
@@ -1254,7 +1320,11 @@ export class UIScene extends Phaser.Scene {
     this.selectedDescLabel.setY(this.selectedLabel.y + this.selectedLabel.height + 3);
   }
 
-  private updateLocalCornerHUDs(players: PlayerStateSnapshot[]): void {
+  private updateLocalCornerHUDs(
+    players: PlayerStateSnapshot[],
+    localPrompts?: string[],
+    localInputTypes?: Array<'keyboard' | 'gamepad'>
+  ): void {
     const tagColors = [0x66ffd9, 0xffe066, 0xf49ac1, 0x6ef3ff];
     for (let idx = 0; idx < 4; idx++) {
       const ch = this.localCornerHUDs[idx];
@@ -1270,7 +1340,40 @@ export class UIScene extends Phaser.Scene {
       ch.shardTxt.setText(`${lp.shards}`);
 
       const activeItem = lp.inventory[lp.activeSlot];
-      ch.itemTxt.setText(activeItem ? activeItem.name : 'Empty');
+      const rawItemName = activeItem ? activeItem.name : 'Empty';
+      const displayItemName = rawItemName.length > 20 ? `${rawItemName.slice(0, 19)}.` : rawItemName;
+      ch.itemTxt.setText(displayItemName);
+
+      const rawPrompt = !lp.downed ? localPrompts?.[idx] ?? '' : '';
+      if (rawPrompt) {
+        let label = rawPrompt;
+        const bracketEnd = label.indexOf('] ');
+        if (label.startsWith('[') && bracketEnd !== -1) {
+          label = label.slice(bracketEnd + 2);
+        }
+        if (label.length > 24) {
+          label = `${label.slice(0, 23)}.`;
+        }
+        const inputType = localInputTypes?.[idx] ?? 'gamepad';
+        const iconKey =
+          inputType === 'keyboard'
+            ? 'key_e'
+            : getGamepadButtonTexture(inputSystem.getButtonForAction('interact'));
+        ch.promptIcon.setTexture(iconKey).setVisible(true);
+        ch.promptTxt.setText(label).setVisible(true);
+        const iconW = ch.promptIcon.displayWidth;
+        const gap = 2;
+        const totalW = iconW + gap + ch.promptTxt.width;
+        const leftX = Math.round(51 - totalW / 2);
+        const py = idx < 2 ? 62 : -6;
+        ch.promptIcon.setPosition(Math.round(leftX + iconW / 2), py);
+        ch.promptTxt.setPosition(Math.round(leftX + iconW + gap), py);
+        ch.promptBg.setSize(Math.max(28, totalW + 6), 9).setVisible(true);
+      } else {
+        ch.promptBg.setVisible(false);
+        ch.promptIcon.setVisible(false);
+        ch.promptTxt.setVisible(false);
+      }
 
       for (let s = 0; s < 3; s++) {
         ch.slotBgs[s].setTexture(lp.activeSlot === s ? 'ui_slot_active' : 'ui_slot');
