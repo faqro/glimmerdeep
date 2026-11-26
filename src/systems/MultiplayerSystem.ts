@@ -280,6 +280,7 @@ export class MultiplayerSystem {
     this.signalingBackend = backend;
     try {
       localStorage.setItem(SIGNALING_STORAGE_KEY, backend);
+      steamSystem.scheduleCloudSync();
     } catch {
       // ignore storage access errors
     }

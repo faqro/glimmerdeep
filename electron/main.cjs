@@ -431,6 +431,38 @@ ipcMain.handle('steam:setStat', (_event, statName, value) => {
   }
 });
 
+function isSteamCloudReady() {
+  if (!steamClient || !steamClient.cloud) return false;
+  try {
+    return Boolean(steamClient.cloud.isEnabledForAccount() && steamClient.cloud.isEnabledForApp());
+  } catch {
+    return false;
+  }
+}
+
+ipcMain.handle('steam:cloudIsAvailable', () => isSteamCloudReady());
+
+ipcMain.handle('steam:cloudReadFile', (_event, name) => {
+  if (!isSteamCloudReady() || typeof name !== 'string' || !name) return null;
+  try {
+    if (!steamClient.cloud.fileExists(name)) return null;
+    return steamClient.cloud.readFile(name);
+  } catch {
+    return null;
+  }
+});
+
+ipcMain.handle('steam:cloudWriteFile', (_event, name, content) => {
+  if (!isSteamCloudReady() || typeof name !== 'string' || !name || typeof content !== 'string') {
+    return false;
+  }
+  try {
+    return Boolean(steamClient.cloud.writeFile(name, content));
+  } catch {
+    return false;
+  }
+});
+
 app.whenReady().then(() => {
   initSteamworks();
   createWindow();

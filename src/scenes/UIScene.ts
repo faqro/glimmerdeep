@@ -23,6 +23,7 @@ export interface UIStatePayload {
   currentRoom: RoomData;
   bossInfo: { name: string; hp: number; maxHp: number; accent: number } | null;
   promptText: string;
+  runElapsedMs?: number;
   spectating?: { targetName: string; count: number } | null;
 }
 
@@ -34,6 +35,7 @@ export class UIScene extends Phaser.Scene {
   private shardText!: Phaser.GameObjects.BitmapText;
   private statusContainer!: Phaser.GameObjects.Container;
   private statusBadges: Phaser.GameObjects.Rectangle[] = [];
+  private speedrunTxt!: Phaser.GameObjects.BitmapText;
   private allyContainer!: Phaser.GameObjects.Container;
   private allyLabels: Phaser.GameObjects.BitmapText[] = [];
 
@@ -89,11 +91,14 @@ export class UIScene extends Phaser.Scene {
   private lastPayload: UIStatePayload | null = null;
   private onBuyCallback?: (idx: number) => void;
   private onQuitCallback?: () => void;
+  private onSkipTutorialCallback?: () => void;
   private onPauseChangeCallback?: (paused: boolean) => void;
   private onSpectatePrev?: () => void;
   private onSpectateNext?: () => void;
 
   private pauseButtons: Array<{ bg: Phaser.GameObjects.Image; txt: Phaser.GameObjects.BitmapText; action: () => void }> = [];
+  private basePauseButtons: Array<{ bg: Phaser.GameObjects.Image; txt: Phaser.GameObjects.BitmapText; action: () => void }> = [];
+  private skipTutorialPauseBtn?: { bg: Phaser.GameObjects.Image; txt: Phaser.GameObjects.BitmapText; action: () => void };
   private pausePanel!: Phaser.GameObjects.Rectangle;
   private pauseTitleTxt!: Phaser.GameObjects.BitmapText;
   private pausePlayersPanel!: Phaser.GameObjects.Container;
@@ -214,6 +219,8 @@ export class UIScene extends Phaser.Scene {
       this.allyContainer.add(txt);
       this.allyLabels.push(txt);
     }
+
+    this.speedrunTxt = addPixelText(this, 292, 132, '00:00.000', 8, 0xffe066, 0, 0).setVisible(false);
 
     this.singlePlayerNodes = isMobileMode()
       ? [this.allyContainer]
@@ -521,11 +528,12 @@ export class UIScene extends Phaser.Scene {
   private buildPauseOverlay(): void {
     this.pauseOverlay = this.add.container(0, 0).setVisible(false).setDepth(70);
     this.pauseButtons = [];
+    this.basePauseButtons = [];
     const dim = this.add.rectangle(180, 135, 360, 270, 0x0b0917, 0.75);
     this.pausePanel = this.add.rectangle(180, 135, 180, 138, 0x181430, 0.96).setStrokeStyle(2, 0x5d4e9e);
     this.pauseTitleTxt = addPixelText(this, 180, 80, 'PAUSED', 8, 0xf49ac1, 0.5, 0.5);
 
-    const mkBtn = (y: number, label: string, cb: () => void) => {
+    const mkBtn = (y: number, label: string, cb: () => void, includeInBase = true) => {
       const b = this.add.image(180, y, 'ui_btn').setDisplaySize(128, 20);
       const t = addPixelText(this, 180, y, label, 8, 0xffffff, 0.5, 0.5);
       if (!isMobileMode()) {
@@ -534,11 +542,15 @@ export class UIScene extends Phaser.Scene {
         b.on('pointerout', () => b.setTexture('ui_btn'));
         b.on('pointerdown', cb);
       }
-      this.pauseButtons.push({ bg: b, txt: t, action: cb });
-      return [b, t] as const;
+      const entry = { bg: b, txt: t, action: cb };
+      if (includeInBase) {
+        this.basePauseButtons.push(entry);
+        this.pauseButtons.push(entry);
+      }
+      return entry;
     };
 
-    const resumeEls = mkBtn(108, 'RESUME', () => this.togglePause(false));
+    const resumeEntry = mkBtn(108, 'RESUME', () => this.togglePause(false));
 
     const muteBtn = this.add.image(180, 132, 'ui_btn').setDisplaySize(128, 20);
     const muteTxt = addPixelText(this, 180, 132, SoundSystem.muted ? 'AUDIO: OFF' : 'AUDIO: ON', 8, 0xffffff, 0.5, 0.5);
@@ -549,14 +561,29 @@ export class UIScene extends Phaser.Scene {
     if (!isMobileMode()) {
       muteBtn.setInteractive({ useHandCursor: true }).on('pointerdown', toggleMute);
     }
-    this.pauseButtons.push({ bg: muteBtn, txt: muteTxt, action: toggleMute });
+    const muteEntry = { bg: muteBtn, txt: muteTxt, action: toggleMute };
+    this.basePauseButtons.push(muteEntry);
+    this.pauseButtons.push(muteEntry);
 
-    const fsEls = mkBtn(156, 'FULLSCREEN', () => {
+    const fsEntry = mkBtn(156, 'FULLSCREEN', () => {
       if (this.scale.isFullscreen) this.scale.stopFullscreen();
       else this.scale.startFullscreen();
     });
 
-    const quitEls = mkBtn(180, 'QUIT TO MENU', () => {
+    const skipEntry = mkBtn(
+      166,
+      'SKIP TUTORIAL',
+      () => {
+        this.togglePause(false);
+        this.onSkipTutorialCallback?.();
+      },
+      false
+    );
+    skipEntry.bg.setVisible(false);
+    skipEntry.txt.setVisible(false);
+    this.skipTutorialPauseBtn = skipEntry;
+
+    const quitEntry = mkBtn(180, 'QUIT TO MENU', () => {
       this.togglePause(false);
       this.onQuitCallback?.();
     });
@@ -571,24 +598,56 @@ export class UIScene extends Phaser.Scene {
       dim,
       this.pausePanel,
       this.pauseTitleTxt,
-      ...resumeEls,
+      resumeEntry.bg,
+      resumeEntry.txt,
       muteBtn,
       muteTxt,
-      ...fsEls,
-      ...quitEls,
+      fsEntry.bg,
+      fsEntry.txt,
+      skipEntry.bg,
+      skipEntry.txt,
+      quitEntry.bg,
+      quitEntry.txt,
       this.pausePlayersPanel,
     ]);
+    this.refreshPausePlayersList();
   }
 
   private refreshPausePlayersList(): void {
+    if (!this.pausePanel?.active || !this.pausePlayersPanel?.active) return;
     const isOnline = net.mode !== 'solo' && !localCoopSession.active;
+    const hasSkip = Boolean(this.onSkipTutorialCallback);
     this.pausePlayersPanel.setVisible(isOnline);
     const menuX = isOnline ? 102 : 180;
-    this.pausePanel.setPosition(menuX, 135).setSize(isOnline ? 156 : 180, 138);
-    this.pauseTitleTxt.setX(menuX);
-    for (const b of this.pauseButtons) {
-      b.bg.setX(menuX).setDisplaySize(isOnline ? 120 : 128, 20);
-      b.txt.setX(menuX);
+    this.pausePanel.setPosition(menuX, 135).setSize(isOnline ? 156 : 180, hasSkip ? 162 : 138);
+    this.pauseTitleTxt.setPosition(menuX, hasSkip ? 68 : 80);
+
+    if (hasSkip && this.skipTutorialPauseBtn) {
+      this.skipTutorialPauseBtn.bg.setVisible(true);
+      this.skipTutorialPauseBtn.txt.setVisible(true);
+      this.pauseButtons = [
+        this.basePauseButtons[0],
+        this.basePauseButtons[1],
+        this.basePauseButtons[2],
+        this.skipTutorialPauseBtn,
+        this.basePauseButtons[3],
+      ];
+      const ys = [94, 118, 142, 166, 190];
+      this.pauseButtons.forEach((b, i) => {
+        b.bg.setPosition(menuX, ys[i]).setDisplaySize(isOnline ? 120 : 128, 20);
+        b.txt.setPosition(menuX, ys[i]);
+      });
+    } else {
+      if (this.skipTutorialPauseBtn) {
+        this.skipTutorialPauseBtn.bg.setVisible(false);
+        this.skipTutorialPauseBtn.txt.setVisible(false);
+      }
+      this.pauseButtons = [...this.basePauseButtons];
+      const ys = [108, 132, 156, 180];
+      this.pauseButtons.forEach((b, i) => {
+        b.bg.setPosition(menuX, ys[i]).setDisplaySize(isOnline ? 120 : 128, 20);
+        b.txt.setPosition(menuX, ys[i]);
+      });
     }
 
     if (!isOnline) return;
@@ -632,6 +691,13 @@ export class UIScene extends Phaser.Scene {
 
   setQuitHandler(cb: () => void): void {
     this.onQuitCallback = cb;
+  }
+
+  setSkipTutorialHandler(cb?: () => void): void {
+    this.onSkipTutorialCallback = cb;
+    if (this.pausePanel?.active && this.pausePlayersPanel?.active) {
+      this.refreshPausePlayersList();
+    }
   }
 
   setPauseChangeHandler(cb: (paused: boolean) => void): void {
@@ -1030,6 +1096,26 @@ export class UIScene extends Phaser.Scene {
     const col = String.fromCharCode(65 + payload.currentRoom.gx);
     const row = payload.currentRoom.gy + 1;
     this.roomCoordTxt.setText(`${col}${row}`);
+
+    const showSpeedrun =
+      settingsSystem.current.speedrunCounter &&
+      typeof payload.runElapsedMs === 'number' &&
+      !isLocalCoop;
+    if (showSpeedrun) {
+      const totalMs = Math.max(0, Math.floor(payload.runElapsedMs!));
+      const mins = Math.floor(totalMs / 60000);
+      const secs = Math.floor((totalMs % 60000) / 1000);
+      const ms = totalMs % 1000;
+      const formatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+      const allyCount = Math.min(3, payload.allies.length);
+      this.speedrunTxt
+        .setPosition(292, 132 + (allyCount > 0 ? allyCount * 11 + 2 : 0))
+        .setText(formatted)
+        .setVisible(true);
+    } else {
+      this.speedrunTxt.setVisible(false);
+    }
+
     if (this.mapOverlay.visible) {
       this.renderFullMap(payload);
     }
@@ -1253,10 +1339,15 @@ export class UIScene extends Phaser.Scene {
   }
 
   private renderFullMap(payload: UIStatePayload): void {
-    const biome = BIOMES[Math.min(payload.levelIndex, BIOMES.length - 1)];
-    const mod = LEVEL_MODIFIERS.find((m) => m.id === payload.modifierId) ?? LEVEL_MODIFIERS[0];
-    this.mapTitleTxt.setText(`FLOOR ${biome.level}: ${biome.name.toUpperCase()}`);
-    this.mapModTxt.setText(`${mod.name} - ${mod.description}`);
+    if (payload.currentRoom.isTutorialRoom) {
+      this.mapTitleTxt.setText('TUTORIAL GROUNDS');
+      this.mapModTxt.setText('Learn the ropes of Glimmerdeep!');
+    } else {
+      const biome = BIOMES[Math.min(payload.levelIndex, BIOMES.length - 1)];
+      const mod = LEVEL_MODIFIERS.find((m) => m.id === payload.modifierId) ?? LEVEL_MODIFIERS[0];
+      this.mapTitleTxt.setText(`FLOOR ${biome.level}: ${biome.name.toUpperCase()}`);
+      this.mapModTxt.setText(`${mod.name} - ${mod.description}`);
+    }
 
     this.mapGfx.clear();
     const ox = 120;

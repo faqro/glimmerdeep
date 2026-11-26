@@ -1,4 +1,5 @@
 import { isMobileMode, mobileInput, NavDir, VirtualButton } from '../mobile/MobileInput';
+import { steamSystem } from './SteamSystem';
 
 export type ControlType = 'keyboard' | 'gamepad' | 'touch';
 export type GamepadBrand = 'xbox' | 'playstation';
@@ -244,11 +245,16 @@ class InputSystem {
     }
   }
 
+  public reloadFromStorage(): void {
+    this.loadLayout();
+  }
+
   public setLayoutByIndex(idx: number): void {
     const len = GAMEPAD_LAYOUTS.length;
     this._layoutIndex = ((idx % len) + len) % len;
     try {
       localStorage.setItem(LAYOUT_STORAGE_KEY, this.layout.id);
+      steamSystem.scheduleCloudSync();
     } catch {
       // ignore storage errors
     }

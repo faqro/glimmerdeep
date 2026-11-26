@@ -1,6 +1,10 @@
+import { steamSystem } from './SteamSystem';
+
 const SETTINGS_STORAGE_KEY = 'glimmerdeep_settings_v1';
+const TUTORIAL_COMPLETED_KEY = 'glimmerdeep_tutorial_completed_v1';
 
 export type ParticleQuality = 'full' | 'reduced';
+export type CrtScanlinesMode = 'off' | 'medium' | 'high';
 
 export interface GameSettings {
   muted: boolean;
@@ -8,9 +12,10 @@ export interface GameSettings {
   sfxVolume: number;   // 0..100
   screenShake: boolean;
   particles: ParticleQuality;
-  crtScanlines: boolean;
+  crtScanlines: CrtScanlinesMode;
   showControlHints: boolean;
   filterMessages: boolean;
+  speedrunCounter: boolean;
 }
 
 const DEFAULT_SETTINGS: GameSettings = {
@@ -19,9 +24,10 @@ const DEFAULT_SETTINGS: GameSettings = {
   sfxVolume: 100,
   screenShake: true,
   particles: 'full',
-  crtScanlines: false,
+  crtScanlines: 'off',
   showControlHints: true,
   filterMessages: true,
+  speedrunCounter: false,
 };
 
 const PROFANITY_B64 =
@@ -72,12 +78,23 @@ class SettingsManager {
       if (parsed.particles === 'full' || parsed.particles === 'reduced') {
         this.data.particles = parsed.particles;
       }
-      if (typeof parsed.crtScanlines === 'boolean') this.data.crtScanlines = parsed.crtScanlines;
+      if (typeof parsed.crtScanlines === 'boolean') {
+        this.data.crtScanlines = parsed.crtScanlines ? 'medium' : 'off';
+      } else if (
+        parsed.crtScanlines === 'off' ||
+        parsed.crtScanlines === 'medium' ||
+        parsed.crtScanlines === 'high'
+      ) {
+        this.data.crtScanlines = parsed.crtScanlines;
+      }
       if (typeof parsed.showControlHints === 'boolean') {
         this.data.showControlHints = parsed.showControlHints;
       }
       if (typeof parsed.filterMessages === 'boolean') {
         this.data.filterMessages = parsed.filterMessages;
+      }
+      if (typeof parsed.speedrunCounter === 'boolean') {
+        this.data.speedrunCounter = parsed.speedrunCounter;
       }
     } catch {
       // ignore storage errors
@@ -87,9 +104,19 @@ class SettingsManager {
   private save(): void {
     try {
       localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(this.data));
+      steamSystem.scheduleCloudSync();
     } catch {
       // ignore storage errors
     }
+    this.applyCrtScanlines();
+    for (const cb of this.listeners) {
+      cb(this.data);
+    }
+  }
+
+  public reloadFromStorage(): void {
+    this.data = { ...DEFAULT_SETTINGS };
+    this.load();
     this.applyCrtScanlines();
     for (const cb of this.listeners) {
       cb(this.data);
@@ -112,24 +139,69 @@ class SettingsManager {
     };
   }
 
+  public hasCompletedTutorial(): boolean {
+    try {
+      return localStorage.getItem(TUTORIAL_COMPLETED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  public markTutorialCompleted(): void {
+    try {
+      localStorage.setItem(TUTORIAL_COMPLETED_KEY, '1');
+      steamSystem.scheduleCloudSync();
+    } catch {
+      // ignore storage errors
+    }
+  }
+
   private applyCrtScanlines(): void {
     if (typeof document === 'undefined') return;
     const id = 'glimmerdeep-crt-overlay';
     let el = document.getElementById(id);
-    if (this.data.crtScanlines) {
-      if (!el) {
-        el = document.createElement('div');
-        el.id = id;
-        el.style.position = 'fixed';
-        el.style.inset = '0';
-        el.style.pointerEvents = 'none';
-        el.style.zIndex = '9999';
-        el.style.background =
-          'repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px, rgba(8,6,18,0.28) 2px, rgba(8,6,18,0.28) 4px)';
-        document.body.appendChild(el);
+    const container = document.getElementById('game-container');
+    const mode = this.data.crtScanlines;
+
+    if (mode === 'off') {
+      if (el) el.remove();
+      if (container) {
+        container.style.borderRadius = '';
+        container.style.overflow = '';
       }
-    } else if (el) {
-      el.remove();
+      return;
+    }
+
+    if (!el) {
+      el = document.createElement('div');
+      el.id = id;
+      el.style.position = 'fixed';
+      el.style.inset = '0';
+      el.style.pointerEvents = 'none';
+      el.style.zIndex = '9999';
+      document.body.appendChild(el);
+    }
+
+    if (mode === 'high') {
+      el.style.background = [
+        'radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.06) 0%, rgba(0,0,0,0) 54%, rgba(6,4,14,0.45) 84%, rgba(3,2,8,0.85) 100%)',
+        'repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 3px, rgba(8,6,18,0.52) 3px, rgba(8,6,18,0.52) 6px)',
+      ].join(', ');
+      el.style.borderRadius = '22px';
+      el.style.boxShadow = 'inset 0 0 38px rgba(0,0,0,0.72), inset 0 0 8px rgba(180,160,255,0.12)';
+      if (container) {
+        container.style.borderRadius = '18px';
+        container.style.overflow = 'hidden';
+      }
+    } else {
+      el.style.background =
+        'repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px, rgba(8,6,18,0.28) 2px, rgba(8,6,18,0.28) 4px)';
+      el.style.borderRadius = '';
+      el.style.boxShadow = '';
+      if (container) {
+        container.style.borderRadius = '';
+        container.style.overflow = '';
+      }
     }
   }
 }

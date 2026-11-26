@@ -4,6 +4,7 @@ import { SoundSystem } from '../audio/SoundSystem';
 import { ALL_PETS, getSavedPetId, PET_STORAGE_KEY } from '../data/pets';
 import { isMobileMode, NavDir } from '../mobile/MobileInput';
 import { inputSystem } from '../systems/InputSystem';
+import { steamSystem } from '../systems/SteamSystem';
 
 const PETS_PER_PAGE = 12; // 4 cols x 3 rows
 
@@ -182,6 +183,7 @@ export class PetScene extends Phaser.Scene {
     this.selectedId = id;
     try {
       localStorage.setItem(PET_STORAGE_KEY, id);
+      steamSystem.scheduleCloudSync();
     } catch {
       // ignore storage errors
     }

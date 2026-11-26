@@ -27,6 +27,9 @@ interface GlimmerdeepDesktopBridge {
   openLeaderboardOverlay: () => Promise<boolean>;
   setStat: (name: string, value: number) => Promise<boolean>;
   incrementStat: (name: string, amount?: number) => Promise<boolean>;
+  cloudIsAvailable: () => Promise<boolean>;
+  cloudReadFile: (name: string) => Promise<string | null>;
+  cloudWriteFile: (name: string, content: string) => Promise<boolean>;
   createLobby: (roomId: string, signaling?: string) => Promise<string | null>;
   joinLobbyById: (lobbyId: string) => Promise<boolean>;
   getSteamId: () => Promise<string | null>;

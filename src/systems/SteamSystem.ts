@@ -23,6 +23,23 @@ const DEATH_COUNT_KEY = 'glimmerdeep_total_deaths';
 const SPIKE_STAB_COUNT_KEY = 'glimmerdeep_spike_stabs';
 
 const ADMIN_UNLOCK_STORAGE_KEY = 'glimmerdeep_admin_unlock';
+const CLOUD_SAVE_FILE = 'glimmerdeep_save_v1.json';
+const CLOUD_UPDATED_AT_KEY = 'glimmerdeep_cloud_updated_at_v1';
+const CLOUD_SYNC_KEYS = [
+  'glimmerdeep_settings_v1',
+  'glimmerdeep_tutorial_completed_v1',
+  'glimmerdeep_journal_v1',
+  'glimmerdeep_selected_avatar',
+  'glimmerdeep_selected_pet',
+  'glimmerdeep_gamepad_layout',
+  'glimmerdeep_signaling_v1',
+  'glimmerdeep_total_deaths',
+  'glimmerdeep_spike_stabs',
+  'glimmerdeep_nyar_history_v1',
+  'glimmerdeep_username',
+  'glimmerdeep_player_uid_v1',
+  'glimmerdeep_admin_unlock',
+] as const;
 
 export function hasAdminMasterUnlock(): boolean {
   try {
@@ -36,6 +53,7 @@ export function grantAdminMasterUnlock(): void {
   try {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(ADMIN_UNLOCK_STORAGE_KEY, 'true');
+      steamSystem.scheduleCloudSync();
     }
   } catch {
     // ignore storage errors
@@ -61,6 +79,8 @@ class SteamSystem {
   private _playerName: string | null = null;
   private _steamId: string | null = null;
   private _currentLobbyId: string | null = null;
+  private _cloudSyncTimer: number | null = null;
+  private _cloudBeforeUnloadBound = false;
 
   public getCachedPlayerName(): string | null {
     return this._playerName;
@@ -187,6 +207,7 @@ class SteamSystem {
     }
     if (isSteamworksBuild()) {
       void window.glimmerdeepDesktop?.incrementStat('total_deaths', 1);
+      this.scheduleCloudSync();
     }
     if (total >= 100) {
       void this.unlockAchievement('ACH_PERSISTENT');
@@ -203,6 +224,7 @@ class SteamSystem {
     }
     if (isSteamworksBuild()) {
       void window.glimmerdeepDesktop?.incrementStat('spike_stabs', 1);
+      this.scheduleCloudSync();
     }
     if (total >= 50) {
       void this.unlockAchievement('ACH_PINCUSHION');
@@ -308,6 +330,129 @@ class SteamSystem {
     } catch {
       // ignore IPC errors
     }
+  }
+
+  public async syncFromCloud(onReload?: () => void): Promise<void> {
+    if (!isSteamworksBuild() || typeof localStorage === 'undefined') return;
+    if (!this._cloudBeforeUnloadBound && typeof window !== 'undefined') {
+      this._cloudBeforeUnloadBound = true;
+      window.addEventListener('beforeunload', () => {
+        void this.flushCloudSync();
+      });
+    }
+    try {
+      const available = await window.glimmerdeepDesktop?.cloudIsAvailable();
+      if (!available) return;
+      const raw = await window.glimmerdeepDesktop?.cloudReadFile(CLOUD_SAVE_FILE);
+      if (raw) {
+        const parsed = JSON.parse(raw) as {
+          version?: number;
+          updatedAt?: number;
+          data?: Record<string, string>;
+        };
+        const cloudData = parsed?.data;
+        if (cloudData && typeof cloudData === 'object') {
+          const cloudUpdatedAt = typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0;
+          const localUpdatedAt = Number(localStorage.getItem(CLOUD_UPDATED_AT_KEY)) || 0;
+
+          for (const key of CLOUD_SYNC_KEYS) {
+            const cloudVal = cloudData[key];
+            if (typeof cloudVal !== 'string') continue;
+            const localVal = localStorage.getItem(key);
+
+            if (key === 'glimmerdeep_journal_v1') {
+              try {
+                const cObj = JSON.parse(cloudVal) as { enemies?: string[]; bosses?: string[]; items?: string[] };
+                const lObj = localVal
+                  ? (JSON.parse(localVal) as { enemies?: string[]; bosses?: string[]; items?: string[] })
+                  : {};
+                const merged = {
+                  enemies: Array.from(new Set([...(lObj.enemies ?? []), ...(cObj.enemies ?? [])])),
+                  bosses: Array.from(new Set([...(lObj.bosses ?? []), ...(cObj.bosses ?? [])])),
+                  items: Array.from(new Set([...(lObj.items ?? []), ...(cObj.items ?? [])])),
+                };
+                localStorage.setItem(key, JSON.stringify(merged));
+              } catch {
+                if (!localVal) localStorage.setItem(key, cloudVal);
+              }
+            } else if (key === 'glimmerdeep_total_deaths' || key === 'glimmerdeep_spike_stabs') {
+              const mergedNum = Math.max(Number(localVal) || 0, Number(cloudVal) || 0);
+              if (mergedNum > 0) localStorage.setItem(key, String(mergedNum));
+            } else if (key === 'glimmerdeep_tutorial_completed_v1') {
+              if (localVal === '1' || cloudVal === '1') localStorage.setItem(key, '1');
+            } else if (key === 'glimmerdeep_admin_unlock') {
+              if (localVal === 'true' || cloudVal === 'true') localStorage.setItem(key, 'true');
+            } else if (key === 'glimmerdeep_nyar_history_v1') {
+              try {
+                const cArr = JSON.parse(cloudVal);
+                const lArr = localVal ? JSON.parse(localVal) : [];
+                if (Array.isArray(cArr) && Array.isArray(lArr)) {
+                  localStorage.setItem(key, JSON.stringify(Array.from(new Set([...lArr, ...cArr]))));
+                } else if (!localVal) {
+                  localStorage.setItem(key, cloudVal);
+                }
+              } catch {
+                if (!localVal) localStorage.setItem(key, cloudVal);
+              }
+            } else if (localVal === null || cloudUpdatedAt >= localUpdatedAt) {
+              localStorage.setItem(key, cloudVal);
+            }
+          }
+
+          if (cloudUpdatedAt > localUpdatedAt) {
+            localStorage.setItem(CLOUD_UPDATED_AT_KEY, String(cloudUpdatedAt));
+          }
+        }
+      }
+      onReload?.();
+      await this.syncToCloud();
+    } catch {
+      // ignore cloud sync errors
+    }
+  }
+
+  public async syncToCloud(): Promise<boolean> {
+    if (!isSteamworksBuild() || typeof localStorage === 'undefined') return false;
+    try {
+      const available = await window.glimmerdeepDesktop?.cloudIsAvailable();
+      if (!available) return false;
+      const data: Record<string, string> = {};
+      for (const key of CLOUD_SYNC_KEYS) {
+        const val = localStorage.getItem(key);
+        if (val !== null) {
+          data[key] = val;
+        }
+      }
+      const now = Date.now();
+      localStorage.setItem(CLOUD_UPDATED_AT_KEY, String(now));
+      const payload = JSON.stringify({
+        version: 1,
+        updatedAt: now,
+        data,
+      });
+      return Boolean(await window.glimmerdeepDesktop?.cloudWriteFile(CLOUD_SAVE_FILE, payload));
+    } catch {
+      return false;
+    }
+  }
+
+  public scheduleCloudSync(): void {
+    if (!isSteamworksBuild() || typeof window === 'undefined') return;
+    if (this._cloudSyncTimer !== null) {
+      window.clearTimeout(this._cloudSyncTimer);
+    }
+    this._cloudSyncTimer = window.setTimeout(() => {
+      this._cloudSyncTimer = null;
+      void this.syncToCloud();
+    }, 250);
+  }
+
+  public async flushCloudSync(): Promise<void> {
+    if (this._cloudSyncTimer !== null && typeof window !== 'undefined') {
+      window.clearTimeout(this._cloudSyncTimer);
+      this._cloudSyncTimer = null;
+    }
+    await this.syncToCloud();
   }
 }
 

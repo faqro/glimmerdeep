@@ -41,9 +41,15 @@ class JournalManager {
     }
   }
 
+  public reloadFromStorage(): void {
+    this.data = { enemies: [], bosses: [], items: [] };
+    this.load();
+  }
+
   private save(): void {
     try {
       localStorage.setItem(JOURNAL_STORAGE_KEY, JSON.stringify(this.data));
+      steamSystem.scheduleCloudSync();
     } catch {
       // ignore storage errors
     }

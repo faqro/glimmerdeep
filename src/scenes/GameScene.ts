@@ -280,11 +280,14 @@ export class GameScene extends Phaser.Scene {
     spawnY?: number;
     isBossGate?: boolean;
     isTestExit?: boolean;
+    isTutorialExit?: boolean;
   }> = [];
   private roomGroup!: Phaser.GameObjects.Group;
   private roomWidthPx = 176;
   private roomHeightPx = 176;
   private isTestRoom = false;
+  private isTutorial = false;
+  private tutorialReturnToMenu = false;
   private testSpawnCooldownMs = 0;
   private testWaveCount = 4;
   private testCrateRespawnTimers = new Map<string, number>();
@@ -418,6 +421,7 @@ export class GameScene extends Phaser.Scene {
   private totalShardsCollected = 0;
   private totalEnemiesDefeated = 0;
   private runStartMs = 0;
+  private usedCheatsInRun = false;
   private runFlags: RunAchievementFlags = {
     boughtAnything: false,
     revivedAnyone: false,
@@ -466,8 +470,11 @@ export class GameScene extends Phaser.Scene {
     carrySkeletons?: CarriedSkeletonState[];
     carryRunStartMs?: number;
     carryRunFlags?: RunAchievementFlags;
+    carryUsedCheats?: boolean;
     restoreReconnect?: boolean;
     exitedTestRoom?: boolean;
+    isTutorial?: boolean;
+    tutorialReturnToMenu?: boolean;
   }): void {
     this.levelIndex = data.levelIndex ?? 0;
     this.floorSeed = data.floorSeed ?? getDailySeed(this.levelIndex);
@@ -476,8 +483,10 @@ export class GameScene extends Phaser.Scene {
       data.resetRun || !data.carryRunFlags
         ? { boughtAnything: false, revivedAnyone: false, hurtAnyEnemy: false, healedAtAll: false }
         : { ...data.carryRunFlags };
-    if (this.levelIndex >= 2) void steamSystem.unlockAchievement('ACH_FLOOR_3');
-    if (this.levelIndex >= 5) void steamSystem.unlockAchievement('ACH_FLOOR_6');
+    if (!data.isTutorial) {
+      if (this.levelIndex >= 2) void steamSystem.unlockAchievement('ACH_FLOOR_3');
+      if (this.levelIndex >= 5) void steamSystem.unlockAchievement('ACH_FLOOR_6');
+    }
     this.transitioningLevel = false;
     this.paused = false;
     this.testSpawnCooldownMs = 0;
@@ -576,9 +585,20 @@ export class GameScene extends Phaser.Scene {
       this.playerState.name === 'TESTER' &&
       (data.resetRun || !data.carryPlayer) &&
       !data.exitedTestRoom;
+    const cheatNames = new Set(['ADMIN', 'ADMIN2', 'TESTER', 'ADMIN12345']);
+    this.usedCheatsInRun =
+      (!data.resetRun && Boolean(data.carryUsedCheats)) ||
+      cheatNames.has(this.playerState.name) ||
+      cheatNames.has(net.localName) ||
+      this.isTestRoom ||
+      Boolean(data.exitedTestRoom);
+    this.isTutorial = Boolean(data.isTutorial) && !this.isTestRoom;
+    this.tutorialReturnToMenu = Boolean(data.tutorialReturnToMenu);
     this.floor = this.isTestRoom
       ? DungeonGenerator.generateTestFloor(this.floorSeed)
-      : DungeonGenerator.generateFloor(this.levelIndex, this.floorSeed, playerCount);
+      : this.isTutorial
+        ? DungeonGenerator.generateTutorialFloor(this.floorSeed)
+        : DungeonGenerator.generateFloor(this.levelIndex, this.floorSeed, playerCount);
     this.initFloorWeather();
     const spawnGx = data.restoreReconnect ? this.playerState.gx : 0;
     const spawnGy = data.restoreReconnect ? this.playerState.gy : this.levelIndex === 6 ? 1 : 2;
@@ -767,6 +787,7 @@ export class GameScene extends Phaser.Scene {
       this.scene.stop('UIScene');
       this.scene.start('MenuScene');
     });
+    this.ui.setSkipTutorialHandler(this.isTutorial ? () => this.skipTutorial() : undefined);
     this.ui.setPauseChangeHandler((paused) => {
       this.paused = paused;
     });
@@ -808,10 +829,14 @@ export class GameScene extends Phaser.Scene {
 
     const biome = BIOMES[Math.min(this.levelIndex, BIOMES.length - 1)];
     this.time.delayedCall(120, () => {
-      this.ui.showToast(
-        data.restoreReconnect ? 'Reconnected to run!' : `Floor ${biome.level}: ${biome.name}`,
-        data.restoreReconnect ? '#66ffd9' : '#f49ac1'
-      );
+      if (this.isTutorial) {
+        this.ui.showToast('Tutorial: Learn the ropes of Glimmerdeep!', '#66ffd9');
+      } else {
+        this.ui.showToast(
+          data.restoreReconnect ? 'Reconnected to run!' : `Floor ${biome.level}: ${biome.name}`,
+          data.restoreReconnect ? '#66ffd9' : '#f49ac1'
+        );
+      }
     });
   }
 
@@ -1902,8 +1927,8 @@ export class GameScene extends Phaser.Scene {
         !room.isTestRoom &&
         ((ty === 0 && tx === 5 && (room.connections.north || (room.connections.secretNorth && room.secretRevealed))) ||
           (ty === hTiles - 1 && tx === 5 && (room.connections.south || (room.connections.secretSouth && room.secretRevealed))) ||
-          (tx === 0 && ty === 5 && (room.connections.west || (room.connections.secretWest && room.secretRevealed))) ||
-          (tx === wTiles - 1 && ty === 5 && (room.connections.east || (room.connections.secretEast && room.secretRevealed))));
+          (tx === 0 && ty === 5 && (room.connections.west || (room.connections.secretWest && room.secretRevealed) || !!room.tutorialSkipDoor)) ||
+          (tx === wTiles - 1 && ty === 5 && (room.connections.east || (room.connections.secretEast && room.secretRevealed) || !!room.tutorialExitDoor)));
       const isTestExitTile = !!room.isTestRoom && tx === 0 && ty === 16;
       return isHallwayDoorOpen || isStandardDoorTile || isTestExitTile;
     };
@@ -1922,7 +1947,7 @@ export class GameScene extends Phaser.Scene {
         solidWallTiles.add(`20,${ty}`);
       }
     }
-    if (!room.isTestRoom && room.type !== 'start' && room.type !== 'boss' && (room.type !== 'merchant' || room.enemies.length > 0) && room.type !== 'healing' && room.type !== 'puzzle') {
+    if (!room.isTestRoom && !room.isTutorialRoom && room.type !== 'start' && room.type !== 'boss' && (room.type !== 'merchant' || room.enemies.length > 0) && room.type !== 'healing' && room.type !== 'puzzle') {
       for (const p of template.pillars) {
         const px = p.tx * 16 + 8;
         const py = p.ty * 16 + 8;
@@ -2039,6 +2064,7 @@ export class GameScene extends Phaser.Scene {
         spawnY?: number;
         isBossGate?: boolean;
         isTestExit?: boolean;
+        isTutorialExit?: boolean;
         tint?: number;
       }
     ) => {
@@ -2064,6 +2090,7 @@ export class GameScene extends Phaser.Scene {
         spawnY: extra?.spawnY,
         isBossGate: extra?.isBossGate,
         isTestExit: extra?.isTestExit,
+        isTutorialExit: extra?.isTutorialExit,
       });
     };
 
@@ -2207,6 +2234,18 @@ export class GameScene extends Phaser.Scene {
       if (room.connections.south || (room.connections.secretSouth && room.secretRevealed)) addDoor('south', 88, 168, 18, 16);
       if (room.connections.west || (room.connections.secretWest && room.secretRevealed)) addDoor('west', 8, 88, 16, 18);
       if (room.connections.east || (room.connections.secretEast && room.secretRevealed)) addDoor('east', 168, 88, 16, 18);
+      if (room.tutorialSkipDoor) {
+        addDoor('west', 8, 88, 16, 18, { isTutorialExit: true });
+        const skipLabel = this.tutorialReturnToMenu ? '<- SKIP (MENU)' : '<- SKIP';
+        const skipTxt = addPixelText(this, 24, 74, skipLabel, 6, 0xf49ac1, 0, 0.5).setDepth(3);
+        this.roomGroup.add(skipTxt);
+      }
+      if (room.tutorialExitDoor) {
+        addDoor('east', 168, 88, 16, 18, { isTutorialExit: true });
+        const exitLabel = this.tutorialReturnToMenu ? 'MENU ->' : 'LEVEL 1 ->';
+        const exitTxt = addPixelText(this, 152, 74, exitLabel, 6, 0xffe066, 1, 0.5).setDepth(3);
+        this.roomGroup.add(exitTxt);
+      }
     }
 
     // Level 7 Hallway sconces & suspense feedback
@@ -2247,8 +2286,8 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
-    // Pillars & Props (skip pillars in boss/healing/puzzle rooms, normal merchant rooms, hallway, and test room)
-    if (!room.isTestRoom && room.type !== 'start' && room.type !== 'boss' && (room.type !== 'merchant' || room.enemies.length > 0) && room.type !== 'healing' && room.type !== 'puzzle') {
+    // Pillars & Props (skip pillars in boss/healing/puzzle rooms, normal merchant rooms, hallway, test room, and tutorial room)
+    if (!room.isTestRoom && !room.isTutorialRoom && room.type !== 'start' && room.type !== 'boss' && (room.type !== 'merchant' || room.enemies.length > 0) && room.type !== 'healing' && room.type !== 'puzzle') {
       for (const p of template.pillars) {
         const px = p.tx * 16 + 8;
         const py = p.ty * 16 + 8;
@@ -2278,7 +2317,7 @@ export class GameScene extends Phaser.Scene {
     // Decorative floor props (no mushrooms on Level 7)
     for (const pr of template.props) {
       if (this.levelIndex === 6 && pr.kind === 'mushroom') continue;
-      if (room.hallwayDoors || room.isTestRoom) continue;
+      if (room.hallwayDoors || room.isTestRoom || room.isTutorialRoom) continue;
       const px = pr.tx * 16 + 8;
       const py = pr.ty * 16 + 8;
       const tex = pr.kind === 'mushroom' ? 'prop_mushroom' : 'prop_lantern';
@@ -2295,7 +2334,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Hazards (full pre-determined line layout in hazard rooms)
-    if (room.type === 'hazard') {
+    if (room.type === 'hazard' && !room.isTutorialRoom) {
       const hazardSet = new Set(template.hazards.map((h) => `${h.tx},${h.ty}`));
       const rimGfx = this.add.graphics().setDepth(3);
       rimGfx.fillStyle(this.isAcidLavaFloor() ? 0x0b2b14 : 0x2b1008, 0.85);
@@ -2334,7 +2373,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Spike traps (black grates in hazard and combat rooms)
-    if (room.type === 'hazard' || room.type === 'combat') {
+    if ((room.type === 'hazard' || room.type === 'combat') && !room.isTutorialRoom) {
       for (const s of template.spikes) {
         const sx = s.tx * 16 + 8;
         const sy = s.ty * 16 + 8;
@@ -2378,6 +2417,10 @@ export class GameScene extends Phaser.Scene {
         vy: Phaser.Math.FloatBetween(-10, 10),
         phase: Math.random() * 6,
       });
+    }
+
+    if (room.isTutorialRoom) {
+      this.renderTutorialRoom(room, draw25DWallTile);
     }
 
     // Spawn Enemies if room not cleared
@@ -2424,8 +2467,15 @@ export class GameScene extends Phaser.Scene {
 
     // Special Room Objects
     if (room.type === 'merchant') {
-      this.specialObjs.merchant = this.add.image(88, 76, 'obj_merchant').setDepth(6);
+      const mx = room.isTutorialRoom ? 64 : 88;
+      const my = room.isTutorialRoom ? 76 : 76;
+      this.specialObjs.merchant = this.add.image(mx, my, 'obj_merchant').setDepth(6);
       this.roomGroup.add(this.specialObjs.merchant);
+      if (room.isTutorialRoom && room.tutorialStep === 2) {
+        this.specialObjs.shrine = this.add.image(116, 108, 'obj_shrine').setDepth(6);
+        if (room.healingUsed) this.specialObjs.shrine.setAlpha(0.45);
+        this.roomGroup.add(this.specialObjs.shrine);
+      }
     } else if (room.type === 'healing') {
       this.specialObjs.shrine = this.add.image(88, 84, 'obj_shrine').setDepth(6);
       if (room.healingUsed) this.specialObjs.shrine.setAlpha(0.45);
@@ -2613,6 +2663,199 @@ export class GameScene extends Phaser.Scene {
     this.roomGroup.add(glow);
   }
 
+  private skipTutorial(): void {
+    settingsSystem.markTutorialCompleted();
+    SoundSystem.playUnlock();
+    this.isTutorial = false;
+    if (this.tutorialReturnToMenu) {
+      this.scene.stop('UIScene');
+      this.scene.start('MenuScene');
+    } else {
+      this.scene.restart({
+        levelIndex: 0,
+        floorSeed: getDailySeed(0),
+        resetRun: true,
+      });
+    }
+  }
+
+  private renderTutorialRoom(
+    room: RoomData,
+    draw25DWallTile: (g: Phaser.GameObjects.Graphics, tx: number, ty: number, heightScale?: number, isBorder?: boolean) => void
+  ): void {
+    const addTutLabel = (x: number, y: number, text: string, color = 0xffe066) => {
+      const lbl = addPixelText(this, x, y, text, 6, color, 0.5, 0.5).setDepth(3);
+      this.roomGroup.add(lbl);
+    };
+    const addTutPillar = (tx: number, ty: number) => {
+      const px = tx * 16 + 8;
+      const py = ty * 16 + 8;
+      const pilGfx = this.add.graphics().setDepth(6 + (py + 4) / 1000);
+      draw25DWallTile(pilGfx, tx, ty, 2, false);
+      this.roomGroup.add(pilGfx);
+      const wall = this.add.rectangle(px, py, 16, 16, 0x000000, 0);
+      this.wallGroup.add(wall);
+      this.roomGroup.add(wall);
+    };
+    const addTutCrate = (tx: number, ty: number) => {
+      const ck = `${tx},${ty}`;
+      if (room.brokenCrates?.includes(ck)) return;
+      const cx = tx * 16 + 8;
+      const cy = ty * 16 + 8;
+      const crate = this.crateGroup.create(cx, cy, 'obj_crate') as Phaser.Physics.Arcade.Sprite;
+      crate.setData('crateKey', ck);
+      crate.setDepth(6 + (cy + 4) / 1000);
+      this.roomGroup.add(crate);
+    };
+    const addTutSpike = (tx: number, ty: number) => {
+      const sx = tx * 16 + 8;
+      const sy = ty * 16 + 8;
+      const sp = this.add.image(sx, sy, 'obj_spike_idle').setDepth(2);
+      this.roomGroup.add(sp);
+      this.spikeTraps.push({ x: sx, y: sy, sprite: sp, state: 'idle', standMs: 0, activeMs: 0, hitThisCycle: false });
+    };
+    const addTutLava = (tiles: Array<{ tx: number; ty: number }>) => {
+      const set = new Set(tiles.map((t) => `${t.tx},${t.ty}`));
+      const rimGfx = this.add.graphics().setDepth(3);
+      rimGfx.fillStyle(0x2b1008, 0.85);
+      for (const h of tiles) {
+        const px = h.tx * 16;
+        const py = h.ty * 16;
+        const hx = px + 8;
+        const hy = py + 8;
+        const sp = this.add.image(hx, hy, 'tile_lava_0').setDepth(2);
+        const hGlow = this.add
+          .image(hx, hy, 'glow_soft')
+          .setScale(0.95)
+          .setTint(0xff6b1a)
+          .setAlpha(0.28)
+          .setBlendMode(Phaser.BlendModes.ADD)
+          .setDepth(15);
+        this.roomGroup.add(sp);
+        this.roomGroup.add(hGlow);
+        this.hazards.push({
+          x: hx,
+          y: hy,
+          radius: 8,
+          sprite: sp,
+          glow: hGlow,
+          phase: (h.tx * 0.7 + h.ty * 1.1) % (Math.PI * 2),
+          tickMs: 0,
+        });
+        if (!set.has(`${h.tx},${h.ty - 1}`)) rimGfx.fillRect(px, py, 16, 1);
+        if (!set.has(`${h.tx},${h.ty + 1}`)) rimGfx.fillRect(px, py + 15, 16, 1);
+        if (!set.has(`${h.tx - 1},${h.ty}`)) rimGfx.fillRect(px, py, 1, 16);
+        if (!set.has(`${h.tx + 1},${h.ty}`)) rimGfx.fillRect(px + 15, py, 1, 16);
+      }
+      this.roomGroup.add(rimGfx);
+    };
+
+    const atkKey = getControlActionText('attack');
+    const dodgeKey = getControlActionText('dodge');
+    const intKey = getControlActionText('interact');
+    const dropKey = getControlActionText('drop');
+    const mapKey = getControlActionText('map');
+    const pauseKey = getControlActionText('pause');
+    const moveText =
+      inputSystem.controlType === 'gamepad'
+        ? 'MOVE: L-STICK'
+        : inputSystem.controlType === 'touch'
+          ? 'MOVE: JOYSTICK'
+          : 'MOVE: WASD / ARROWS';
+
+    switch (room.tutorialStep) {
+      case 0: {
+        // Room 0: Movement Only (no traps, no crates)
+        addTutLabel(88, 24, '1. MOVEMENT', 0x66ffd9);
+        addTutLabel(88, 38, moveText, 0xffffff);
+        addTutLabel(88, 128, `MAP: ${mapKey}  |  PAUSE: ${pauseKey}`, 0xb8a1ff);
+        addTutLabel(88, 142, 'WALK EAST TO CONTINUE ->', 0xffe066);
+        break;
+      }
+      case 1: {
+        // Room 1: Melee Combat on Stationary Dummy
+        addTutLabel(88, 24, '2. MELEE COMBAT', 0x66ffd9);
+        addTutLabel(88, 38, `ATTACK DUMMY: ${atkKey}`, 0xffe066);
+        addTutLabel(88, 142, 'DEFEAT FOES TO UNLOCK DOORS', 0xffffff);
+        break;
+      }
+      case 2: {
+        // Room 2: Merchant & Shrine — buy the Bow with exact shards
+        addTutLabel(88, 24, '3. SHOP & SHRINE', 0x66ffd9);
+        addTutLabel(64, 54, `SHOP [${intKey}]`, 0xffe066);
+        addTutLabel(116, 86, `HEAL [${intKey}]`, 0x66ffd9);
+        addTutLabel(88, 144, 'BUY THE BOW FROM MIMI!', 0xb8a1ff);
+        break;
+      }
+      case 3: {
+        // Room 3: Ranged Combat on Distant Dummy (2-tile lava moat blocks melee)
+        addTutLabel(56, 24, '4. RANGED COMBAT', 0x66ffd9);
+        addTutLabel(56, 36, 'EQUIP BOW: 1-3 / SCROLL', 0xffe066);
+        addTutLabel(56, 144, `SHOOT ACROSS LAVA!`, 0xb8a1ff);
+        const moatTiles: Array<{ tx: number; ty: number }> = [];
+        for (let ty = 1; ty <= 9; ty++) {
+          moatTiles.push({ tx: 6, ty }, { tx: 7, ty });
+        }
+        addTutLava(moatTiles);
+        break;
+      }
+      case 4: {
+        // Room 4: Crates, Dodging & Traps (introduced after combat)
+        addTutLabel(88, 24, '5. CRATES, DODGE & TRAPS', 0x66ffd9);
+        addTutLabel(88, 36, `SMASH CRATES (${atkKey}) FOR SHARDS`, 0xffe066);
+        addTutLabel(88, 132, `DODGE: ${dodgeKey}  |  DROP: ${dropKey}`, 0xffffff);
+        addTutLabel(88, 144, 'AVOID LAVA & SPIKES!', 0xff8fab);
+        addTutCrate(4, 3);
+        addTutCrate(4, 7);
+        addTutSpike(7, 4);
+        addTutSpike(7, 6);
+        addTutLava([
+          { tx: 7, ty: 2 },
+          { tx: 7, ty: 8 },
+        ]);
+        break;
+      }
+      case 5: {
+        // Room 5: Real Combat
+        addTutLabel(88, 24, '6. REAL COMBAT', 0x66ffd9);
+        addTutLabel(88, 36, 'DODGE SHOTS & DEFEAT FOES!', 0xffe066);
+        addTutLabel(88, 144, `USE POTION IN SLOT 2: ${atkKey}`, 0xb8a1ff);
+        addTutPillar(4, 3);
+        addTutPillar(4, 7);
+        break;
+      }
+      case 6: {
+        // Room 6: Dungeon Puzzles
+        addTutLabel(88, 24, '7. DUNGEON PUZZLES', 0x66ffd9);
+        addTutLabel(88, 36, 'STEP PLATES: 1 -> 2 -> 3', 0xffe066);
+        addTutLabel(88, 142, 'SOLVE PUZZLES FOR LOOT!', 0xb8a1ff);
+        break;
+      }
+      case 7: {
+        // Room 7: Secret Wall Room (use Star Bomb from Puzzle Room)
+        addTutLabel(88, 24, '8. SECRET PASSAGES', 0x66ffd9);
+        addTutLabel(88, 38, 'EQUIP STAR BOMB & THROW AT', 0xffe066);
+        addTutLabel(88, 50, 'THE CRACKED EAST WALL ->', 0xffe066);
+        if (!room.secretRevealed) {
+          const hasBomb = this.playerState.inventory.some((it) => it?.id === 'star_bomb');
+          const bombOnFloor = room.loot.some((l) => !l.collected && l.itemId === 'star_bomb');
+          if (!hasBomb && !bombOnFloor) {
+            this.spawnRoomLoot(`tut_free_bomb_${Date.now()}`, 'item', 88, 88, 'star_bomb');
+          }
+        }
+        break;
+      }
+      case 8: {
+        // Room 8: Final Trial & Exit Door
+        addTutLabel(88, 24, '9. FINAL TRIAL', 0x66ffd9);
+        addTutLabel(88, 36, 'DEFEAT FOES TO OPEN EXIT!', 0xffe066);
+        addTutPillar(4, 4);
+        addTutPillar(4, 6);
+        break;
+      }
+    }
+  }
+
   private createLootObject(
     uid: string,
     kind: 'shard' | 'item' | 'heart' | 'chest',
@@ -2733,9 +2976,12 @@ export class GameScene extends Phaser.Scene {
     const def = isBoss ? BOSSES[defId] : ENEMIES[defId];
     if (!def) return;
     if (isBoss) JournalSystem.discoverBoss(defId);
-    else JournalSystem.discoverEnemy(defId);
+    else if (defId !== 'tutorial_dummy') JournalSystem.discoverEnemy(defId);
     const sprite = this.physics.add.sprite(x, y, def.spriteKey, 0).setDepth(9);
-    if (isElite) {
+    if (defId === 'tutorial_dummy') {
+      sprite.setTint(0xd4a373);
+      sprite.setImmovable(true);
+    } else if (isElite) {
       sprite.setScale(1.35);
       sprite.setTint(0xffd275);
     }
@@ -2944,10 +3190,14 @@ export class GameScene extends Phaser.Scene {
         'lightning_horn',
       ].includes(w.style);
       if (!isMeleeStyle && w.style !== 'necromancy_staff') {
-        const broke = consumeUse(this.playerState.inventory, this.playerState.activeSlot, 1);
-        if (broke) {
-          SoundSystem.playBreak();
-          this.ui.showToast(`${w.name} broke!`, '#ffe066');
+        const isTutorialInfiniteBow =
+          this.isTutorial && w.id === 'starstring_bow' && (this.currentRoom?.tutorialStep ?? 99) <= 3;
+        if (!isTutorialInfiniteBow) {
+          const broke = consumeUse(this.playerState.inventory, this.playerState.activeSlot, 1);
+          if (broke) {
+            SoundSystem.playBreak();
+            this.ui.showToast(`${w.name} broke!`, '#ffe066');
+          }
         }
       }
     } else {
@@ -3622,7 +3872,17 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Reveal adjacent secret walls if near them
-    this.tryOpenAdjacentSecretWall(x, y);
+    const opened = this.tryOpenAdjacentSecretWall(x, y);
+    if (!opened && this.isTutorial && this.currentRoom?.tutorialStep === 7 && !this.currentRoom.secretRevealed) {
+      const hasBomb = this.playerState.inventory.some((it) => it?.id === 'star_bomb');
+      if (!hasBomb) {
+        const freeBomb = createItemInstance('star_bomb');
+        if (freeBomb) {
+          addItemToSlots(this.playerState.inventory, this.playerState.activeSlot, freeBomb);
+          this.ui.showToast('Missed wall! Free Star Bomb given.', '#ffe066');
+        }
+      }
+    }
   }
 
   private isNearClosedSecretWall(x: number, y: number): boolean {
@@ -4676,6 +4936,16 @@ export class GameScene extends Phaser.Scene {
     this.updateDoorVisuals();
     SoundSystem.playUnlock();
 
+    if (this.isTutorial && this.currentRoom.tutorialExitDoor) {
+      settingsSystem.markTutorialCompleted();
+      this.ui.showToast(
+        this.tutorialReturnToMenu
+          ? 'Tutorial Complete! Enter East Door for Menu!'
+          : 'Tutorial Complete! Enter East Door for Level 1!',
+        '#ffe066'
+      );
+    }
+
     const acornIdx = hasArtifact(this.playerState.inventory, 'lucky_acorn');
     if (acornIdx !== -1) {
       this.playerState.shards += 3;
@@ -4749,20 +5019,22 @@ export class GameScene extends Phaser.Scene {
     }
 
     // 3. Merchant
-    if (this.specialObjs.merchant && Phaser.Math.Distance.Between(px, py, 88, 76) < 34 && this.currentRoom.shopStock) {
+    if (this.specialObjs.merchant && Phaser.Math.Distance.Between(px, py, this.specialObjs.merchant.x, this.specialObjs.merchant.y) < 34 && this.currentRoom.shopStock) {
       this.openMerchantShop();
       return;
     }
 
     // 4. Healing Shrine
-    if (this.specialObjs.shrine && !this.currentRoom.healingUsed && Phaser.Math.Distance.Between(px, py, 88, 84) < 32) {
+    if (this.specialObjs.shrine && !this.currentRoom.healingUsed && Phaser.Math.Distance.Between(px, py, this.specialObjs.shrine.x, this.specialObjs.shrine.y) < 32) {
+      const shrineX = this.specialObjs.shrine.x;
+      const shrineY = this.specialObjs.shrine.y;
       this.currentRoom.healingUsed = true;
       this.specialObjs.shrine.setAlpha(0.45);
       const heal = this.floor.modifier === 'lunar_bloom' ? 6 : 4;
       this.playerState.hp = Math.min(this.playerState.maxHp, this.playerState.hp + heal);
       this.runFlags.healedAtAll = true;
       SoundSystem.playHeal();
-      this.spawnParticles(88, 84, 0xff5d8f, 10);
+      this.spawnParticles(shrineX, shrineY, 0xff5d8f, 10);
 
       if (net.mode !== 'solo') {
         const downedAllies = Array.from(this.remotePlayers.values())
@@ -5017,6 +5289,13 @@ export class GameScene extends Phaser.Scene {
       SoundSystem.playMerchantPurchase();
       this.runFlags.boughtAnything = true;
       this.ui.showToast(`Bought ${newItem.name}!`, '#66ffd9');
+      if (this.isTutorial && this.currentRoom.isTutorialRoom && entry.itemId === 'starstring_bow') {
+        this.currentRoom.doorsLocked = false;
+        this.currentRoom.cleared = true;
+        this.updateDoorVisuals();
+        SoundSystem.playUnlock();
+        this.ui.showToast('Bought Starstring Bow! Head East!', '#66ffd9');
+      }
       this.openMerchantShop();
     });
   }
@@ -5110,10 +5389,14 @@ export class GameScene extends Phaser.Scene {
 
       if (net.mode === 'solo' && !localCoopSession.active) {
         void steamSystem.unlockAchievement('ACH_SOLO_CHAMPION');
-        void steamSystem.submitSoloClearTime(elapsedMs);
+        if (!this.usedCheatsInRun) {
+          void steamSystem.submitSoloClearTime(elapsedMs);
+        }
       } else {
         void steamSystem.unlockAchievement('ACH_COOP_CHAMPION');
-        void steamSystem.submitCoopClearTime(elapsedMs);
+        if (!this.usedCheatsInRun) {
+          void steamSystem.submitCoopClearTime(elapsedMs);
+        }
         if (!this.runFlags.revivedAnyone) void steamSystem.unlockAchievement('ACH_COLD_HEARTED');
         void steamSystem.updateLobbyState('finished', false);
       }
@@ -5145,6 +5428,7 @@ export class GameScene extends Phaser.Scene {
       carrySkeletons: this.getCarriedSkeletons(),
       carryRunStartMs: this.runStartMs,
       carryRunFlags: this.runFlags,
+      carryUsedCheats: this.usedCheatsInRun,
     });
   }
 
@@ -5330,6 +5614,24 @@ export class GameScene extends Phaser.Scene {
   }
 
   private onPlayerZeroHp(): void {
+    if (this.isTutorial) {
+      this.playerState.hp = this.playerState.maxHp;
+      this.playerState.stamina = this.playerState.maxStamina;
+      this.playerState.statusEffects = this.playerState.statusEffects.filter(
+        (se) => se.isPositive
+      );
+      this.invulnMs = 1800;
+      const safeX = this.currentRoom.connections.west ? 32 : 88;
+      const safeY = this.currentRoom.connections.south && !this.currentRoom.connections.west ? 142 : 88;
+      this.playerState.x = safeX;
+      this.playerState.y = safeY;
+      this.playerSprite.setPosition(safeX, safeY).setVelocity(0, 0);
+      SoundSystem.playHeal();
+      this.spawnParticles(safeX, safeY, 0x66ffd9, 10);
+      this.ui.showToast('Respawned in room! Full HP restored.', '#66ffd9');
+      return;
+    }
+
     const totemIdx = this.playerState.inventory.findIndex(
       (i) => i?.id === 'revive_totem' || i?.id === 'necromancy_altar'
     );
@@ -5343,7 +5645,9 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    steamSystem.recordDeath();
+    if (!this.usedCheatsInRun) {
+      steamSystem.recordDeath();
+    }
 
     if (localCoopSession.active) {
       this.playerState.downed = true;
@@ -7060,7 +7364,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private hasClearSkeletonLine(x1: number, y1: number, x2: number, y2: number): boolean {
+  private hasClearSkeletonLine(x1: number, y1: number, x2: number, y2: number, avoidHazards = false): boolean {
     const dist = Phaser.Math.Distance.Between(x1, y1, x2, y2);
     if (dist <= 6) return true;
     const steps = Math.ceil(dist / 6);
@@ -7082,12 +7386,17 @@ export class GameScene extends Phaser.Scene {
       for (const b of this.specialObjs.blocks) {
         if (b.sprite.active && Math.abs(px - b.sprite.x) < 11 && Math.abs(py - b.sprite.y) < 11) return false;
       }
+      if (avoidHazards) {
+        for (const h of this.hazards) {
+          if (Math.abs(px - h.x) < 11 && Math.abs(py - h.y) < 11) return false;
+        }
+      }
     }
     return true;
   }
 
-  private getSkeletonPathWaypoint(fromX: number, fromY: number, toX: number, toY: number): { x: number; y: number } {
-    if (this.hasClearSkeletonLine(fromX, fromY, toX, toY)) {
+  private getSkeletonPathWaypoint(fromX: number, fromY: number, toX: number, toY: number, avoidHazards = false): { x: number; y: number } {
+    if (this.hasClearSkeletonLine(fromX, fromY, toX, toY, avoidHazards)) {
       return { x: toX, y: toY };
     }
 
@@ -7109,6 +7418,11 @@ export class GameScene extends Phaser.Scene {
     }
     for (const b of this.specialObjs.blocks) {
       if (b.sprite.active) markBlocked(b.sprite.x, b.sprite.y);
+    }
+    if (avoidHazards) {
+      for (const h of this.hazards) {
+        markBlocked(h.x, h.y);
+      }
     }
 
     const sx = Phaser.Math.Clamp(Math.floor(fromX / 16), 1, cols - 2);
@@ -7155,7 +7469,7 @@ export class GameScene extends Phaser.Scene {
         // Allow stepping into the goal cell even if an obstacle/enemy overlaps its tile,
         // otherwise require unblocked tiles (and both cardinal neighbors for diagonals).
         const nIdx = ny * cols + nx;
-        if (nIdx !== goalIdx && blocked[ny][nx]) continue;
+        if ((nIdx !== goalIdx || avoidHazards) && blocked[ny][nx]) continue;
         if (dx !== 0 && dy !== 0 && (blocked[cy][nx] || blocked[ny][cx])) continue;
         if (parent[nIdx] !== -1) continue;
         parent[nIdx] = cur;
@@ -7170,7 +7484,7 @@ export class GameScene extends Phaser.Scene {
 
     let trace = found ? goalIdx : bestFallbackIdx;
     if (trace === startIdx) {
-      return { x: toX, y: toY };
+      return avoidHazards ? { x: fromX, y: fromY } : { x: toX, y: toY };
     }
     while (parent[trace] !== startIdx && parent[trace] !== -1) {
       trace = parent[trace];
@@ -7348,14 +7662,27 @@ export class GameScene extends Phaser.Scene {
     const targetX = Phaser.Math.Clamp(ownerX + trailOffsetX, 22, Math.max(22, this.roomWidthPx - 22));
     const targetY = Phaser.Math.Clamp(ownerY + 6, 22, Math.max(22, this.roomHeightPx - 22));
 
-    const distToOwner = Phaser.Math.Distance.Between(pet.x, pet.y, ownerX, ownerY);
-    if (distToOwner > 170) {
-      pet.x = targetX;
-      pet.y = targetY;
+    const style = pet.def.moveStyle;
+    const isGroundPet = style === 'cat' || style === 'dog' || style === 'hop';
+    let safeTargetX = targetX;
+    let safeTargetY = targetY;
+    let hasSafeTarget = true;
+    if (isGroundPet && !this.isPetOverFloor(safeTargetX, safeTargetY)) {
+      if (this.isPetOverFloor(ownerX, ownerY)) {
+        safeTargetX = ownerX;
+        safeTargetY = ownerY;
+      } else {
+        hasSafeTarget = false;
+      }
     }
 
-    const dist = Phaser.Math.Distance.Between(pet.x, pet.y, targetX, targetY);
-    const style = pet.def.moveStyle;
+    const distToOwner = Phaser.Math.Distance.Between(pet.x, pet.y, ownerX, ownerY);
+    if (distToOwner > 170 && (!isGroundPet || hasSafeTarget)) {
+      pet.x = safeTargetX;
+      pet.y = safeTargetY;
+    }
+
+    const dist = Phaser.Math.Distance.Between(pet.x, pet.y, safeTargetX, safeTargetY);
     let frame = 0;
 
     if (style === 'bird') {
@@ -7402,7 +7729,9 @@ export class GameScene extends Phaser.Scene {
         pet.hopTimerMs = Math.max(0, pet.hopTimerMs - delta);
         const progress = 1 - pet.hopTimerMs / 260;
         pet.z = Math.sin(progress * Math.PI) * 6;
-        const waypoint = this.getSkeletonPathWaypoint(pet.x, pet.y, targetX, targetY);
+        const waypoint = hasSafeTarget
+          ? this.getSkeletonPathWaypoint(pet.x, pet.y, safeTargetX, safeTargetY, true)
+          : { x: pet.x, y: pet.y };
         const wDist = Phaser.Math.Distance.Between(pet.x, pet.y, waypoint.x, waypoint.y);
         if (wDist > 2) {
           const angle = Phaser.Math.Angle.Between(pet.x, pet.y, waypoint.x, waypoint.y);
@@ -7425,8 +7754,8 @@ export class GameScene extends Phaser.Scene {
       }
     } else {
       // 'cat' (brisk) or 'dog' (slightly slower) ground pathfinding
-      if (dist > 10) {
-        const waypoint = this.getSkeletonPathWaypoint(pet.x, pet.y, targetX, targetY);
+      if (dist > 10 && hasSafeTarget) {
+        const waypoint = this.getSkeletonPathWaypoint(pet.x, pet.y, safeTargetX, safeTargetY, true);
         const wDist = Phaser.Math.Distance.Between(pet.x, pet.y, waypoint.x, waypoint.y);
         if (wDist > 1) {
           const angle = Phaser.Math.Angle.Between(pet.x, pet.y, waypoint.x, waypoint.y);
@@ -7590,10 +7919,18 @@ export class GameScene extends Phaser.Scene {
         e.hitFlashMs -= delta;
         if (e.hitFlashMs <= 0) {
           e.sprite.clearTint();
-          if (e.slowedMs > 0) e.sprite.setTint(0x55ff88);
+          if (e.defId === 'tutorial_dummy') e.sprite.setTint(0xd4a373);
+          else if (e.slowedMs > 0) e.sprite.setTint(0x55ff88);
           else if (e.frostSlowMs && e.frostSlowMs > 0) e.sprite.setTint(0x7dd3fc);
           else if (e.isElite) e.sprite.setTint(0xffd275);
         }
+      }
+
+      if (e.defId === 'tutorial_dummy') {
+        e.sprite.setVelocity(0, 0);
+        e.sprite.setFrame(0);
+        e.sprite.setDepth(6 + (e.sprite.y + 4) / 1000);
+        continue;
       }
 
       if (e.burningMs > 0) {
@@ -8316,6 +8653,7 @@ export class GameScene extends Phaser.Scene {
   private saveNyarHistory(history: { fought: number; beaten: number }): void {
     try {
       localStorage.setItem('glimmerdeep_nyar_history_v1', JSON.stringify(history));
+      steamSystem.scheduleCloudSync();
     } catch {
       // ignore storage errors
     }
@@ -9585,15 +9923,18 @@ export class GameScene extends Phaser.Scene {
             break;
           }
         }
-        if (!hitSolid && !p.fromPlayer) {
+        if (!hitSolid) {
           for (const obj of this.crateGroup.getChildren()) {
             const crate = obj as Phaser.Physics.Arcade.Sprite;
             if (!crate.active) continue;
-            const hw = (crate.width || 16) * 0.5 + 1;
-            const hh = (crate.height || 16) * 0.5 + 1;
+            const hw = (crate.width || 16) * 0.5 + (p.boomerang ? 3 : 1);
+            const hh = (crate.height || 16) * 0.5 + (p.boomerang ? 3 : 1);
             const dx = p.sprite.x - crate.x;
             const dy = p.sprite.y - crate.y;
             if (Math.abs(dx) < hw && Math.abs(dy) < hh) {
+              if (p.fromPlayer && !p.fromRemoteEvent) {
+                this.smashCrate(crate);
+              }
               if (p.bouncesLeft > 0) {
                 p.bouncesLeft--;
                 const penX = hw - Math.abs(dx);
@@ -9607,9 +9948,16 @@ export class GameScene extends Phaser.Scene {
                   p.vy = dir * Math.abs(p.vy);
                   p.sprite.y = crate.y + dir * (hh + 1);
                 }
+                if (p.boomerang && p.bouncesLeft <= 0) {
+                  p.returning = true;
+                  p.hitUids.clear();
+                }
+              } else if (p.boomerang) {
+                p.returning = true;
+                p.hitUids.clear();
               } else {
                 hitSolid = true;
-                if (p.shooterUid) {
+                if (!p.fromPlayer && p.shooterUid) {
                   const shooter = this.activeEnemies.find((e) => e.uid === p.shooterUid && e.sprite.active);
                   if (shooter && !shooter.isBoss) {
                     shooter.blockedShots = (shooter.blockedShots ?? 0) + 1;
@@ -9972,6 +10320,17 @@ export class GameScene extends Phaser.Scene {
   private updateHazardsAndLoot(delta: number): void {
     const px = this.playerSprite.x;
     const py = this.playerSprite.y;
+    if (this.isTutorial && this.currentRoom?.tutorialStep === 3 && px >= 94) {
+      this.dodgeMs = 0;
+      this.playerState.dodging = false;
+      const safeY = Phaser.Math.Clamp(py, 28, 148);
+      this.playerSprite.setPosition(76, safeY).setVelocity(0, 0);
+      this.playerState.x = 76;
+      this.playerState.y = safeY;
+      this.playerState.statusEffects = this.playerState.statusEffects.filter((e) => e.id !== 'burning');
+      this.spawnParticles(76, safeY, 0xffe066, 6);
+      this.ui.showToast('Use your Bow to shoot across the lava!', '#ffe066');
+    }
     const now = this.time.now;
     const lavaFrame = Math.floor(now / 260) % 3;
     const lavaFrameChanged = lavaFrame !== this.lastLavaFrame;
@@ -10023,7 +10382,7 @@ export class GameScene extends Phaser.Scene {
             this.spikePinnedMs = 1000;
             this.dodgeMs = 0;
             this.damagePlayer(1);
-            steamSystem.recordSpikeStab();
+            if (!this.usedCheatsInRun) steamSystem.recordSpikeStab();
             this.ui.showToast('Stabbed by spikes!', '#ff5d8f');
           }
         }
@@ -10037,7 +10396,7 @@ export class GameScene extends Phaser.Scene {
           this.spikePinnedMs = Math.max(this.spikePinnedMs, s.activeMs);
           this.dodgeMs = 0;
           this.damagePlayer(1);
-          steamSystem.recordSpikeStab();
+          if (!this.usedCheatsInRun) steamSystem.recordSpikeStab();
           this.ui.showToast('Stabbed by spikes!', '#ff5d8f');
         }
         if (s.activeMs <= 0) {
@@ -10164,7 +10523,10 @@ export class GameScene extends Phaser.Scene {
         this.spawnRoomLoot(`sec_shard_${Date.now()}_1`, 'shard', 64, 88, undefined, 5);
         this.spawnRoomLoot(`sec_shard_${Date.now()}_2`, 'shard', 112, 88, undefined, 5);
       } else {
-        const itemId = rollRandomItemId(rng);
+        const itemId =
+          this.isTutorial && this.currentRoom.tutorialStep === 6
+            ? 'star_bomb'
+            : rollRandomItemId(rng);
         this.spawnRoomLoot(`puz_${Date.now()}`, 'item', 88, 88, itemId);
       }
     }
@@ -10692,6 +11054,11 @@ export class GameScene extends Phaser.Scene {
               carrySkeletons: this.getCarriedSkeletons(),
               exitedTestRoom: true,
             });
+            return;
+          }
+          if (d.isTutorialExit) {
+            if (this.currentRoom.doorsLocked) return;
+            this.skipTutorial();
             return;
           }
           if (d.targetGx !== undefined && d.targetGy !== undefined && d.spawnX !== undefined && d.spawnY !== undefined) {
@@ -11231,10 +11598,10 @@ export class GameScene extends Phaser.Scene {
     const py = this.playerSprite.y;
     let promptText = '';
 
-    if (this.specialObjs.merchant && Phaser.Math.Distance.Between(px, py, 88, 76) < 34) {
-      promptText = '[E] Talk to Mimi';
-    } else if (this.specialObjs.shrine && !this.currentRoom.healingUsed && Phaser.Math.Distance.Between(px, py, 88, 84) < 32) {
-      promptText = '[E] Drink from Healing Shrine';
+    if (this.specialObjs.merchant && Phaser.Math.Distance.Between(px, py, this.specialObjs.merchant.x, this.specialObjs.merchant.y) < 34) {
+      promptText = `[${getControlActionText('interact')}] Talk to Mimi`;
+    } else if (this.specialObjs.shrine && !this.currentRoom.healingUsed && Phaser.Math.Distance.Between(px, py, this.specialObjs.shrine.x, this.specialObjs.shrine.y) < 32) {
+      promptText = `[${getControlActionText('interact')}] Drink from Healing Shrine`;
     } else if (this.specialObjs.altar && !this.currentRoom.eventUsed && Phaser.Math.Distance.Between(px, py, 88, 84) < 32) {
       promptText = '[E] Inspect Altar';
     } else if (
@@ -11319,6 +11686,7 @@ export class GameScene extends Phaser.Scene {
       currentRoom: this.currentRoom,
       bossInfo,
       promptText,
+      runElapsedMs: Math.max(0, Date.now() - this.runStartMs),
       spectating: spectateTarget
         ? { targetName: spectateTarget.name, count: this.getSpectateTargets().length }
         : null,

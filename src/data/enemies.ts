@@ -1,6 +1,16 @@
 import { BossDef, EnemyDef } from '../types/game';
 
 export const ENEMIES: Record<string, EnemyDef> = {
+  tutorial_dummy: {
+    id: 'tutorial_dummy',
+    name: 'Training Dummy',
+    hp: 6,
+    speed: 0,
+    damage: 0,
+    behavior: 'chase',
+    spriteKey: 'enemy_sleepy_mushroom',
+    shardDrop: 0,
+  },
   slimelet: {
     id: 'slimelet',
     name: 'Slimelet',

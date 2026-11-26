@@ -83,6 +83,167 @@ export class DungeonGenerator {
     };
   }
 
+  static generateTutorialFloor(floorSeed: number): GeneratedFloor {
+    const grid: (RoomData | null)[][] = Array.from({ length: 6 }, () =>
+      Array.from({ length: 6 }, () => null)
+    );
+
+    const makeRoom = (
+      gx: number,
+      gy: number,
+      type: RoomType,
+      tutorialStep: number,
+      connections: RoomData['connections']
+    ): RoomData => {
+      const r: RoomData = {
+        gx,
+        gy,
+        type,
+        seed: deriveSeed(floorSeed, gx + 1, gy + 1),
+        templateId: 0,
+        connections,
+        visited: tutorialStep === 0,
+        cleared: type === 'start' || type === 'treasure' || type === 'merchant',
+        doorsLocked: false,
+        secretRevealed: false,
+        enemies: [],
+        loot: [],
+        isTutorialRoom: true,
+        tutorialStep,
+      };
+      grid[gy][gx] = r;
+      return r;
+    };
+
+    // Room 0 (0,2): Movement Only (no traps, no crates; West door skips tutorial)
+    const startTutRoom = makeRoom(0, 2, 'start', 0, { north: false, south: false, east: true, west: false });
+    startTutRoom.tutorialSkipDoor = true;
+
+    // Room 1 (1,2): Melee Combat on Stationary Dummy
+    const meleeDummyRoom = makeRoom(1, 2, 'combat', 1, { north: false, south: false, east: true, west: true });
+    meleeDummyRoom.enemies = [
+      {
+        uid: 'tut_dummy_1',
+        defId: 'tutorial_dummy',
+        x: 116,
+        y: 88,
+        hp: ENEMIES.tutorial_dummy.hp,
+        maxHp: ENEMIES.tutorial_dummy.hp,
+        alive: true,
+      },
+    ];
+
+    // Room 2 (2,2): Merchant (Mimi) & Healing Shrine — buy the Bow with exact shards
+    const shopRoom = makeRoom(2, 2, 'merchant', 2, { north: false, south: false, east: true, west: true });
+    shopRoom.cleared = false;
+    shopRoom.doorsLocked = true;
+    shopRoom.shopStock = [
+      { itemId: 'starstring_bow', price: 5, sold: false },
+      { itemId: 'wisp_staff', price: 12, sold: false },
+      { itemId: 'lucky_acorn', price: 10, sold: false },
+    ];
+    shopRoom.loot.push({
+      uid: 'tut_shards_exact',
+      kind: 'shard',
+      x: 40,
+      y: 88,
+      amount: 5,
+      collected: false,
+    });
+
+    // Room 3 (3,2): Ranged Combat on Distant Stationary Dummy (2-tile lava moat blocks melee)
+    const rangedDummyRoom = makeRoom(3, 2, 'combat', 3, { north: true, south: false, east: false, west: true });
+    rangedDummyRoom.enemies = [
+      {
+        uid: 'tut_dummy_2',
+        defId: 'tutorial_dummy',
+        x: 144,
+        y: 88,
+        hp: ENEMIES.tutorial_dummy.hp,
+        maxHp: ENEMIES.tutorial_dummy.hp,
+        alive: true,
+      },
+    ];
+
+    // Room 4 (3,1): Crates, Dodging & Traps (introduced after melee & ranged combat)
+    makeRoom(3, 1, 'start', 4, { north: true, south: true, east: false, west: false });
+
+    // Room 5 (3,0): Real Combat (active enemies)
+    const combatRoom = makeRoom(3, 0, 'combat', 5, { north: false, south: true, east: true, west: false });
+    combatRoom.enemies = [
+      {
+        uid: 'tut_e_1',
+        defId: 'slimelet',
+        x: 118,
+        y: 56,
+        hp: ENEMIES.slimelet.hp,
+        maxHp: ENEMIES.slimelet.hp,
+        alive: true,
+      },
+      {
+        uid: 'tut_e_2',
+        defId: 'tiny_moth',
+        x: 118,
+        y: 120,
+        hp: ENEMIES.tiny_moth.hp,
+        maxHp: ENEMIES.tiny_moth.hp,
+        alive: true,
+      },
+    ];
+
+    // Room 6 (4,0): Dungeon Puzzle (Pressure Plates)
+    const puzzleRoom = makeRoom(4, 0, 'puzzle', 6, { north: false, south: true, east: false, west: true });
+    puzzleRoom.puzzleKind = 'plates';
+    puzzleRoom.puzzleSolved = false;
+    puzzleRoom.puzzlePlates = [
+      { id: 'tut_plate_1', tx: 3, ty: 7, order: 1, activated: false },
+      { id: 'tut_plate_2', tx: 5, ty: 4, order: 2, activated: false },
+      { id: 'tut_plate_3', tx: 7, ty: 7, order: 3, activated: false },
+    ];
+
+    // Room 7 (4,1): Secret Wall Room (use Star Bomb from Puzzle Room)
+    const secretTutorialRoom = makeRoom(4, 1, 'start', 7, {
+      north: true,
+      south: false,
+      east: false,
+      west: false,
+      secretEast: true,
+    });
+    secretTutorialRoom.cleared = false;
+    secretTutorialRoom.secretRevealed = false;
+
+    // Room 8 (5,1): Final Trial & Tutorial Exit Door (entered directly from secret wall)
+    const finalRoom = makeRoom(5, 1, 'combat', 8, { north: false, south: false, east: false, west: true });
+    finalRoom.tutorialExitDoor = true;
+    finalRoom.enemies = [
+      {
+        uid: 'tut_e_3',
+        defId: 'sleepy_mushroom',
+        x: 118,
+        y: 62,
+        hp: ENEMIES.sleepy_mushroom.hp,
+        maxHp: ENEMIES.sleepy_mushroom.hp,
+        alive: true,
+      },
+      {
+        uid: 'tut_e_4',
+        defId: 'glimmer_eye',
+        x: 118,
+        y: 114,
+        hp: ENEMIES.glimmer_eye.hp,
+        maxHp: ENEMIES.glimmer_eye.hp,
+        alive: true,
+      },
+    ];
+
+    return {
+      levelIndex: 0,
+      seed: floorSeed,
+      modifier: 'none',
+      rooms: grid as RoomData[][],
+    };
+  }
+
   static generateFloor(levelIndex: number, floorSeed: number, playerCount = 1): GeneratedFloor {
     const rng = new SeededRandom(floorSeed);
     const biome = BIOMES[Math.min(levelIndex, BIOMES.length - 1)];

@@ -9,6 +9,7 @@ import { VirtualKeyboard } from '../mobile/VirtualKeyboard';
 import { inputSystem, localCoopSession } from '../systems/InputSystem';
 import { JournalSystem } from '../systems/JournalSystem';
 import { net } from '../systems/MultiplayerSystem';
+import { settingsSystem } from '../systems/SettingsSystem';
 import { isDesktopBuild, isSteamworksBuild, steamSystem } from '../systems/SteamSystem';
 import { getDailySeed } from '../utils/SeededGenerator';
 
@@ -249,9 +250,18 @@ export class MenuScene extends Phaser.Scene {
     this.createPixelButton(256, btnY, 'PLAY SOLO', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
-      net.startSolo(this.playerName.trim() || 'Wanderer', this.getChosenAvatarId(), this.getChosenPetId());
-      const seed = getDailySeed(0);
-      this.scene.start('GameScene', { levelIndex: 0, floorSeed: seed, resetRun: true });
+      const chosenName = this.playerName.trim() || 'Wanderer';
+      net.startSolo(chosenName, this.getChosenAvatarId(), this.getChosenPetId());
+      if (chosenName !== 'TESTER' && !settingsSystem.hasCompletedTutorial()) {
+        this.scene.start('GameScene', {
+          isTutorial: true,
+          tutorialReturnToMenu: false,
+          resetRun: true,
+        });
+      } else {
+        const seed = getDailySeed(0);
+        this.scene.start('GameScene', { levelIndex: 0, floorSeed: seed, resetRun: true });
+      }
     });
     btnY += btnStep;
 

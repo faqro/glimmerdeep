@@ -4,6 +4,7 @@ import { SoundSystem } from '../audio/SoundSystem';
 import { ALL_SELECTABLE_AVATARS } from '../data/palettes';
 import { isMobileMode, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { inputSystem } from '../systems/InputSystem';
+import { steamSystem } from '../systems/SteamSystem';
 
 export const AVATAR_STORAGE_KEY = 'glimmerdeep_selected_avatar';
 
@@ -167,6 +168,7 @@ export class SkinScene extends Phaser.Scene {
     this.selectedId = id;
     try {
       localStorage.setItem(AVATAR_STORAGE_KEY, id);
+      steamSystem.scheduleCloudSync();
     } catch {
       // ignore storage errors
     }

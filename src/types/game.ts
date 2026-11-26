@@ -290,6 +290,10 @@ export interface RoomData {
   widthTiles?: number;
   heightTiles?: number;
   isTestRoom?: boolean;
+  isTutorialRoom?: boolean;
+  tutorialStep?: number;
+  tutorialExitDoor?: boolean;
+  tutorialSkipDoor?: boolean;
   hallwayDoors?: Array<{
     dir: Direction;
     tx: number;

@@ -1,11 +1,14 @@
 import Phaser from 'phaser';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
+import { ALL_SELECTABLE_AVATARS, pickRandomPaletteId } from '../data/palettes';
+import { getSavedPetId } from '../data/pets';
 import { NavDir, VirtualButton } from '../mobile/MobileInput';
 import { getGamepadButtonTexture } from '../systems/ControlHints';
 import { GameAction, GamepadBrand, GamepadButtonId, inputSystem } from '../systems/InputSystem';
 import { net } from '../systems/MultiplayerSystem';
 import { settingsSystem } from '../systems/SettingsSystem';
+import { isSteamworksBuild, steamSystem } from '../systems/SteamSystem';
 
 type SettingsTab = 'game' | 'audio' | 'gamepad' | 'keyboard';
 
@@ -34,6 +37,21 @@ export class SettingsScene extends Phaser.Scene {
   private creditsOverlay!: Phaser.GameObjects.Container;
 
   private contentContainer!: Phaser.GameObjects.Container;
+  private listContainer?: Phaser.GameObjects.Container;
+  private scrollTrack?: Phaser.GameObjects.Rectangle;
+  private scrollThumb?: Phaser.GameObjects.Rectangle;
+  private scrollY = 0;
+  private maxScrollY = 0;
+  private scrollViewTop = 78;
+  private scrollViewH = 140;
+  private scrollRowStep = 23;
+  private scrollRowH = 19;
+  private scrollStartY = 89;
+  private swipeActive = false;
+  private swipeStartY = 0;
+  private swipeStartScrollY = 0;
+  private swipeMoved = false;
+  private scrollbarDragging = false;
   private optionRows: SettingOptionRow[] = [];
   private prevLayoutBtn?: Phaser.GameObjects.Image;
   private nextLayoutBtn?: Phaser.GameObjects.Image;
@@ -165,9 +183,61 @@ export class SettingsScene extends Phaser.Scene {
 
     this.unsubNav = inputSystem.onNav((dir) => this.handleNav(dir));
     this.unsubBtn = inputSystem.onButton((btn) => this.handleButton(btn));
+
+    const onWheel = (_pointer: Phaser.Input.Pointer, _currentlyOver: Phaser.GameObjects.GameObject[], _dx: number, dy: number) => {
+      if (this.creditsOverlay.visible || this.maxScrollY <= 0) return;
+      this.setScrollY(this.scrollY + Math.sign(dy) * 20);
+    };
+    const onPointerDown = (pointer: Phaser.Input.Pointer) => {
+      if (this.creditsOverlay.visible || this.maxScrollY <= 0) return;
+      if (pointer.x >= 326 && pointer.x <= 346 && pointer.y >= this.scrollViewTop && pointer.y <= this.scrollViewTop + this.scrollViewH) {
+        this.scrollbarDragging = true;
+        this.scrollToPointerY(pointer.y);
+        return;
+      }
+      if (pointer.x >= 20 && pointer.x <= 326 && pointer.y >= this.scrollViewTop && pointer.y <= this.scrollViewTop + this.scrollViewH) {
+        this.swipeActive = true;
+        this.swipeStartY = pointer.y;
+        this.swipeStartScrollY = this.scrollY;
+        this.swipeMoved = false;
+      }
+    };
+    const onPointerMove = (pointer: Phaser.Input.Pointer) => {
+      if (this.creditsOverlay.visible || this.maxScrollY <= 0) return;
+      if (this.scrollbarDragging && pointer.isDown) {
+        this.scrollToPointerY(pointer.y);
+        return;
+      }
+      if (this.swipeActive && pointer.isDown) {
+        const dy = pointer.y - this.swipeStartY;
+        if (Math.abs(dy) > 5) {
+          this.swipeMoved = true;
+        }
+        if (this.swipeMoved) {
+          this.setScrollY(this.swipeStartScrollY - dy);
+        }
+      }
+    };
+    const onPointerUp = () => {
+      this.swipeActive = false;
+      if (this.scrollbarDragging) {
+        this.scrollbarDragging = false;
+        this.updateScrollbar();
+      }
+    };
+
+    this.input.on('wheel', onWheel);
+    this.input.on('pointerdown', onPointerDown);
+    this.input.on('pointermove', onPointerMove);
+    this.input.on('pointerup', onPointerUp);
+
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.unsubNav?.();
       this.unsubBtn?.();
+      this.input.off('wheel', onWheel);
+      this.input.off('pointerdown', onPointerDown);
+      this.input.off('pointermove', onPointerMove);
+      this.input.off('pointerup', onPointerUp);
     });
 
     this.renderContent();
@@ -360,6 +430,9 @@ export class SettingsScene extends Phaser.Scene {
       r.bg?.setStrokeStyle(focused ? 2 : 1, focused ? 0xffe066 : 0x4a3b7d);
       r.lblTxt?.setTint(focused ? 0xffe066 : 0xffffff);
     });
+    if (this.focusArea === 'list' && this.maxScrollY > 0) {
+      this.ensureFocusedRowVisible();
+    }
 
     if (this.prevLayoutBtn && this.nextLayoutBtn && this.prevLayoutTxt && this.nextLayoutTxt) {
       const layoutFocused = this.focusArea === 'list' && this.activeTab === 'gamepad';
@@ -379,6 +452,11 @@ export class SettingsScene extends Phaser.Scene {
   }
 
   private renderContent(): void {
+    this.listContainer = undefined;
+    this.scrollTrack = undefined;
+    this.scrollThumb = undefined;
+    this.scrollY = 0;
+    this.maxScrollY = 0;
     this.contentContainer.removeAll(true);
     this.optionRows = [];
     this.prevLayoutBtn = undefined;
@@ -401,17 +479,42 @@ export class SettingsScene extends Phaser.Scene {
     const title = addPixelText(this, 180, 66, titleStr, 8, 0xffe066, 0.5, 0.5);
     this.contentContainer.add(title);
 
-    const step = defs.length > 6 ? 20 : 23;
-    const startY = defs.length > 6 ? 84 : 90;
-    const rowH = defs.length > 6 ? 17 : 19;
+    const step = 23;
+    const rowH = 19;
+    const viewTop = 78;
+    const viewH = 140;
+    const startY = viewTop + 11;
+    const visibleCount = Math.floor((viewH + (step - rowH)) / step);
+    const scrollable = defs.length > visibleCount;
+
+    this.scrollViewTop = viewTop;
+    this.scrollViewH = viewH;
+    this.scrollRowStep = step;
+    this.scrollRowH = rowH;
+    this.scrollStartY = startY;
+    this.scrollY = 0;
+    this.maxScrollY = scrollable ? Math.max(0, (defs.length - visibleCount) * step) : 0;
+
+    const targetContainer = scrollable ? this.add.container(0, 0) : this.contentContainer;
+    if (scrollable) {
+      this.listContainer = targetContainer;
+      this.contentContainer.add(targetContainer);
+    }
+
+    const rowCenterX = scrollable ? 174 : 180;
+    const rowWidth = scrollable ? 292 : 304;
+    const lblX = scrollable ? 36 : 40;
+    const valX = scrollable ? 312 : 318;
 
     defs.forEach((def, idx) => {
-      const y = startY + idx * step;
-      const bg = this.add.rectangle(180, y, 304, rowH, 0x100d24).setStrokeStyle(1, 0x4a3b7d);
-      const lblTxt = addPixelText(this, 40, y, def.label, 8, 0xffffff, 0, 0.5);
-      const valTxt = addPixelText(this, 318, y, def.getValue(), 8, 0x66ffd9, 1, 0.5);
+      const y = (scrollable ? startY : 90) + idx * step;
+      const bg = this.add.rectangle(rowCenterX, y, rowWidth, rowH, 0x100d24).setStrokeStyle(1, 0x4a3b7d);
+      const lblTxt = addPixelText(this, lblX, y, def.label, 8, 0xffffff, 0, 0.5);
+      const valTxt = addPixelText(this, valX, y, def.getValue(), 8, 0x66ffd9, 1, 0.5);
 
-      bg.setInteractive({ useHandCursor: true }).on('pointerdown', () => {
+      bg.setInteractive({ useHandCursor: true }).on('pointerup', (pointer: Phaser.Input.Pointer) => {
+        if (this.swipeMoved || this.scrollbarDragging) return;
+        if (scrollable && (pointer.y < viewTop || pointer.y > viewTop + viewH)) return;
         this.focusArea = 'list';
         this.listFocusIdx = idx;
         def.onChange(1);
@@ -423,8 +526,73 @@ export class SettingsScene extends Phaser.Scene {
       def.lblTxt = lblTxt;
       def.valTxt = valTxt;
       this.optionRows.push(def);
-      this.contentContainer.add([bg, lblTxt, valTxt]);
+      targetContainer.add([bg, lblTxt, valTxt]);
     });
+
+    if (scrollable) {
+      const trackX = 334;
+      this.scrollTrack = this.add
+        .rectangle(trackX, viewTop + viewH / 2, 6, viewH, 0x100d24)
+        .setStrokeStyle(1, 0x4a3b7d);
+      const thumbH = Math.max(22, Math.round((visibleCount / defs.length) * viewH));
+      this.scrollThumb = this.add.rectangle(trackX, viewTop + thumbH / 2, 4, thumbH, 0x9d7ce8);
+      this.contentContainer.add([this.scrollTrack, this.scrollThumb]);
+      this.updateRowVisibility();
+      this.updateScrollbar();
+    }
+  }
+
+  private setScrollY(nextY: number): void {
+    this.scrollY = Phaser.Math.Clamp(nextY, 0, this.maxScrollY);
+    if (this.listContainer) {
+      this.listContainer.y = -this.scrollY;
+    }
+    this.updateRowVisibility();
+    this.updateScrollbar();
+  }
+
+  private updateRowVisibility(): void {
+    if (this.maxScrollY <= 0) return;
+    const viewBottom = this.scrollViewTop + this.scrollViewH;
+    this.optionRows.forEach((r, idx) => {
+      const screenY = this.scrollStartY + idx * this.scrollRowStep - this.scrollY;
+      const inBox =
+        screenY - this.scrollRowH / 2 >= this.scrollViewTop - 1 &&
+        screenY + this.scrollRowH / 2 <= viewBottom + 1;
+      r.bg?.setVisible(inBox);
+      r.lblTxt?.setVisible(inBox);
+      r.valTxt?.setVisible(inBox);
+    });
+  }
+
+  private scrollToPointerY(pointerY: number): void {
+    if (!this.scrollThumb || this.maxScrollY <= 0) return;
+    const thumbH = this.scrollThumb.height;
+    const usableH = Math.max(1, this.scrollViewH - thumbH);
+    const rel = Phaser.Math.Clamp(pointerY - this.scrollViewTop - thumbH / 2, 0, usableH);
+    this.setScrollY((rel / usableH) * this.maxScrollY);
+  }
+
+  private ensureFocusedRowVisible(): void {
+    if (this.maxScrollY <= 0 || this.optionRows.length === 0) return;
+    const idx = Phaser.Math.Clamp(this.listFocusIdx, 0, this.optionRows.length - 1);
+    const rowTop = this.scrollStartY + idx * this.scrollRowStep - this.scrollRowH / 2;
+    const rowBottom = this.scrollStartY + idx * this.scrollRowStep + this.scrollRowH / 2;
+    const viewBottom = this.scrollViewTop + this.scrollViewH;
+    if (rowTop - this.scrollY < this.scrollViewTop) {
+      this.setScrollY(rowTop - this.scrollViewTop - 1);
+    } else if (rowBottom - this.scrollY > viewBottom) {
+      this.setScrollY(rowBottom - viewBottom + 1);
+    }
+  }
+
+  private updateScrollbar(): void {
+    if (!this.scrollThumb || this.maxScrollY <= 0) return;
+    const thumbH = this.scrollThumb.height;
+    const usableH = Math.max(0, this.scrollViewH - thumbH);
+    const t = this.scrollY / this.maxScrollY;
+    this.scrollThumb.y = this.scrollViewTop + thumbH / 2 + t * usableH;
+    this.scrollThumb.setFillStyle(this.scrollbarDragging ? 0xffe066 : 0x66ffd9);
   }
 
   private renderGameTab(): void {
@@ -458,10 +626,13 @@ export class SettingsScene extends Phaser.Scene {
       },
       {
         label: 'CRT SCANLINES',
-        getValue: () => (settingsSystem.current.crtScanlines ? 'ON' : 'OFF'),
-        onChange: () => {
+        getValue: () => settingsSystem.current.crtScanlines.toUpperCase(),
+        onChange: (dir) => {
           SoundSystem.playSwing();
-          settingsSystem.update({ crtScanlines: !settingsSystem.current.crtScanlines });
+          const modes: Array<'off' | 'medium' | 'high'> = ['off', 'medium', 'high'];
+          const curIdx = modes.indexOf(settingsSystem.current.crtScanlines);
+          const nextIdx = (curIdx + dir + modes.length) % modes.length;
+          settingsSystem.update({ crtScanlines: modes[nextIdx] });
         },
       },
       {
@@ -481,6 +652,14 @@ export class SettingsScene extends Phaser.Scene {
         },
       },
       {
+        label: 'SPEEDRUN COUNTER',
+        getValue: () => (settingsSystem.current.speedrunCounter ? 'ON' : 'OFF'),
+        onChange: () => {
+          SoundSystem.playSwing();
+          settingsSystem.update({ speedrunCounter: !settingsSystem.current.speedrunCounter });
+        },
+      },
+      {
         label: 'CO-OP NETWORK',
         getValue: () => (net.signalingBackend === 'mqtt' ? 'MQTT' : 'NOSTR'),
         onChange: () => {
@@ -488,7 +667,47 @@ export class SettingsScene extends Phaser.Scene {
           net.setSignalingBackend(net.signalingBackend === 'nostr' ? 'mqtt' : 'nostr');
         },
       },
+      {
+        label: 'REPLAY TUTORIAL',
+        getValue: () => 'START >',
+        onChange: () => {
+          this.startReplayTutorial();
+        },
+      },
     ]);
+  }
+
+  private startReplayTutorial(): void {
+    SoundSystem.playPickup();
+    let name = 'Wanderer';
+    if (isSteamworksBuild()) {
+      name = steamSystem.getCachedPlayerName() || 'Wanderer';
+    } else {
+      try {
+        const saved = localStorage.getItem('glimmerdeep_username');
+        if (saved && saved.trim().length > 0) name = saved.trim().slice(0, 12);
+      } catch {
+        // ignore storage access errors
+      }
+    }
+    let avatarId: string = pickRandomPaletteId();
+    if (steamSystem.isAvatarDlcUnlocked()) {
+      try {
+        const savedAvatar = localStorage.getItem('glimmerdeep_selected_avatar');
+        if (savedAvatar && ALL_SELECTABLE_AVATARS.some((a) => a.id === savedAvatar)) {
+          avatarId = savedAvatar;
+        }
+      } catch {
+        // ignore storage access errors
+      }
+    }
+    const petId = steamSystem.isAvatarDlcUnlocked() ? getSavedPetId() : null;
+    net.startSolo(name, avatarId, petId);
+    this.scene.start('GameScene', {
+      isTutorial: true,
+      tutorialReturnToMenu: true,
+      resetRun: true,
+    });
   }
 
   private renderAudioTab(): void {
