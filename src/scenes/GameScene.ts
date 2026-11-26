@@ -269,7 +269,11 @@ export class GameScene extends Phaser.Scene {
   private doorZones: Array<{
     dir: Direction;
     rect: Phaser.Geom.Rectangle;
-    gfx: Phaser.GameObjects.Rectangle;
+    gfx: Phaser.GameObjects.Graphics;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
     targetGx?: number;
     targetGy?: number;
     spawnX?: number;
@@ -425,6 +429,7 @@ export class GameScene extends Phaser.Scene {
   private plateCooldownMs = 0;
   private blockPushCooldownMs = 0;
   private giantStompCooldownMs = 0;
+  private giantStepShakeCooldownMs = 0;
   private projSeq = 0;
   private spectateTargetId: string | null = null;
   private respawnAnimMs = 0;
@@ -675,6 +680,11 @@ export class GameScene extends Phaser.Scene {
         this.physics.add.collider(sp, this.wallGroup);
         this.physics.add.collider(sp, this.crateGroup);
         this.physics.add.collider(sp, this.pushBlockGroup);
+        this.physics.add.collider(sp, this.doorBlockGroup, undefined, (_p, blockerObj) => {
+          const b = blockerObj as Phaser.GameObjects.GameObject;
+          if (!b.getData('isDoorGate')) return false;
+          return this.currentRoom.doorsLocked || (Boolean(b.getData('isBossGate')) && !this.areAllLevel7ChambersCleared());
+        });
 
         const wr = this.add.circle(88, 88, 13, 0x6ef3ff, 0.12).setStrokeStyle(1, 0x6ef3ff, 0.85).setDepth(11).setVisible(false);
         const ar = this.add.circle(88, 88, 2, 0xffe066, 0.9).setStrokeStyle(1, 0x100d24, 0.9).setDepth(15).setVisible(false);
@@ -725,6 +735,11 @@ export class GameScene extends Phaser.Scene {
       this.physics.add.collider(this.playerSprite, this.wallGroup);
       this.physics.add.collider(this.playerSprite, this.crateGroup);
       this.physics.add.collider(this.playerSprite, this.pushBlockGroup);
+      this.physics.add.collider(this.playerSprite, this.doorBlockGroup, undefined, (_p, blockerObj) => {
+        const b = blockerObj as Phaser.GameObjects.GameObject;
+        if (!b.getData('isDoorGate')) return false;
+        return this.currentRoom.doorsLocked || (Boolean(b.getData('isBossGate')) && !this.areAllLevel7ChambersCleared());
+      });
 
       this.spawnOrResetPlayerPet(this.playerSprite.x, this.playerSprite.y);
     }
@@ -1878,37 +1893,99 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    const solidWallTiles = new Set<string>();
+    const isBorderWallOpen = (tx: number, ty: number): boolean => {
+      const hd = hallwayDoorMap.get(`${tx},${ty}`);
+      const isHallwayDoorOpen = hd ? (!hd.isBossGate || l7BossGateOpen) : false;
+      const isStandardDoorTile =
+        !room.hallwayDoors &&
+        !room.isTestRoom &&
+        ((ty === 0 && tx === 5 && (room.connections.north || (room.connections.secretNorth && room.secretRevealed))) ||
+          (ty === hTiles - 1 && tx === 5 && (room.connections.south || (room.connections.secretSouth && room.secretRevealed))) ||
+          (tx === 0 && ty === 5 && (room.connections.west || (room.connections.secretWest && room.secretRevealed))) ||
+          (tx === wTiles - 1 && ty === 5 && (room.connections.east || (room.connections.secretEast && room.secretRevealed))));
+      const isTestExitTile = !!room.isTestRoom && tx === 0 && ty === 16;
+      return isHallwayDoorOpen || isStandardDoorTile || isTestExitTile;
+    };
+
+    for (let ty = 0; ty < hTiles; ty++) {
+      for (let tx = 0; tx < wTiles; tx++) {
+        const isBorder = tx === 0 || tx === wTiles - 1 || ty === 0 || ty === hTiles - 1;
+        if (isBorder && !isBorderWallOpen(tx, ty)) {
+          solidWallTiles.add(`${tx},${ty}`);
+        }
+      }
+    }
+    if (room.isTestRoom) {
+      for (let ty = 1; ty < hTiles - 1; ty++) {
+        if (ty >= 14 && ty <= 18) continue;
+        solidWallTiles.add(`20,${ty}`);
+      }
+    }
+    if (!room.isTestRoom && room.type !== 'start' && room.type !== 'boss' && (room.type !== 'merchant' || room.enemies.length > 0) && room.type !== 'healing' && room.type !== 'puzzle') {
+      for (const p of template.pillars) {
+        const px = p.tx * 16 + 8;
+        const py = p.ty * 16 + 8;
+        if (room.type === 'merchant' && Math.abs(px - 88) < 18 && Math.abs(py - 76) < 18) continue;
+        solidWallTiles.add(`${p.tx},${p.ty}`);
+      }
+    }
+    if ((room.type === 'puzzle' || room.type === 'secret') && room.puzzleObstacles) {
+      for (const obs of room.puzzleObstacles) {
+        solidWallTiles.add(`${obs.tx},${obs.ty}`);
+      }
+    }
+
+    const draw25DWallTile = (
+      targetGfx: Phaser.GameObjects.Graphics,
+      tx: number,
+      ty: number,
+      insetX = 1,
+      accentCenter = false
+    ) => {
+      const hasBelow = solidWallTiles.has(`${tx},${ty + 1}`);
+      const x0 = tx * 16;
+      const y0 = ty * 16;
+      targetGfx.fillStyle(biome.wallDark, 1);
+      targetGfx.fillRect(x0, y0, 16, 16);
+      const topY = y0 + 1;
+      const topH = hasBelow ? 14 : 10;
+      targetGfx.fillStyle(biome.wallTop, 1);
+      targetGfx.fillRect(x0 + insetX, topY, 16 - insetX * 2, topH);
+      if (accentCenter) {
+        targetGfx.fillStyle(biome.accent, 0.45);
+        targetGfx.fillRect(x0 + 6, y0 + 4, 4, 4);
+      }
+    };
+
     // Draw room tiles (11x11 by default, or larger scrollable rooms for Level 7)
     for (let ty = 0; ty < hTiles; ty++) {
+      let rowWallGfx: Phaser.GameObjects.Graphics | null = null;
+      const getRowWallGfx = () => {
+        if (!rowWallGfx) {
+          rowWallGfx = this.add.graphics().setDepth(6 + (ty * 16 + 12) / 1000);
+          this.roomGroup.add(rowWallGfx);
+        }
+        return rowWallGfx;
+      };
       for (let tx = 0; tx < wTiles; tx++) {
         const isBorder = tx === 0 || tx === wTiles - 1 || ty === 0 || ty === hTiles - 1;
         if (isBorder) {
           const hd = hallwayDoorMap.get(`${tx},${ty}`);
-          const isHallwayDoorOpen = hd ? (!hd.isBossGate || l7BossGateOpen) : false;
-          const isStandardDoorTile =
-            !room.hallwayDoors &&
-            !room.isTestRoom &&
-            ((ty === 0 && tx === 5 && (room.connections.north || (room.connections.secretNorth && room.secretRevealed))) ||
-              (ty === hTiles - 1 && tx === 5 && (room.connections.south || (room.connections.secretSouth && room.secretRevealed))) ||
-              (tx === 0 && ty === 5 && (room.connections.west || (room.connections.secretWest && room.secretRevealed))) ||
-              (tx === wTiles - 1 && ty === 5 && (room.connections.east || (room.connections.secretEast && room.secretRevealed))));
-          const isTestExitTile = !!room.isTestRoom && tx === 0 && ty === 16;
 
-          if (isHallwayDoorOpen || isStandardDoorTile || isTestExitTile) {
+          if (isBorderWallOpen(tx, ty)) {
             gfx.fillStyle(biome.floorLight, 1);
             gfx.fillRect(tx * 16, ty * 16, 16, 16);
           } else {
-            gfx.fillStyle(biome.wallDark, 1);
-            gfx.fillRect(tx * 16, ty * 16, 16, 16);
-            gfx.fillStyle(biome.wallTop, 1);
-            gfx.fillRect(tx * 16 + 1, ty * 16 + 1, 14, 10);
+            const wGfx = getRowWallGfx();
+            draw25DWallTile(wGfx, tx, ty, 1, false);
 
             if (hd?.isBossGate && !l7BossGateOpen) {
               // Sealed eldritch boss gate at the end of the Level 7 hallway
-              gfx.fillStyle(0xff8c1a, 0.75);
-              gfx.fillRect(tx * 16 + 4, ty * 16 + 3, 8, 10);
-              gfx.fillStyle(0x0b0917, 0.9);
-              gfx.fillRect(tx * 16 + 6, ty * 16 + 5, 4, 6);
+              wGfx.fillStyle(0xff8c1a, 0.75);
+              wGfx.fillRect(tx * 16 + 4, ty * 16 + 3, 8, 10);
+              wGfx.fillStyle(0x0b0917, 0.9);
+              wGfx.fillRect(tx * 16 + 6, ty * 16 + 5, 4, 6);
             }
 
             // Secret wall crack hint
@@ -1919,9 +1996,9 @@ export class GameScene extends Phaser.Scene {
                 (tx === 0 && ty === 5 && room.connections.secretWest && !room.secretRevealed) ||
                 (tx === wTiles - 1 && ty === 5 && room.connections.secretEast && !room.secretRevealed));
             if (isSecretHint) {
-              gfx.fillStyle(biome.accent, 0.7);
-              gfx.fillRect(tx * 16 + 6, ty * 16 + 4, 2, 8);
-              gfx.fillRect(tx * 16 + 8, ty * 16 + 6, 3, 2);
+              wGfx.fillStyle(biome.accent, 0.7);
+              wGfx.fillRect(tx * 16 + 6, ty * 16 + 4, 2, 8);
+              wGfx.fillRect(tx * 16 + 8, ty * 16 + 6, 3, 2);
             }
 
             const wall = this.add.rectangle(tx * 16 + 8, ty * 16 + 8, 16, 16, 0x000000, 0);
@@ -1965,16 +2042,22 @@ export class GameScene extends Phaser.Scene {
         tint?: number;
       }
     ) => {
-      const dg = this.add.rectangle(x, y, w, h, extra?.tint ?? biome.accent, 0.28).setDepth(2);
+      const dg = this.add.graphics().setDepth(3);
       this.roomGroup.add(dg);
-      // Invisible blocker so enemies/skeletons cannot walk out through doorways
+      // Invisible blocker so enemies/skeletons cannot walk out through doorways (and players cannot pass closed gates)
       const blocker = this.add.rectangle(x, y, w, h, 0x000000, 0);
+      blocker.setData('isDoorGate', true);
+      blocker.setData('isBossGate', Boolean(extra?.isBossGate));
       this.doorBlockGroup.add(blocker);
       this.roomGroup.add(blocker);
       this.doorZones.push({
         dir,
         rect: new Phaser.Geom.Rectangle(x - w / 2, y - h / 2, w, h),
         gfx: dg,
+        x,
+        y,
+        w,
+        h,
         targetGx: extra?.targetGx,
         targetGy: extra?.targetGy,
         spawnX: extra?.spawnX,
@@ -1993,10 +2076,9 @@ export class GameScene extends Phaser.Scene {
       // Divider wall at tx = 20 with a wide archway at ty = 14..18
       for (let ty = 1; ty < hTiles - 1; ty++) {
         if (ty >= 14 && ty <= 18) continue;
-        gfx.fillStyle(biome.wallDark, 1);
-        gfx.fillRect(20 * 16, ty * 16, 16, 16);
-        gfx.fillStyle(biome.wallTop, 1);
-        gfx.fillRect(20 * 16 + 1, ty * 16 + 1, 14, 10);
+        const divGfx = this.add.graphics().setDepth(6 + (ty * 16 + 12) / 1000);
+        draw25DWallTile(divGfx, 20, ty, 1, false);
+        this.roomGroup.add(divGfx);
         const divWall = this.add.rectangle(20 * 16 + 8, ty * 16 + 8, 16, 16, 0x000000, 0);
         this.wallGroup.add(divWall);
         this.roomGroup.add(divWall);
@@ -2017,9 +2099,10 @@ export class GameScene extends Phaser.Scene {
       for (const tx of [3, 4, 5]) {
         const ck = `${tx},26`;
         if (room.brokenCrates?.includes(ck)) continue;
-        const crate = this.crateGroup.create(tx * 16 + 8, 26 * 16 + 8, 'obj_crate') as Phaser.Physics.Arcade.Sprite;
+        const cy = 26 * 16 + 8;
+        const crate = this.crateGroup.create(tx * 16 + 8, cy, 'obj_crate') as Phaser.Physics.Arcade.Sprite;
         crate.setData('crateKey', ck);
-        crate.setDepth(5);
+        crate.setDepth(6 + (cy + 4) / 1000);
         this.roomGroup.add(crate);
       }
 
@@ -2153,7 +2236,7 @@ export class GameScene extends Phaser.Scene {
       room.pillars.forEach((p, idx) => {
         const px = p.tx * 16;
         const py = p.ty * 16;
-        const pGfx = this.add.graphics().setDepth(3);
+        const pGfx = this.add.graphics().setDepth(6 + (py + 20) / 1000);
         this.drawPillarVisual(pGfx, p.tx, p.ty, !!p.used);
         this.roomGroup.add(pGfx);
         this.pillarObjs.push({ idx, x: px + 16, y: py + 16, tx: p.tx, ty: p.ty, gfx: pGfx });
@@ -2170,10 +2253,9 @@ export class GameScene extends Phaser.Scene {
         const px = p.tx * 16 + 8;
         const py = p.ty * 16 + 8;
         if (room.type === 'merchant' && Math.abs(px - 88) < 18 && Math.abs(py - 76) < 18) continue;
-        gfx.fillStyle(biome.wallDark, 1);
-        gfx.fillRect(p.tx * 16, p.ty * 16, 16, 16);
-        gfx.fillStyle(biome.wallTop, 1);
-        gfx.fillRect(p.tx * 16 + 2, p.ty * 16 + 2, 12, 10);
+        const pilGfx = this.add.graphics().setDepth(6 + (py + 4) / 1000);
+        draw25DWallTile(pilGfx, p.tx, p.ty, 2, false);
+        this.roomGroup.add(pilGfx);
         const wall = this.add.rectangle(px, py, 16, 16, 0x000000, 0);
         this.wallGroup.add(wall);
         this.roomGroup.add(wall);
@@ -2187,7 +2269,7 @@ export class GameScene extends Phaser.Scene {
         if (room.type === 'merchant' && Math.abs(cx - 88) < 18 && Math.abs(cy - 76) < 18) continue;
         const crate = this.crateGroup.create(cx, cy, 'obj_crate') as Phaser.Physics.Arcade.Sprite;
         crate.setData('crateKey', ck);
-        crate.setDepth(5);
+        crate.setDepth(6 + (cy + 4) / 1000);
         this.roomGroup.add(crate);
       }
     }
@@ -2357,12 +2439,9 @@ export class GameScene extends Phaser.Scene {
         for (const obs of room.puzzleObstacles) {
           const ox = obs.tx * 16 + 8;
           const oy = obs.ty * 16 + 8;
-          gfx.fillStyle(biome.wallDark, 1);
-          gfx.fillRect(obs.tx * 16, obs.ty * 16, 16, 16);
-          gfx.fillStyle(biome.wallTop, 1);
-          gfx.fillRect(obs.tx * 16 + 2, obs.ty * 16 + 2, 12, 10);
-          gfx.fillStyle(biome.accent, 0.45);
-          gfx.fillRect(obs.tx * 16 + 6, obs.ty * 16 + 5, 4, 4);
+          const obsGfx = this.add.graphics().setDepth(6 + (oy + 4) / 1000);
+          draw25DWallTile(obsGfx, obs.tx, obs.ty, 2, true);
+          this.roomGroup.add(obsGfx);
           const wall = this.add.rectangle(ox, oy, 16, 16, 0x000000, 0);
           this.wallGroup.add(wall);
           this.roomGroup.add(wall);
@@ -2415,7 +2494,7 @@ export class GameScene extends Phaser.Scene {
         for (const b of bp.blocks) {
           const bx = b.tx * 16 + 8;
           const by = b.ty * 16 + 8;
-          const bsp = this.physics.add.sprite(bx, by, 'obj_push_block').setDepth(6);
+          const bsp = this.physics.add.sprite(bx, by, 'obj_push_block').setDepth(6 + (by + 4) / 1000);
           bsp.setImmovable(true);
           bsp.setSize(14, 14);
           this.pushBlockGroup.add(bsp);
@@ -2711,8 +2790,89 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateDoorVisuals(): void {
+    const locked = this.currentRoom.doorsLocked;
     for (const d of this.doorZones) {
-      d.gfx.setFillStyle(this.currentRoom.doorsLocked ? 0xff5d8f : 0x66ffd9, this.currentRoom.doorsLocked ? 0.45 : 0.25);
+      d.gfx.clear();
+      const isGateClosed = locked || (Boolean(d.isBossGate) && !this.areAllLevel7ChambersCleared());
+      if (isGateClosed) {
+        d.gfx.setDepth(7);
+        const x0 = Math.round(d.x - d.w / 2);
+        const y0 = Math.round(d.y - d.h / 2);
+        const w = Math.round(d.w);
+        const h = Math.round(d.h);
+        // Dark iron backing + frame
+        d.gfx.fillStyle(0x100d24, 0.72);
+        d.gfx.fillRect(x0, y0, w, h);
+        d.gfx.lineStyle(1, 0x334155, 1);
+        d.gfx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+
+        if (d.dir === 'north' || d.dir === 'south') {
+          // Horizontal gate with vertical iron bars
+          const barY = y0 + 2;
+          const barH = Math.max(4, h - 4);
+          d.gfx.fillStyle(0x64748b, 1);
+          d.gfx.fillRect(x0 + 1, Math.round(d.y - 1), w - 2, 2);
+          for (let bx = x0 + 2; bx <= x0 + w - 3; bx += 4) {
+            d.gfx.fillStyle(0x475569, 1);
+            d.gfx.fillRect(bx, barY, 2, barH);
+            d.gfx.fillStyle(0x94a3b8, 1);
+            d.gfx.fillRect(bx, barY, 1, barH);
+          }
+        } else {
+          // Vertical gate with horizontal iron bars
+          const barX = x0 + 2;
+          const barW = Math.max(4, w - 4);
+          d.gfx.fillStyle(0x64748b, 1);
+          d.gfx.fillRect(Math.round(d.x - 1), y0 + 1, 2, h - 2);
+          for (let by = y0 + 2; by <= y0 + h - 3; by += 4) {
+            d.gfx.fillStyle(0x475569, 1);
+            d.gfx.fillRect(barX, by, barW, 2);
+            d.gfx.fillStyle(0x94a3b8, 1);
+            d.gfx.fillRect(barX, by, barW, 1);
+          }
+        }
+      } else {
+        // Unlocked: plain floor tile with a yellow arrow pointing out of the room
+        d.gfx.setDepth(3);
+        const cx = Math.round(d.x);
+        const cy = Math.round(d.y);
+        let tipX = cx;
+        let tipY = cy;
+        let p1X = cx;
+        let p1Y = cy;
+        let p2X = cx;
+        let p2Y = cy;
+        let shaftX = cx;
+        let shaftY = cy;
+        let shaftW = 2;
+        let shaftH = 2;
+
+        if (d.dir === 'north') {
+          tipX = cx; tipY = cy - 4;
+          p1X = cx - 4; p1Y = cy;
+          p2X = cx + 4; p2Y = cy;
+          shaftX = cx - 1; shaftY = cy; shaftW = 2; shaftH = 4;
+        } else if (d.dir === 'south') {
+          tipX = cx; tipY = cy + 4;
+          p1X = cx - 4; p1Y = cy;
+          p2X = cx + 4; p2Y = cy;
+          shaftX = cx - 1; shaftY = cy - 4; shaftW = 2; shaftH = 4;
+        } else if (d.dir === 'west') {
+          tipX = cx - 4; tipY = cy;
+          p1X = cx; p1Y = cy - 4;
+          p2X = cx; p2Y = cy + 4;
+          shaftX = cx; shaftY = cy - 1; shaftW = 4; shaftH = 2;
+        } else {
+          tipX = cx + 4; tipY = cy;
+          p1X = cx; p1Y = cy - 4;
+          p2X = cx; p2Y = cy + 4;
+          shaftX = cx - 4; shaftY = cy - 1; shaftW = 4; shaftH = 2;
+        }
+
+        d.gfx.fillStyle(0xffe066, 0.92);
+        d.gfx.fillRect(shaftX, shaftY, shaftW, shaftH);
+        d.gfx.fillTriangle(tipX, tipY, p1X, p1Y, p2X, p2Y);
+      }
     }
   }
 
@@ -5683,6 +5843,17 @@ export class GameScene extends Phaser.Scene {
     }
     const isGiant = StatusEffectManager.has(this.playerState.statusEffects, 'giant');
     this.playerSprite.setScale(isGiant ? 1.85 : 1);
+    this.giantStepShakeCooldownMs = Math.max(0, this.giantStepShakeCooldownMs - delta);
+    if (
+      isGiant &&
+      !this.playerState.downed &&
+      this.dodgeMs <= 0 &&
+      (Math.abs(this.playerState.vx) > 5 || Math.abs(this.playerState.vy) > 5) &&
+      this.giantStepShakeCooldownMs <= 0
+    ) {
+      this.cameras.main.shake(65, 0.0022);
+      this.giantStepShakeCooldownMs = 240;
+    }
     if (isGiant && this.giantStompCooldownMs <= 0 && !this.playerState.downed) {
       for (const e of [...this.activeEnemies]) {
         if (!e.sprite.active) continue;
@@ -5974,6 +6145,9 @@ export class GameScene extends Phaser.Scene {
 
     this.playerState.x = this.playerSprite.x;
     this.playerState.y = this.playerSprite.y;
+    if (this.respawnAnimMs <= 0 && !this.playerState.downed) {
+      this.playerSprite.setDepth(6 + (this.playerSprite.y + 6) / 1000);
+    }
     const body = this.playerSprite.body as Phaser.Physics.Arcade.Body | null;
     this.playerState.vx = body ? body.velocity.x : 0;
     this.playerState.vy = body ? body.velocity.y : 0;
@@ -7277,7 +7451,7 @@ export class GameScene extends Phaser.Scene {
     pet.sprite.setFrame(frame);
     pet.sprite.setFlipX(pet.facingLeft);
     pet.sprite.setPosition(pet.x, pet.y - pet.z);
-    pet.sprite.setDepth(pet.z > 3 ? 11 : 9);
+    pet.sprite.setDepth(pet.z > 3 ? 11 : 6 + (pet.y + 4) / 1000);
 
     const shadowScale = Math.max(0.55, 1 - pet.z * 0.045);
     pet.shadow.setPosition(pet.x, pet.y + 5);
@@ -7347,6 +7521,7 @@ export class GameScene extends Phaser.Scene {
         if (!e.sprite.active) continue;
         e.sprite.setVelocity(0, 0);
         e.sprite.setFrame(Math.floor(time / 280) % 2);
+        e.sprite.setDepth(6 + (e.sprite.y + 4) / 1000);
         if (e.targetX !== undefined && e.targetY !== undefined) {
           const leadSec = Math.min(0.08, Math.max(0, (nowPerf - (e.lastSyncAt ?? nowPerf)) / 1000));
           const predX = e.targetX + (e.targetVx ?? 0) * leadSec;
@@ -7392,6 +7567,7 @@ export class GameScene extends Phaser.Scene {
 
     for (const e of [...this.activeEnemies]) {
       if (!e.sprite.active) continue;
+      e.sprite.setDepth(6 + (e.sprite.y + 4) / 1000);
       if (this.isTestRoom && e.sprite.x < 21 * 16 + 8) {
         e.sprite.x = 21 * 16 + 8;
       }
@@ -10131,10 +10307,12 @@ export class GameScene extends Phaser.Scene {
       model.tx = ntx;
       model.ty = nty;
       this.blockPushCooldownMs = 210;
+      const targetBlockY = nty * 16 + 8;
+      bVis.sprite.setDepth(6 + (targetBlockY + 4) / 1000);
       this.tweens.add({
         targets: bVis.sprite,
         x: ntx * 16 + 8,
-        y: nty * 16 + 8,
+        y: targetBlockY,
         duration: 110,
         ease: 'Quad.easeOut',
       });
@@ -10410,7 +10588,7 @@ export class GameScene extends Phaser.Scene {
         const cy = 26 * 16 + 8;
         const crate = this.crateGroup.create(cx, cy, 'obj_crate') as Phaser.Physics.Arcade.Sprite;
         crate.setData('crateKey', ck);
-        crate.setDepth(5);
+        crate.setDepth(6 + (cy + 4) / 1000);
         this.roomGroup.add(crate);
         this.spawnParticles(cx, cy, 0xb08968, 4);
       } else {
@@ -10826,7 +11004,7 @@ export class GameScene extends Phaser.Scene {
       let vis = this.remoteSprites.get(peerId);
       if (sameRoom) {
         if (!vis) {
-          const sp = this.add.sprite(st.x, st.y, `player_${st.paletteId}`, 0).setDepth(10);
+          const sp = this.add.sprite(st.x, st.y, `player_${st.paletteId}`, 0).setDepth(6 + (st.y + 6) / 1000);
           const lb = addPixelText(this, st.x, st.y - 16, st.name, 8, 0xffe066, 0.5, 0.5).setDepth(11);
           vis = {
             sprite: sp,
@@ -10860,6 +11038,9 @@ export class GameScene extends Phaser.Scene {
               Phaser.Math.Linear(vis.sprite.x, predX, playerLerp),
               Phaser.Math.Linear(vis.sprite.y, predY, playerLerp)
             );
+          }
+          if (!st.downed) {
+            vis.sprite.setDepth(6 + (vis.sprite.y + 6) / 1000);
           }
           vis.sprite.setFlipX(st.flipX);
           vis.sprite.setDepth(st.downed ? 7 : 10);

@@ -164,8 +164,8 @@ const MOBILE_CSS = `
 
   .mc-stick-base {
     position: relative;
-    width: min(38vw, 152px);
-    height: min(38vw, 152px);
+    width: min(33vw, 130px);
+    height: min(33vw, 130px);
     border-radius: 50%;
     background: radial-gradient(circle at center, #1b1538 0%, #100d24 85%);
     border: 3px solid #6c5bb3;
@@ -200,8 +200,8 @@ const MOBILE_CSS = `
   }
 
   .mc-dpad {
-    width: min(38vw, 152px);
-    height: min(38vw, 152px);
+    width: min(33vw, 130px);
+    height: min(33vw, 130px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -226,10 +226,10 @@ const MOBILE_CSS = `
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
+    gap: 4px;
     background: #141029;
     border: 2px solid #4a3b7d;
-    padding: 4px 8px;
+    padding: 3px 6px;
   }
 
   .mc-stats-bar.mc-hidden {
@@ -243,23 +243,23 @@ const MOBILE_CSS = `
   }
 
   .mc-hearts {
-    display: grid;
-    grid-template-columns: repeat(4, 16px);
-    gap: 2px;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 1.5px;
     align-items: center;
   }
 
   .mc-heart-svg,
   .mc-stam-svg,
   .mc-shard-svg {
-    width: 16px;
-    height: 16px;
+    width: 13px;
+    height: 13px;
     flex-shrink: 0;
     display: block;
   }
 
   .mc-shard-count {
-    font-size: 13px;
+    font-size: 11px;
     font-weight: bold;
     color: #6ef3ff;
   }
@@ -267,12 +267,12 @@ const MOBILE_CSS = `
   .mc-statuses {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
   }
 
   .mc-status-pip {
-    width: 11px;
-    height: 11px;
+    width: 9px;
+    height: 9px;
     border: 1px solid #100d24;
   }
 
@@ -281,10 +281,10 @@ const MOBILE_CSS = `
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     background: #181430;
     border: 2px solid #5d4e9e;
-    padding: 5px 8px;
+    padding: 3px 6px;
     box-shadow: inset 0 -2px 0 #100d24;
   }
 
@@ -294,7 +294,7 @@ const MOBILE_CSS = `
 
   .mc-inv-row {
     width: 100%;
-    min-height: 50px;
+    min-height: 38px;
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
@@ -304,25 +304,27 @@ const MOBILE_CSS = `
     display: flex;
     justify-content: center;
     align-items: center;
-    gap: 10px;
+    gap: 7px;
   }
 
   .mc-inv-drop {
     justify-self: start;
-    margin-left: 10px;
+    margin-left: 8px;
+    width: 34px;
+    height: 34px;
   }
 
   .mc-inv-slot {
     position: relative;
-    width: 50px;
-    height: 50px;
+    width: 38px;
+    height: 38px;
     background: #100d24;
     border: 2px solid #4a3b7d;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 3px;
+    padding: 2px;
     cursor: pointer;
   }
 
@@ -333,8 +335,8 @@ const MOBILE_CSS = `
   }
 
   .mc-inv-icon {
-    width: 34px;
-    height: 34px;
+    width: 24px;
+    height: 24px;
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     object-fit: contain;
@@ -347,9 +349,9 @@ const MOBILE_CSS = `
 
   .mc-inv-use-bg {
     position: absolute;
-    left: 4px;
-    right: 4px;
-    bottom: 3px;
+    left: 3px;
+    right: 3px;
+    bottom: 2px;
     height: 3px;
     background: #0b0917;
     pointer-events: none;
@@ -373,11 +375,11 @@ const MOBILE_CSS = `
     align-items: center;
     text-align: center;
     justify-content: center;
-    gap: 2px;
+    gap: 1px;
   }
 
   .mc-inv-name {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: bold;
     color: #ffffff;
     white-space: nowrap;
@@ -386,10 +388,10 @@ const MOBILE_CSS = `
   }
 
   .mc-inv-desc {
-    font-size: 9px;
+    font-size: 8px;
     color: #b8a1ff;
-    line-height: 11px;
-    height: 22px;
+    line-height: 10px;
+    height: 20px;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;

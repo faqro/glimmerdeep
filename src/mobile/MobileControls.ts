@@ -194,17 +194,15 @@ export function initMobileControls(root: HTMLElement): void {
 
     if (heartsEl) {
       const numHearts = Math.min(10, Math.ceil(state.maxHp / 2));
-      const cols = numHearts <= 8 ? 4 : 5;
-      heartsEl.style.gridTemplateColumns = `repeat(${cols}, 16px)`;
       let html = '';
       for (let i = 0; i < numHearts; i++) {
         const rem = state.hp - i * 2;
         if (rem >= 2) {
-          html += '<svg viewBox="0 0 12 12" width="16" height="16" class="mc-heart-svg"><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2 7.5 1.7 9.2 1.4 10.3 2.3 11.5 3.3 11.5 5.2 10.5 6.2Z" fill="#ff5d8f" stroke="#100d24" stroke-width="1"/></svg>';
+          html += '<svg viewBox="0 0 12 12" width="13" height="13" class="mc-heart-svg"><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2 7.5 1.7 9.2 1.4 10.3 2.3 11.5 3.3 11.5 5.2 10.5 6.2Z" fill="#ff5d8f" stroke="#100d24" stroke-width="1"/></svg>';
         } else if (rem === 1) {
-          html += '<svg viewBox="0 0 12 12" width="16" height="16" class="mc-heart-svg"><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2 7.5 1.7 9.2 1.4 10.3 2.3 11.5 3.3 11.5 5.2 10.5 6.2Z" fill="#2b2447" stroke="#100d24" stroke-width="1"/><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2Z" fill="#ff5d8f"/></svg>';
+          html += '<svg viewBox="0 0 12 12" width="13" height="13" class="mc-heart-svg"><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2 7.5 1.7 9.2 1.4 10.3 2.3 11.5 3.3 11.5 5.2 10.5 6.2Z" fill="#2b2447" stroke="#100d24" stroke-width="1"/><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2Z" fill="#ff5d8f"/></svg>';
         } else {
-          html += '<svg viewBox="0 0 12 12" width="16" height="16" class="mc-heart-svg"><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2 7.5 1.7 9.2 1.4 10.3 2.3 11.5 3.3 11.5 5.2 10.5 6.2Z" fill="#2b2447" stroke="#100d24" stroke-width="1"/></svg>';
+          html += '<svg viewBox="0 0 12 12" width="13" height="13" class="mc-heart-svg"><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2 7.5 1.7 9.2 1.4 10.3 2.3 11.5 3.3 11.5 5.2 10.5 6.2Z" fill="#2b2447" stroke="#100d24" stroke-width="1"/></svg>';
         }
       }
       heartsEl.innerHTML = html;
@@ -214,7 +212,7 @@ export function initMobileControls(root: HTMLElement): void {
       const shieldCount = Math.min(6, Math.max(0, state.shield));
       let html = '';
       for (let i = 0; i < shieldCount; i++) {
-        html += '<svg viewBox="0 0 12 12" width="16" height="16" class="mc-heart-svg"><path d="M2 2h8v4c0 2.8-4 5-4 5S2 8.8 2 6V2z" fill="#6ef3ff" stroke="#100d24" stroke-width="1"/></svg>';
+        html += '<svg viewBox="0 0 12 12" width="13" height="13" class="mc-heart-svg"><path d="M2 2h8v4c0 2.8-4 5-4 5S2 8.8 2 6V2z" fill="#6ef3ff" stroke="#100d24" stroke-width="1"/></svg>';
       }
       shieldsEl.innerHTML = html;
     }
@@ -225,7 +223,7 @@ export function initMobileControls(root: HTMLElement): void {
       let html = '';
       for (let i = 0; i < maxStam; i++) {
         const fill = i < fullStam ? '#ffe066' : '#2b2447';
-        html += `<svg viewBox="0 0 12 12" width="16" height="16" class="mc-stam-svg"><polygon points="7,1 3,7 6,7 5,11 9,5 6,5" fill="${fill}" stroke="#100d24" stroke-width="0.9"/></svg>`;
+        html += `<svg viewBox="0 0 12 12" width="13" height="13" class="mc-stam-svg"><polygon points="7,1 3,7 6,7 5,11 9,5 6,5" fill="${fill}" stroke="#100d24" stroke-width="0.9"/></svg>`;
       }
       staminaEl.innerHTML = html;
     }

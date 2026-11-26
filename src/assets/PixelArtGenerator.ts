@@ -1095,13 +1095,21 @@ export class PixelArtGenerator {
     }
     spikeActive.tex.refresh();
 
-    // Crate / Destructible (16x16)
+    // Crate / Destructible (16x16, 2.5D top + front face matching walls)
     const crate = this.createCanvas('obj_crate', 16, 16);
     this.px(crate.ctx, 1, 1, '#100d24', 14, 14);
-    this.px(crate.ctx, 2, 2, '#7f5539', 12, 12);
-    this.px(crate.ctx, 3, 3, '#b08968', 10, 10);
-    this.px(crate.ctx, 3, 7, '#7f5539', 10, 2);
-    this.px(crate.ctx, 7, 3, '#7f5539', 2, 10);
+    // Front face (bottom 4px)
+    this.px(crate.ctx, 2, 10, '#7f5539', 12, 4);
+    this.px(crate.ctx, 2, 10, '#9c6d49', 12, 1);
+    this.px(crate.ctx, 5, 10, '#5c3b24', 1, 4);
+    this.px(crate.ctx, 10, 10, '#5c3b24', 1, 4);
+    // Top face (top 8px)
+    this.px(crate.ctx, 2, 2, '#b08968', 12, 8);
+    this.px(crate.ctx, 3, 3, '#c89b6e', 10, 6);
+    this.px(crate.ctx, 2, 2, '#e0b689', 12, 1);
+    // Cross slats on top face
+    this.px(crate.ctx, 2, 5, '#7f5539', 12, 2);
+    this.px(crate.ctx, 7, 2, '#7f5539', 2, 8);
     crate.tex.refresh();
   }
 
