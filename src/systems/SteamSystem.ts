@@ -58,6 +58,24 @@ export function isSteamworksBuild(): boolean {
 class SteamSystem {
   private unlocked = new Set<string>();
   private _hasAvatarDlc = false;
+  private _playerName: string | null = null;
+
+  public getCachedPlayerName(): string | null {
+    return this._playerName;
+  }
+
+  public async refreshPlayerName(): Promise<string | null> {
+    if (!isSteamworksBuild()) return null;
+    try {
+      const name = await window.glimmerdeepDesktop?.getPlayerName();
+      if (name && name.trim().length > 0) {
+        this._playerName = name.trim().slice(0, 12);
+      }
+    } catch {
+      // ignore
+    }
+    return this._playerName;
+  }
 
   public isAvatarDlcUnlocked(): boolean {
     if (hasAdminMasterUnlock()) return true;

@@ -8,7 +8,7 @@ import { VirtualKeyboard } from '../mobile/VirtualKeyboard';
 import { inputSystem, localCoopSession } from '../systems/InputSystem';
 import { JournalSystem } from '../systems/JournalSystem';
 import { net } from '../systems/MultiplayerSystem';
-import { isDesktopBuild, steamSystem } from '../systems/SteamSystem';
+import { isDesktopBuild, isSteamworksBuild, steamSystem } from '../systems/SteamSystem';
 import { getDailySeed } from '../utils/SeededGenerator';
 
 const USERNAME_STORAGE_KEY = 'glimmerdeep_username';
@@ -64,13 +64,24 @@ export class MenuScene extends Phaser.Scene {
     this.joinCode = '';
     this.mobileFocusIndex = 0;
     this.modalFocusIndex = 0;
-    try {
-      const saved = localStorage.getItem(USERNAME_STORAGE_KEY);
-      if (saved && saved.trim().length > 0) {
-        this.playerName = saved.trim().slice(0, 12);
+    const isSteam = isSteamworksBuild();
+    if (isSteam) {
+      this.playerName = steamSystem.getCachedPlayerName() || 'Wanderer';
+      void steamSystem.refreshPlayerName().then((sn) => {
+        if (sn && this.scene.isActive('MenuScene')) {
+          this.playerName = sn;
+          this.refreshTextboxes();
+        }
+      });
+    } else {
+      try {
+        const saved = localStorage.getItem(USERNAME_STORAGE_KEY);
+        if (saved && saved.trim().length > 0) {
+          this.playerName = saved.trim().slice(0, 12);
+        }
+      } catch {
+        // ignore storage access errors
       }
-    } catch {
-      // ignore storage access errors
     }
 
     this.add.rectangle(180, 135, 360, 270, 0x0e0c21);
@@ -158,10 +169,13 @@ export class MenuScene extends Phaser.Scene {
     }
 
     addPixelText(this, 96, 166, 'NAME:', 8, 0x9d8ce0, 0.5, 0);
-    this.nameBoxBg = this.add.rectangle(96, 186, 106, 18, 0x100d24).setStrokeStyle(1, 0x6c5bb3);
-    this.nameText = addPixelText(this, 96, 186, this.playerName, 8, 0xffffff, 0.5, 0.5);
+    this.nameBoxBg = this.add
+      .rectangle(96, 186, 106, 18, 0x100d24)
+      .setStrokeStyle(1, 0x6c5bb3)
+      .setVisible(!isSteam);
+    this.nameText = addPixelText(this, 96, 186, this.playerName, 8, isSteam ? 0x66ffd9 : 0xffffff, 0.5, 0.5);
 
-    if (!isMobileMode()) {
+    if (!isMobileMode() && !isSteam) {
       this.nameBoxBg.setInteractive({ useHandCursor: true });
       this.nameBoxBg.on('pointerdown', () => {
         if (this.joinModal.visible) return;
@@ -461,7 +475,11 @@ export class MenuScene extends Phaser.Scene {
 
   private refreshTextboxes(): void {
     const showCursor = this.cursorBlink ? '_' : ' ';
-    if (this.activeField === 'name') {
+    const isSteam = isSteamworksBuild();
+    if (isSteam) {
+      this.nameBoxBg.setVisible(false);
+      this.nameText.setText(this.playerName || 'Wanderer').setTint(0x66ffd9);
+    } else if (this.activeField === 'name') {
       this.nameBoxBg.setStrokeStyle(1, 0xffe066);
       this.nameText.setText(`${this.playerName}${showCursor}`).setTint(0xffe066);
     } else {
@@ -547,13 +565,17 @@ export class MenuScene extends Phaser.Scene {
       else if (this.mobileFocusIndex === lastBtnIdx) this.mobileFocusIndex = 0;
       else this.mobileFocusIndex = this.mobileFocusIndex + 1;
     } else if (dir === 'left') {
-      if (this.mobileFocusIndex === nameIdx && this.dlcUnlocked) {
+      if (isSteamworksBuild()) {
+        if (this.dlcUnlocked) this.cyclePalette(-1);
+      } else if (this.mobileFocusIndex === nameIdx && this.dlcUnlocked) {
         this.cyclePalette(-1);
       } else {
         this.mobileFocusIndex = nameIdx;
       }
     } else if (dir === 'right') {
-      if (this.mobileFocusIndex === nameIdx && this.dlcUnlocked) {
+      if (isSteamworksBuild()) {
+        this.mobileFocusIndex = 0;
+      } else if (this.mobileFocusIndex === nameIdx && this.dlcUnlocked) {
         this.cyclePalette(1);
       } else if (this.mobileFocusIndex === nameIdx) {
         this.mobileFocusIndex = 0;
@@ -615,7 +637,7 @@ export class MenuScene extends Phaser.Scene {
 
     const nameIdx = this.menuButtons.length;
 
-    if (this.mobileFocusIndex === nameIdx) {
+    if (this.mobileFocusIndex === nameIdx && !isSteamworksBuild()) {
       if (!isMobileMode()) {
         this.activeField = this.activeField === 'name' ? 'none' : 'name';
         this.refreshTextboxes();
