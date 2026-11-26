@@ -31,10 +31,10 @@ jobs:
           VITE_STEAMWORKS: 'false'
         run: npm run build
 
-      - name: Package Windows Standalone (NSIS + ZIP)
+      - name: Package Windows Standalone (Electron)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --win nsis zip --config.extraMetadata.steamworks=false
+        run: npx electron-builder --win dir --config.extraMetadata.steamworks=false
 
       - name: Prepare release artifacts
         shell: pwsh
@@ -42,25 +42,19 @@ jobs:
           TAG_NAME: ${{ github.event.release.tag_name || github.run_number }}
         run: |
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
-          Get-ChildItem -Path release-electron -File | Where-Object { $_.Extension -in '.exe', '.zip' } | ForEach-Object {
-            Copy-Item $_.FullName -Destination "release-artifacts/"
-          }
+          Compress-Archive -Path "release-electron\win-unpacked\*" -DestinationPath "release-artifacts\Glimmerdeep-${TAG_NAME}-win-standalone.zip" -Force
 
       - name: Upload Windows Standalone to GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            release-artifacts/*.exe
-            release-artifacts/*.zip
+          files: release-artifacts/*.zip
 
       - name: Upload Windows Standalone workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: glimmerdeep-windows-standalone
-          path: |
-            release-artifacts/*.exe
-            release-artifacts/*.zip
+          path: release-artifacts/*.zip
 
   build-steam-windows:
     name: Windows (Steamworks)
@@ -254,7 +248,6 @@ jobs:
             "Desc" "Glimmerdeep ${RELEASE_TAG}"
             "BuildOutput" "$(pwd)/steam-build/output"
             "ContentRoot" "$(pwd)/steam-build/depots"
-            "SetLive" "default"
             "Depots"
             {
               "${STEAM_DEPOT_ID_WIN}" "$(pwd)/steam-build/depot_win.vdf"
@@ -281,13 +274,21 @@ jobs:
             fi
           done
 
-          mkdir -p ~/steamcmd/config ~/.steam/steam/config ~/.local/share/Steam/config
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y lib32gcc-s1 lib32stdc++6
+
+          mkdir -p ~/steamcmd/config ~/.steam/steam/config ~/.local/share/Steam/config ~/Steam/config
           curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar zxf - -C ~/steamcmd
+
+          # Self-update SteamCMD first so it initializes directories before reading config.vdf
+          ~/steamcmd/steamcmd.sh +quit || true
 
           if [ -n "$STEAM_CONFIG_VDF_BASE64" ]; then
             echo "$STEAM_CONFIG_VDF_BASE64" | tr -d '\r\n ' | base64 -d > ~/steamcmd/config/config.vdf
             cp ~/steamcmd/config/config.vdf ~/.steam/steam/config/config.vdf
             cp ~/steamcmd/config/config.vdf ~/.local/share/Steam/config/config.vdf
+            cp ~/steamcmd/config/config.vdf ~/Steam/config/config.vdf
             ~/steamcmd/steamcmd.sh +login "$STEAM_USERNAME" +run_app_build "$(pwd)/steam-build/app_build.vdf" +quit
           else
             ~/steamcmd/steamcmd.sh +login "$STEAM_USERNAME" "$STEAM_PASSWORD" +run_app_build "$(pwd)/steam-build/app_build.vdf" +quit
