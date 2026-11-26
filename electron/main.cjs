@@ -185,6 +185,89 @@ ipcMain.handle('steam:submitLeaderboardTime', async (_event, leaderboardName, ti
   }
 });
 
+ipcMain.handle('steam:getLeaderboardData', async (_event, leaderboardName) => {
+  const isCoop = String(leaderboardName || '').toLowerCase().includes('co-op');
+  const bestStat = isCoop ? 'mp_best_time_ms' : 'solo_best_time_ms';
+  const clearsStat = isCoop ? 'mp_clears' : 'solo_clears';
+
+  if (!steamClient) {
+    return { available: false, bestTimeMs: null, clears: 0, entries: [], appId: null };
+  }
+
+  let bestTimeMs = null;
+  let clears = 0;
+  let appId = null;
+  const entries = [];
+
+  try {
+    const rawBest = steamClient.stats.getInt(bestStat);
+    if (typeof rawBest === 'number' && rawBest > 0) bestTimeMs = rawBest;
+    clears = steamClient.stats.getInt(clearsStat) ?? 0;
+  } catch {
+    // ignore stat errors
+  }
+
+  try {
+    appId = steamClient.utils?.getAppId?.() ?? null;
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (steamClient.leaderboard && typeof steamClient.leaderboard.findOrCreateLeaderboard === 'function') {
+      const lb = await steamClient.leaderboard.findOrCreateLeaderboard(
+        String(leaderboardName || 'Solo Speedrun'),
+        'Ascending',
+        'TimeMilliseconds'
+      );
+      const selfId = steamClient.localplayer?.getSteamId?.()?.steamId64?.toString?.() ?? '';
+      let rawEntries = null;
+      if (lb && typeof lb.downloadScores === 'function') {
+        rawEntries = await lb.downloadScores('Global', 1, 10);
+      } else if (lb && typeof lb.getScores === 'function') {
+        rawEntries = await lb.getScores('Global', 1, 10);
+      }
+      if (Array.isArray(rawEntries)) {
+        for (let i = 0; i < rawEntries.length; i++) {
+          const r = rawEntries[i];
+          const steamIdStr = r.steamId?.steamId64?.toString?.() ?? r.steamId?.toString?.() ?? '';
+          const scoreVal = typeof r.score === 'number' ? r.score : Number(r.score) || 0;
+          if (scoreVal > 0) {
+            entries.push({
+              rank: typeof r.rank === 'number' ? r.rank : i + 1,
+              name: String(r.name || r.personaName || (steamIdStr && steamIdStr === selfId ? steamClient.localplayer?.getName?.() : 'Player') || 'Player'),
+              timeMs: scoreVal,
+              isSelf: Boolean(selfId && steamIdStr === selfId),
+            });
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Steamworks] getLeaderboardData failed:', err?.message || err);
+  }
+
+  return { available: true, bestTimeMs, clears, entries, appId };
+});
+
+ipcMain.handle('steam:openLeaderboardOverlay', () => {
+  if (!steamClient || !steamClient.overlay) return false;
+  try {
+    const appId = steamClient.utils?.getAppId?.();
+    if (appId && typeof steamClient.overlay.activateToWebPage === 'function') {
+      steamClient.overlay.activateToWebPage(`https://steamcommunity.com/stats/${appId}/leaderboards/`);
+      return true;
+    }
+    if (typeof steamClient.overlay.activateDialog === 'function') {
+      steamClient.overlay.activateDialog(5); // Stats
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+});
+
 ipcMain.handle('steam:incrementStat', (_event, statName, amount = 1) => {
   if (!steamClient || typeof statName !== 'string') return false;
   try {

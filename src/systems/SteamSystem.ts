@@ -149,6 +149,34 @@ class SteamSystem {
     }
   }
 
+  public async getLeaderboardData(name: 'Solo Speedrun' | 'Co-op Speedrun'): Promise<{
+    available: boolean;
+    bestTimeMs: number | null;
+    clears: number;
+    entries: Array<{ rank: number; name: string; timeMs: number; isSelf?: boolean }>;
+    appId: number | null;
+  }> {
+    if (!isSteamworksBuild()) {
+      return { available: false, bestTimeMs: null, clears: 0, entries: [], appId: null };
+    }
+    try {
+      const res = await window.glimmerdeepDesktop?.getLeaderboardData(name);
+      if (res) return res;
+    } catch {
+      // ignore IPC errors
+    }
+    return { available: false, bestTimeMs: null, clears: 0, entries: [], appId: null };
+  }
+
+  public async openLeaderboardOverlay(): Promise<boolean> {
+    if (!isSteamworksBuild()) return false;
+    try {
+      return Boolean(await window.glimmerdeepDesktop?.openLeaderboardOverlay());
+    } catch {
+      return false;
+    }
+  }
+
   public recordDeath(): void {
     let total = 0;
     try {

@@ -3,6 +3,7 @@ import { version } from '../../package.json';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
 import { ALL_SELECTABLE_AVATARS, pickRandomPaletteId } from '../data/palettes';
+import { getPetById, getSavedPetId } from '../data/pets';
 import { isMobileMode, NavDir, VirtualButton } from '../mobile/MobileInput';
 import { VirtualKeyboard } from '../mobile/VirtualKeyboard';
 import { inputSystem, localCoopSession } from '../systems/InputSystem';
@@ -20,8 +21,11 @@ export class MenuScene extends Phaser.Scene {
   private activeField: 'none' | 'name' | 'code' = 'none';
 
   private previewSprite!: Phaser.GameObjects.Sprite;
+  private previewPetSprite?: Phaser.GameObjects.Sprite;
   private skinsBtnBg?: Phaser.GameObjects.Image;
   private skinsBtnTxt?: Phaser.GameObjects.BitmapText;
+  private petsBtnBg?: Phaser.GameObjects.Image;
+  private petsBtnTxt?: Phaser.GameObjects.BitmapText;
   private selectedAvatarIndex = 0;
   private dlcUnlocked = false;
   private nameBoxBg!: Phaser.GameObjects.Rectangle;
@@ -145,6 +149,7 @@ export class MenuScene extends Phaser.Scene {
 
     const previewPalId = pickRandomPaletteId();
     this.previewSprite = this.add.sprite(96, 114, `player_${previewPalId}`, 0).setScale(2);
+    this.previewPetSprite = this.add.sprite(116, 122, 'pet_tabby_cat', 0).setScale(1.15).setVisible(false);
     this.time.addEvent({
       delay: 350,
       loop: true,
@@ -152,16 +157,28 @@ export class MenuScene extends Phaser.Scene {
         if (this.previewSprite?.active) {
           this.previewSprite.setFrame(this.previewSprite.frame.name === '0' ? 1 : 0);
         }
+        if (this.previewPetSprite?.active && this.previewPetSprite.visible) {
+          const cur = Number(this.previewPetSprite.frame.name) || 0;
+          this.previewPetSprite.setFrame((cur + 1) % 3);
+        }
       },
     });
 
     this.dlcUnlocked = steamSystem.isAvatarDlcUnlocked();
-    this.skinsBtnBg = this.add.image(96, 152, 'ui_btn').setDisplaySize(84, 16).setVisible(false);
-    this.skinsBtnTxt = addPixelText(this, 96, 152, 'SKINS', 8, 0x66ffd9, 0.5, 0.5).setVisible(false);
+    this.skinsBtnBg = this.add.image(66, 152, 'ui_btn').setDisplaySize(54, 16).setVisible(false);
+    this.skinsBtnTxt = addPixelText(this, 66, 152, 'SKINS', 8, 0x66ffd9, 0.5, 0.5).setVisible(false);
+    this.petsBtnBg = this.add.image(126, 152, 'ui_btn').setDisplaySize(54, 16).setVisible(false);
+    this.petsBtnTxt = addPixelText(this, 126, 152, 'PETS', 8, 0x66ffd9, 0.5, 0.5).setVisible(false);
+
     const openSkinBrowser = () => {
       if (!this.dlcUnlocked || this.joinModal.visible) return;
       SoundSystem.playPickup();
       this.scene.start('SkinScene');
+    };
+    const openPetBrowser = () => {
+      if (!this.dlcUnlocked || this.joinModal.visible) return;
+      SoundSystem.playPickup();
+      this.scene.start('PetScene');
     };
     if (!isMobileMode()) {
       this.skinsBtnBg.setInteractive({ useHandCursor: true }).on('pointerdown', openSkinBrowser);
@@ -173,7 +190,17 @@ export class MenuScene extends Phaser.Scene {
         this.skinsBtnBg?.setTexture('ui_btn');
         this.skinsBtnTxt?.setTint(0x66ffd9);
       });
+      this.petsBtnBg.setInteractive({ useHandCursor: true }).on('pointerdown', openPetBrowser);
+      this.petsBtnBg.on('pointerover', () => {
+        this.petsBtnBg?.setTexture('ui_btn_hover');
+        this.petsBtnTxt?.setTint(0xffe066);
+      });
+      this.petsBtnBg.on('pointerout', () => {
+        this.petsBtnBg?.setTexture('ui_btn');
+        this.petsBtnTxt?.setTint(0x66ffd9);
+      });
       this.previewSprite.setInteractive({ useHandCursor: true }).on('pointerdown', openSkinBrowser);
+      this.previewPetSprite.setInteractive({ useHandCursor: true }).on('pointerdown', openPetBrowser);
     }
 
     try {
@@ -215,13 +242,14 @@ export class MenuScene extends Phaser.Scene {
     }
 
     const showLocalCoop = isDesktopBuild();
-    const btnStep = showLocalCoop ? 22 : 26;
-    let btnY = showLocalCoop ? 84 : 92;
+    const showLeaderboard = isSteamworksBuild();
+    const btnStep = showLeaderboard ? 21 : showLocalCoop ? 22 : 26;
+    let btnY = showLeaderboard ? 80 : showLocalCoop ? 84 : 92;
 
     this.createPixelButton(256, btnY, 'PLAY SOLO', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
-      net.startSolo(this.playerName.trim() || 'Wanderer', this.getChosenAvatarId());
+      net.startSolo(this.playerName.trim() || 'Wanderer', this.getChosenAvatarId(), this.getChosenPetId());
       const seed = getDailySeed(0);
       this.scene.start('GameScene', { levelIndex: 0, floorSeed: seed, resetRun: true });
     });
@@ -230,7 +258,7 @@ export class MenuScene extends Phaser.Scene {
     this.createPixelButton(256, btnY, 'CREATE CO-OP', () => {
       if (this.joinModal.visible) return;
       SoundSystem.playPickup();
-      net.hostGame(this.playerName.trim() || 'Host', this.getChosenAvatarId());
+      net.hostGame(this.playerName.trim() || 'Host', this.getChosenAvatarId(), this.getChosenPetId());
       this.scene.start('LobbyScene');
     });
     btnY += btnStep;
@@ -260,6 +288,15 @@ export class MenuScene extends Phaser.Scene {
       this.scene.start('JournalScene');
     });
     btnY += btnStep;
+
+    if (showLeaderboard) {
+      this.createPixelButton(256, btnY, 'LEADERBOARD', () => {
+        if (this.joinModal.visible) return;
+        SoundSystem.playPickup();
+        this.scene.start('LeaderboardScene');
+      });
+      btnY += btnStep;
+    }
 
     this.createPixelButton(256, btnY, 'SETTINGS', () => {
       if (this.joinModal.visible) return;
@@ -302,7 +339,7 @@ export class MenuScene extends Phaser.Scene {
         net.setSignalingBackend(invite.signaling);
       }
       SoundSystem.playPickup();
-      net.joinGame(invite.roomId, this.playerName.trim() || 'Guest', this.getChosenAvatarId());
+      net.joinGame(invite.roomId, this.playerName.trim() || 'Guest', this.getChosenAvatarId(), this.getChosenPetId());
       this.scene.start('LobbyScene');
     };
     this.unsubSteamInvite = steamSystem.onLobbyJoinInvite(handleSteamInvite);
@@ -486,7 +523,7 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
     SoundSystem.playPickup();
-    net.joinGame(code, this.playerName.trim() || 'Guest', this.getChosenAvatarId());
+    net.joinGame(code, this.playerName.trim() || 'Guest', this.getChosenAvatarId(), this.getChosenPetId());
     this.scene.start('LobbyScene');
   }
 
@@ -735,6 +772,11 @@ export class MenuScene extends Phaser.Scene {
     return pickRandomPaletteId();
   }
 
+  private getChosenPetId(): string | null {
+    if (!this.dlcUnlocked) return null;
+    return getSavedPetId();
+  }
+
   private applyDlcAvatarSelection(): void {
     const entry = ALL_SELECTABLE_AVATARS[this.selectedAvatarIndex] ?? ALL_SELECTABLE_AVATARS[0];
     if (this.previewSprite?.active) {
@@ -742,6 +784,18 @@ export class MenuScene extends Phaser.Scene {
     }
     this.skinsBtnBg?.setVisible(true);
     this.skinsBtnTxt?.setVisible(true);
+    this.petsBtnBg?.setVisible(true);
+    this.petsBtnTxt?.setVisible(true);
+
+    const petId = this.getChosenPetId();
+    const petDef = getPetById(petId);
+    if (this.previewPetSprite?.active) {
+      if (petDef) {
+        this.previewPetSprite.setTexture(`pet_${petDef.id}`, 0).setVisible(true);
+      } else {
+        this.previewPetSprite.setVisible(false);
+      }
+    }
   }
 
   private cyclePalette(_dir: number): void {

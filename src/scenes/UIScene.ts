@@ -111,6 +111,7 @@ export class UIScene extends Phaser.Scene {
 
   // Online Co-op Chat UI
   private virtualKeyboard?: VirtualKeyboard;
+  private iconUrlCache = new Map<string, string>();
   private chatInputContainer!: Phaser.GameObjects.Container;
   private chatInputTxt!: Phaser.GameObjects.BitmapText;
   private chatTyping = false;
@@ -214,23 +215,25 @@ export class UIScene extends Phaser.Scene {
       this.allyLabels.push(txt);
     }
 
-    this.singlePlayerNodes = [
-      ...this.slotBgs,
-      ...this.slotIcons,
-      ...this.slotBars,
-      ...this.slotKeyIcons,
-      ...this.slotBumperHints,
-      this.selectedLabel,
-      this.selectedDescLabel,
-      ...this.hintRows.flatMap((r) => [r.icon, r.label]),
-      ...this.heartSprites,
-      this.shieldContainer,
-      ...this.stamSprites,
-      this.shardIcon,
-      this.shardText,
-      this.statusContainer,
-      this.allyContainer,
-    ];
+    this.singlePlayerNodes = isMobileMode()
+      ? [this.allyContainer]
+      : [
+          ...this.slotBgs,
+          ...this.slotIcons,
+          ...this.slotBars,
+          ...this.slotKeyIcons,
+          ...this.slotBumperHints,
+          this.selectedLabel,
+          this.selectedDescLabel,
+          ...this.hintRows.flatMap((r) => [r.icon, r.label]),
+          ...this.heartSprites,
+          this.shieldContainer,
+          ...this.stamSprites,
+          this.shardIcon,
+          this.shardText,
+          this.statusContainer,
+          this.allyContainer,
+        ];
 
     this.buildLocalCornerHUDs();
 
@@ -266,7 +269,51 @@ export class UIScene extends Phaser.Scene {
       this.unsubBtn?.();
       this.unsubCtrl?.();
       this.virtualKeyboard?.destroy();
+      if (isMobileMode()) {
+        mobileInput.setHudState({ inGame: false, activeSlot: 0, inventory: [null, null, null] });
+      }
     });
+
+    if (isMobileMode()) {
+      for (let i = 0; i < 3; i++) {
+        this.slotBgs[i].setVisible(false);
+        this.slotIcons[i].setVisible(false);
+        this.slotBars[i].setVisible(false);
+        this.slotKeyIcons[i].setVisible(false);
+      }
+      this.slotBumperHints.forEach((h) => h.setVisible(false));
+      this.selectedLabel.setVisible(false);
+      this.selectedDescLabel.setVisible(false);
+      this.hintRows.forEach((r) => {
+        r.icon.setVisible(false);
+        r.label.setVisible(false);
+      });
+      this.heartSprites.forEach((h) => h.setVisible(false));
+      this.shieldContainer.setVisible(false);
+      this.stamSprites.forEach((s) => s.setVisible(false));
+      this.shardIcon.setVisible(false);
+      this.shardText.setVisible(false);
+      this.statusContainer.setVisible(false);
+      mobileInput.setHudState({ inGame: true });
+    }
+  }
+
+  private getIconDataUrl(iconKey: string): string {
+    const cached = this.iconUrlCache.get(iconKey);
+    if (cached !== undefined) return cached;
+    try {
+      const tex = this.textures.get(iconKey);
+      const img = tex?.getSourceImage() as HTMLCanvasElement | HTMLImageElement | undefined;
+      if (img && typeof (img as HTMLCanvasElement).toDataURL === 'function') {
+        const url = (img as HTMLCanvasElement).toDataURL();
+        this.iconUrlCache.set(iconKey, url);
+        return url;
+      }
+    } catch {
+      // ignore
+    }
+    this.iconUrlCache.set(iconKey, '');
+    return '';
   }
 
   private buildSpectateBar(): void {
@@ -990,6 +1037,50 @@ export class UIScene extends Phaser.Scene {
 
   private updateSinglePlayerHUD(payload: UIStatePayload): void {
     const p = payload.player;
+
+    if (isMobileMode()) {
+      const allies = payload.allies.slice(0, 3);
+      for (let i = 0; i < 3; i++) {
+        const ally = allies[i];
+        const lbl = this.allyLabels[i];
+        if (ally) {
+          lbl
+            .setText(`${ally.name.slice(0, 6)} ${ally.downed ? 'DOWN' : `${ally.hp}/${ally.maxHp}`}`)
+            .setTint(ally.downed ? 0xff5d8f : 0xb8a1ff)
+            .setVisible(true);
+        } else {
+          lbl.setVisible(false);
+        }
+      }
+      mobileInput.setHudState({
+        inGame: true,
+        activeSlot: p.activeSlot,
+        hp: p.hp,
+        maxHp: p.maxHp,
+        shield: p.shield,
+        stamina: p.stamina,
+        maxStamina: p.maxStamina,
+        shards: p.shards,
+        statusEffects: p.statusEffects.slice(0, 4).map((eff) => ({
+          id: eff.id,
+          color: STATUS_EFFECTS[eff.id].color,
+          remainingMs: eff.remainingMs,
+        })),
+        inventory: p.inventory.map((item) =>
+          item
+            ? {
+                name: item.name,
+                description: item.description,
+                uses: item.uses,
+                maxUses: item.maxUses,
+                iconDataUrl: this.getIconDataUrl(item.iconKey),
+                rarity: item.rarity,
+              }
+            : null
+        ),
+      });
+      return;
+    }
 
     const numHearts = Math.min(this.heartSprites.length, Math.ceil(p.maxHp / 2));
     const cols = numHearts <= 8 ? 4 : 5;

@@ -8,6 +8,32 @@ import bossAwakenSfxUrl from './bossawaken.ogg';
 import bossSpawnSfxUrl from './bossspawn.ogg';
 import bossDeadSfxUrl from './bossdead.ogg';
 import bossEvilLaughSfxUrl from './bossevillaugh.ogg';
+import windGustSfxUrl from './windgust.ogg';
+import rainLoopSfxUrl from './rainloop.ogg';
+import arrowHitSfxUrl from './arrowhit.ogg';
+import bowDrawSfxUrl from './bowdraw.ogg';
+import bubblePopSfxUrl from './bubblepop.ogg';
+import cicadaLoopSfxUrl from './cicadaloop.ogg';
+import flamethrowerLoopSfxUrl from './flamethrowerloop.ogg';
+import heavySlamSfxUrl from './heavyslam.ogg';
+import laserLoopSfxUrl from './laserloop.ogg';
+import laserPowerupSfxUrl from './laserpowerup.ogg';
+import lightningElectricSfxUrl from './lightningelectric.ogg';
+import magicShootSfxUrl from './magicshoot.ogg';
+import merchantPurchaseSfxUrl from './merchantpurchase.ogg';
+import necromancySummonSfxUrl from './necromancysummon.ogg';
+import puzzleSuccessSfxUrl from './puzzlesuccess.ogg';
+import slimeJumpSfxUrl from './slimejump.ogg';
+import sporePoofSfxUrl from './sporepoof.ogg';
+import weaponFloorSlamSfxUrl from './weaponfloorslam.ogg';
+import weaponSlashSfxUrl from './weaponslash.ogg';
+import weaponStabSfxUrl from './weaponstab.ogg';
+import weaponWhipSfxUrl from './weaponwhip.ogg';
+import explosionSfxUrl from './explosion.ogg';
+import stompSfxUrl from './stomp.ogg';
+import meteorCrashSfxUrl from './meteorcrash.ogg';
+import grappleHitSfxUrl from './grapplehit.ogg';
+import grappleReelLoopSfxUrl from './grapplereel.ogg';
 import { settingsSystem } from '../systems/SettingsSystem';
 
 export type MusicTrack = 'menu' | 'normal' | 'boss' | 'darkcave' | 'nyar_boss' | 'credits';
@@ -35,6 +61,20 @@ class SoundSystemImpl {
   private laughLoopActive = false;
   private laughAudio: HTMLAudioElement | null = null;
   private laughTimer: number | null = null;
+  private lastEnemyShootAt = 0;
+  private rainAudio: HTMLAudioElement | null = null;
+  private rainActive = false;
+  private rainFadeFactor = 0;
+  private rainFadeTimer: number | null = null;
+  private cicadaAudio: HTMLAudioElement | null = null;
+  private cicadaActive = false;
+  private flamethrowerAudio: HTMLAudioElement | null = null;
+  private flamethrowerActive = false;
+  private laserAudio: HTMLAudioElement | null = null;
+  private laserActive = false;
+  private grappleReelAudio: HTMLAudioElement | null = null;
+  private grappleReelActive = false;
+  private sfxDebounce = new Map<string, number>();
 
   constructor() {
     settingsSystem.onChange((s) => {
@@ -49,6 +89,26 @@ class SoundSystemImpl {
       if (this.laughAudio) {
         this.laughAudio.muted = s.muted;
         this.laughAudio.volume = 0.25 * (s.sfxVolume / 100);
+      }
+      if (this.rainAudio) {
+        this.rainAudio.muted = s.muted;
+        this.rainAudio.volume = 0.22 * (s.sfxVolume / 100) * this.rainFadeFactor;
+      }
+      if (this.cicadaAudio) {
+        this.cicadaAudio.muted = s.muted;
+        this.cicadaAudio.volume = 0.11 * (s.sfxVolume / 100);
+      }
+      if (this.flamethrowerAudio) {
+        this.flamethrowerAudio.muted = s.muted;
+        this.flamethrowerAudio.volume = 0.24 * (s.sfxVolume / 100);
+      }
+      if (this.laserAudio) {
+        this.laserAudio.muted = s.muted;
+        this.laserAudio.volume = 0.22 * (s.sfxVolume / 100);
+      }
+      if (this.grappleReelAudio) {
+        this.grappleReelAudio.muted = s.muted;
+        this.grappleReelAudio.volume = 0.24 * (s.sfxVolume / 100);
       }
     });
   }
@@ -151,6 +211,57 @@ class SoundSystemImpl {
     this.playOggSfx(bossDeadSfxUrl, 0.45);
   }
 
+  playWindGust(): void {
+    const sfxMult = settingsSystem.current.sfxVolume / 100;
+    if (sfxMult <= 0) return;
+    this.playOggSfx(windGustSfxUrl, 0.36 * sfxMult);
+  }
+
+  setRainActive(active: boolean): void {
+    if (typeof window === 'undefined') return;
+    if (this.rainActive === active) return;
+    this.rainActive = active;
+
+    if (!this.rainAudio) {
+      const audio = new Audio(rainLoopSfxUrl);
+      audio.loop = true;
+      audio.volume = 0;
+      audio.muted = this._muted;
+      this.rainAudio = audio;
+    }
+
+    if (active) {
+      this.rainAudio.muted = this._muted;
+      this.rainAudio.play().catch(() => {});
+    }
+
+    if (this.rainFadeTimer === null) {
+      const stepMs = 40;
+      const fadeStep = stepMs / 800; // 800ms fade in/out
+      this.rainFadeTimer = window.setInterval(() => {
+        if (!this.rainAudio) return;
+        if (this.rainActive) {
+          this.rainFadeFactor = Math.min(1, this.rainFadeFactor + fadeStep);
+        } else {
+          this.rainFadeFactor = Math.max(0, this.rainFadeFactor - fadeStep);
+        }
+        const targetVol = 0.22 * (settingsSystem.current.sfxVolume / 100) * this.rainFadeFactor;
+        this.rainAudio.muted = this._muted;
+        this.rainAudio.volume = Math.max(0, Math.min(1, targetVol));
+
+        if ((this.rainActive && this.rainFadeFactor >= 1) || (!this.rainActive && this.rainFadeFactor <= 0)) {
+          if (!this.rainActive && this.rainFadeFactor <= 0) {
+            this.rainAudio.pause();
+          }
+          if (this.rainFadeTimer !== null) {
+            window.clearInterval(this.rainFadeTimer);
+            this.rainFadeTimer = null;
+          }
+        }
+      }, stepMs);
+    }
+  }
+
   startBossEvilLaughLoop(): void {
     if (typeof window === 'undefined') return;
     if (this.laughLoopActive) return;
@@ -233,6 +344,13 @@ class SoundSystemImpl {
     this.tone(580, 260, 0.1, 'square', 0.045);
   }
 
+  playEnemyShoot(): void {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (now - this.lastEnemyShootAt < 45) return;
+    this.lastEnemyShootAt = now;
+    this.tone(420, 170, 0.075, 'square', 0.038);
+  }
+
   playHit(): void {
     this.tone(180, 70, 0.11, 'sawtooth', 0.07);
   }
@@ -264,7 +382,178 @@ class SoundSystemImpl {
   }
 
   playExplosion(): void {
-    this.tone(120, 32, 0.28, 'sawtooth', 0.12);
+    this.playDebouncedOgg('explosion', explosionSfxUrl, 0.38, 60);
+  }
+
+  playStomp(): void {
+    this.playDebouncedOgg('stomp', stompSfxUrl, 0.38, 80);
+  }
+
+  playMeteorCrash(): void {
+    this.playDebouncedOgg('meteorcrash', meteorCrashSfxUrl, 0.4, 80);
+  }
+
+  playGrappleHit(): void {
+    this.playDebouncedOgg('grapplehit', grappleHitSfxUrl, 0.36, 60);
+  }
+
+  setGrappleReelActive(active: boolean): void {
+    this.setSimpleLoop(
+      active,
+      grappleReelLoopSfxUrl,
+      0.24,
+      () => this.grappleReelAudio,
+      (a) => { this.grappleReelAudio = a; },
+      () => this.grappleReelActive,
+      (v) => { this.grappleReelActive = v; }
+    );
+  }
+
+  private playDebouncedOgg(key: string, url: string, baseVol = 0.34, minIntervalMs = 45): void {
+    const sfxMult = settingsSystem.current.sfxVolume / 100;
+    if (sfxMult <= 0 || this._muted) return;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const last = this.sfxDebounce.get(key) ?? 0;
+    if (now - last < minIntervalMs) return;
+    this.sfxDebounce.set(key, now);
+    this.playOggSfx(url, baseVol * sfxMult);
+  }
+
+  private setSimpleLoop(
+    active: boolean,
+    url: string,
+    baseVol: number,
+    getAudio: () => HTMLAudioElement | null,
+    setAudio: (a: HTMLAudioElement) => void,
+    getFlag: () => boolean,
+    setFlag: (v: boolean) => void
+  ): void {
+    if (typeof window === 'undefined') return;
+    if (getFlag() === active) return;
+    setFlag(active);
+    let audio = getAudio();
+    if (!audio) {
+      audio = new Audio(url);
+      audio.loop = true;
+      setAudio(audio);
+    }
+    const sfxMult = settingsSystem.current.sfxVolume / 100;
+    audio.muted = this._muted;
+    audio.volume = Math.max(0, Math.min(1, baseVol * sfxMult));
+    if (active) {
+      audio.play().catch(() => {});
+    } else {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+  }
+
+  setCicadaActive(active: boolean): void {
+    this.setSimpleLoop(
+      active,
+      cicadaLoopSfxUrl,
+      0.11,
+      () => this.cicadaAudio,
+      (a) => { this.cicadaAudio = a; },
+      () => this.cicadaActive,
+      (v) => { this.cicadaActive = v; }
+    );
+  }
+
+  setFlamethrowerActive(active: boolean): void {
+    this.setSimpleLoop(
+      active,
+      flamethrowerLoopSfxUrl,
+      0.24,
+      () => this.flamethrowerAudio,
+      (a) => { this.flamethrowerAudio = a; },
+      () => this.flamethrowerActive,
+      (v) => { this.flamethrowerActive = v; }
+    );
+  }
+
+  setLaserActive(active: boolean): void {
+    this.setSimpleLoop(
+      active,
+      laserLoopSfxUrl,
+      0.22,
+      () => this.laserAudio,
+      (a) => { this.laserAudio = a; },
+      () => this.laserActive,
+      (v) => { this.laserActive = v; }
+    );
+  }
+
+  stopAllGameplayLoops(): void {
+    this.setRainActive(false);
+    this.setCicadaActive(false);
+    this.setFlamethrowerActive(false);
+    this.setLaserActive(false);
+    this.setGrappleReelActive(false);
+  }
+
+  playArrowHit(): void {
+    this.playDebouncedOgg('arrowhit', arrowHitSfxUrl, 0.32, 40);
+  }
+
+  playBowDraw(): void {
+    this.playDebouncedOgg('bowdraw', bowDrawSfxUrl, 0.34, 60);
+  }
+
+  playBubblePop(): void {
+    this.playDebouncedOgg('bubblepop', bubblePopSfxUrl, 0.34, 45);
+  }
+
+  playHeavySlam(): void {
+    this.playDebouncedOgg('heavyslam', heavySlamSfxUrl, 0.38, 70);
+  }
+
+  playLaserPowerup(): void {
+    this.playDebouncedOgg('laserpowerup', laserPowerupSfxUrl, 0.3, 180);
+  }
+
+  playLightningElectric(): void {
+    this.playDebouncedOgg('lightning', lightningElectricSfxUrl, 0.36, 70);
+  }
+
+  playMagicShoot(): void {
+    this.playDebouncedOgg('magicshoot', magicShootSfxUrl, 0.3, 45);
+  }
+
+  playMerchantPurchase(): void {
+    this.playDebouncedOgg('merchantpurchase', merchantPurchaseSfxUrl, 0.38, 80);
+  }
+
+  playNecromancySummon(): void {
+    this.playDebouncedOgg('necromancy', necromancySummonSfxUrl, 0.36, 120);
+  }
+
+  playPuzzleSuccess(): void {
+    this.playDebouncedOgg('puzzlesuccess', puzzleSuccessSfxUrl, 0.4, 200);
+  }
+
+  playSlimeJump(): void {
+    this.playDebouncedOgg('slimejump', slimeJumpSfxUrl, 0.28, 110);
+  }
+
+  playSporePoof(): void {
+    this.playDebouncedOgg('sporepoof', sporePoofSfxUrl, 0.3, 110);
+  }
+
+  playWeaponFloorSlam(): void {
+    this.playDebouncedOgg('weaponfloorslam', weaponFloorSlamSfxUrl, 0.36, 70);
+  }
+
+  playWeaponSlash(): void {
+    this.playDebouncedOgg('weaponslash', weaponSlashSfxUrl, 0.32, 45);
+  }
+
+  playWeaponStab(): void {
+    this.playDebouncedOgg('weaponstab', weaponStabSfxUrl, 0.32, 45);
+  }
+
+  playWeaponWhip(): void {
+    this.playDebouncedOgg('weaponwhip', weaponWhipSfxUrl, 0.34, 60);
   }
 }
 

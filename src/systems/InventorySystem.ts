@@ -153,6 +153,10 @@ export function addItemToSlots(
   item: InventoryItem
 ): { added: boolean; replaced: InventoryItem | null } {
   JournalSystem.discoverItem(item.id);
+  if (activeSlot >= 0 && activeSlot < slots.length && slots[activeSlot] === null) {
+    slots[activeSlot] = item;
+    return { added: true, replaced: null };
+  }
   const emptyIdx = slots.findIndex((s) => s === null);
   if (emptyIdx !== -1) {
     slots[emptyIdx] = item;

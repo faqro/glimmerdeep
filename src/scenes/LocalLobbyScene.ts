@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
 import { ALL_SELECTABLE_AVATARS, PLAYER_PALETTES } from '../data/palettes';
+import { getSavedPetId } from '../data/pets';
 import { inputSystem, localCoopSession, LocalPlayerConfig } from '../systems/InputSystem';
 import { net } from '../systems/MultiplayerSystem';
 import { steamSystem } from '../systems/SteamSystem';
@@ -207,7 +208,7 @@ export class LocalLobbyScene extends Phaser.Scene {
     SoundSystem.playUnlock();
     localCoopSession.active = true;
     localCoopSession.players = joined;
-    net.startSolo('Local Co-op', joined[0].paletteId);
+    net.startSolo('Local Co-op', joined[0].paletteId, steamSystem.isAvatarDlcUnlocked() ? getSavedPetId() : null);
     const seed = getDailySeed(0);
     this.scene.start('GameScene', { levelIndex: 0, floorSeed: seed, resetRun: true });
   }

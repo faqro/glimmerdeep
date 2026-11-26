@@ -6,9 +6,11 @@ import { CreditsScene } from './scenes/CreditsScene';
 import { GameOverScene } from './scenes/GameOverScene';
 import { GameScene } from './scenes/GameScene';
 import { JournalScene } from './scenes/JournalScene';
+import { LeaderboardScene } from './scenes/LeaderboardScene';
 import { LobbyScene } from './scenes/LobbyScene';
 import { LocalLobbyScene } from './scenes/LocalLobbyScene';
 import { MenuScene } from './scenes/MenuScene';
+import { PetScene } from './scenes/PetScene';
 import { SettingsScene } from './scenes/SettingsScene';
 import { SkinScene } from './scenes/SkinScene';
 import { UIScene } from './scenes/UIScene';
@@ -42,7 +44,7 @@ const config: Phaser.Types.Core.GameConfig = {
       debug: false,
     },
   },
-  scene: [BootScene, MenuScene, SettingsScene, SkinScene, JournalScene, LobbyScene, LocalLobbyScene, GameScene, UIScene, GameOverScene, CreditsScene],
+  scene: [BootScene, MenuScene, SettingsScene, SkinScene, PetScene, JournalScene, LeaderboardScene, LobbyScene, LocalLobbyScene, GameScene, UIScene, GameOverScene, CreditsScene],
 };
 
 new Phaser.Game(config);

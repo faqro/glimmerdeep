@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
-import { NavDir, VirtualButton } from './MobileInput';
+import { mobileInput, NavDir, VirtualButton } from './MobileInput';
 
 export interface VirtualKeyboardOptions {
   title: string;
@@ -51,12 +51,69 @@ export class VirtualKeyboard {
   private cursorBlink = true;
   private blinkTimer?: Phaser.Time.TimerEvent;
 
+  private domRoot: HTMLElement | null = null;
+  private domTitleEl: HTMLElement | null = null;
+  private domInputEl: HTMLElement | null = null;
+  private domKeyButtons: HTMLButtonElement[][] = [];
+
   public visible = false;
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
     this.container = scene.add.container(0, 0).setDepth(100).setVisible(false);
-    this.build();
+    this.domRoot = typeof document !== 'undefined' ? document.getElementById('mc-keyboard') : null;
+    if (this.domRoot) {
+      this.buildDom();
+    } else {
+      this.build();
+    }
+  }
+
+  private buildDom(): void {
+    if (!this.domRoot) return;
+    this.domRoot.innerHTML = `
+      <div class="mc-kb-header">
+        <div class="mc-kb-title" id="mc-kb-title">ENTER TEXT</div>
+        <div class="mc-kb-input" id="mc-kb-input">_</div>
+      </div>
+      <div class="mc-kb-rows">
+        ${KEY_ROWS.map(
+          (rowDefs, rIdx) => `
+          <div class="mc-kb-row">
+            ${rowDefs
+              .map((def, cIdx) => {
+                const cls = [
+                  'mc-kb-key',
+                  def.w > 40 ? 'wide' : '',
+                  def.value === 'ENTER' ? 'enter' : '',
+                  def.value === 'BACK' || def.value === 'DEL' ? 'danger' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ');
+                return `<button class="${cls}" data-kb-r="${rIdx}" data-kb-c="${cIdx}" type="button">${def.label}</button>`;
+              })
+              .join('')}
+          </div>
+        `
+        ).join('')}
+      </div>
+    `;
+
+    this.domTitleEl = this.domRoot.querySelector('#mc-kb-title');
+    this.domInputEl = this.domRoot.querySelector('#mc-kb-input');
+    this.domKeyButtons = KEY_ROWS.map((rowDefs, rIdx) =>
+      rowDefs.map((def, cIdx) => {
+        const el = this.domRoot!.querySelector<HTMLButtonElement>(`[data-kb-r="${rIdx}"][data-kb-c="${cIdx}"]`)!;
+        el.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          this.row = rIdx;
+          this.col = cIdx;
+          this.refreshFocus();
+          this.activateKey(def);
+        });
+        return el;
+      })
+    );
   }
 
   private build(): void {
@@ -99,13 +156,21 @@ export class VirtualKeyboard {
   public open(opts: VirtualKeyboardOptions): void {
     this.opts = opts;
     this.value = opts.initialValue;
-    this.titleTxt.setText(opts.title);
-    this.row = 4;
-    this.col = 2; // Start near ENTER or top-left? Let's start at Q (row 1, col 0)
     this.row = 1;
     this.col = 0;
     this.visible = true;
-    this.container.setVisible(true);
+
+    if (this.domRoot) {
+      if (this.domTitleEl) this.domTitleEl.textContent = opts.title;
+      document.getElementById('mc-columns')?.classList.add('mc-hidden');
+      document.getElementById('mc-stats-bar')?.classList.add('mc-hidden');
+      document.getElementById('mc-inv-bar')?.classList.add('mc-hidden');
+      this.domRoot.classList.remove('mc-hidden');
+    } else {
+      this.titleTxt.setText(opts.title);
+      this.container.setVisible(true);
+    }
+
     this.refreshDisplay();
     this.refreshFocus();
 
@@ -122,12 +187,23 @@ export class VirtualKeyboard {
 
   public close(): void {
     this.visible = false;
-    this.container.setVisible(false);
+    if (this.domRoot) {
+      this.domRoot.classList.add('mc-hidden');
+      document.getElementById('mc-columns')?.classList.remove('mc-hidden');
+      const hud = mobileInput.getHudState();
+      if (hud.inGame) {
+        document.getElementById('mc-stats-bar')?.classList.remove('mc-hidden');
+        document.getElementById('mc-inv-bar')?.classList.remove('mc-hidden');
+      }
+    } else {
+      this.container.setVisible(false);
+    }
     this.blinkTimer?.remove(false);
     this.blinkTimer = undefined;
   }
 
   public destroy(): void {
+    this.close();
     this.blinkTimer?.remove(false);
     this.container.destroy(true);
   }
@@ -142,13 +218,21 @@ export class VirtualKeyboard {
       const len = KEY_ROWS[this.row].length;
       this.col = (this.col + 1) % len;
     } else if (dir === 'up') {
-      const prevBtn = this.keyButtons[this.row][this.col];
+      const targetX = this.domRoot
+        ? this.col / Math.max(1, KEY_ROWS[this.row].length - 1)
+        : this.keyButtons[this.row][this.col].x;
       this.row = (this.row - 1 + KEY_ROWS.length) % KEY_ROWS.length;
-      this.col = this.findClosestCol(this.row, prevBtn.x);
+      this.col = this.domRoot
+        ? Math.round(targetX * Math.max(1, KEY_ROWS[this.row].length - 1))
+        : this.findClosestCol(this.row, targetX);
     } else if (dir === 'down') {
-      const prevBtn = this.keyButtons[this.row][this.col];
+      const targetX = this.domRoot
+        ? this.col / Math.max(1, KEY_ROWS[this.row].length - 1)
+        : this.keyButtons[this.row][this.col].x;
       this.row = (this.row + 1) % KEY_ROWS.length;
-      this.col = this.findClosestCol(this.row, prevBtn.x);
+      this.col = this.domRoot
+        ? Math.round(targetX * Math.max(1, KEY_ROWS[this.row].length - 1))
+        : this.findClosestCol(this.row, targetX);
     }
     this.refreshFocus();
   }
@@ -176,7 +260,7 @@ export class VirtualKeyboard {
       return;
     }
     if (btn === 'e' || btn === 'space') {
-      const key = this.keyButtons[this.row][this.col].def;
+      const key = KEY_ROWS[this.row][this.col];
       this.activateKey(key);
     }
   }
@@ -238,10 +322,23 @@ export class VirtualKeyboard {
 
   private refreshDisplay(): void {
     const cursor = this.cursorBlink ? '_' : '';
-    this.valueTxt.setText(`${this.value}${cursor}`);
+    const text = `${this.value}${cursor}`;
+    if (this.domRoot) {
+      if (this.domInputEl) this.domInputEl.textContent = text;
+    } else {
+      this.valueTxt.setText(text);
+    }
   }
 
   private refreshFocus(): void {
+    if (this.domRoot) {
+      this.domKeyButtons.forEach((rowArr, r) => {
+        rowArr.forEach((el, c) => {
+          el.classList.toggle('focused', r === this.row && c === this.col);
+        });
+      });
+      return;
+    }
     this.keyButtons.forEach((rowArr, r) => {
       rowArr.forEach((btn, c) => {
         const focused = r === this.row && c === this.col;

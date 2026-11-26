@@ -215,6 +215,7 @@ export class MultiplayerSystem {
   public readonly localUid: string;
   public localName = 'Wanderer';
   public localPaletteId = 'lavender';
+  public localPetId: string | null = null;
   public players = new Map<string, LobbyPlayerInfo>();
 
   private localJoinedAt = 0;
@@ -293,22 +294,24 @@ export class MultiplayerSystem {
     return code;
   }
 
-  startSolo(name: string, paletteId: string): void {
+  startSolo(name: string, paletteId: string, petId: string | null = null): void {
     this.disconnect();
     this.mode = 'solo';
     this.localPeerId = 'local';
     this.localName = name || 'Wanderer';
     this.localPaletteId = paletteId;
+    this.localPetId = petId;
     this.players.clear();
   }
 
-  hostGame(name: string, paletteId: string): string {
+  hostGame(name: string, paletteId: string, petId: string | null = null): string {
     this.disconnect();
     const code = MultiplayerSystem.generateInviteCode();
     this.mode = 'host';
     this.inviteCode = code;
     this.localName = name || 'Host';
     this.localPaletteId = paletteId;
+    this.localPetId = petId;
     this.connectRoom(code, true);
     void steamSystem.createLobby(code, this.signalingBackend).then((lobbyId) => {
       if (lobbyId && this.mode === 'host' && this.inviteCode === code) {
@@ -322,12 +325,13 @@ export class MultiplayerSystem {
     return code;
   }
 
-  joinGame(code: string, name: string, paletteId: string): void {
+  joinGame(code: string, name: string, paletteId: string, petId: string | null = null): void {
     this.disconnect();
     this.mode = 'client';
     this.inviteCode = code.toUpperCase().trim();
     this.localName = name || 'Guest';
     this.localPaletteId = paletteId;
+    this.localPetId = petId;
     this.connectRoom(this.inviteCode, false);
   }
 

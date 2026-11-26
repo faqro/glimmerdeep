@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('glimmerdeepDesktop', {
   unlockAchievement: (id) => ipcRenderer.invoke('steam:unlockAchievement', id),
   submitLeaderboardTime: (name, timeMs) =>
     ipcRenderer.invoke('steam:submitLeaderboardTime', name, timeMs),
+  getLeaderboardData: (name) => ipcRenderer.invoke('steam:getLeaderboardData', name),
+  openLeaderboardOverlay: () => ipcRenderer.invoke('steam:openLeaderboardOverlay'),
   setStat: (name, value) => ipcRenderer.invoke('steam:setStat', name, value),
   incrementStat: (name, amount) => ipcRenderer.invoke('steam:incrementStat', name, amount),
   createLobby: (roomId, signaling) => ipcRenderer.invoke('steam:createLobby', roomId, signaling),

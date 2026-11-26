@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { ALL_PETS, PetDef } from '../data/pets';
 import { DLC_CHARACTERS, DlcCharacterId, PLAYER_PALETTES } from '../data/palettes';
 import { PlayerPalette } from '../types/game';
 
@@ -22,6 +23,7 @@ export class PixelArtGenerator {
     this.generatePlayerSprites();
     this.generateEnemySprites();
     this.generateBossSprites();
+    this.generatePetSprites();
   }
 
   private createCanvas(key: string, w: number, h: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; tex: Phaser.Textures.CanvasTexture } {
@@ -1024,6 +1026,37 @@ export class PixelArtGenerator {
         this.px(ctx, sx, sy, '#ffbb33', 2, 2);
         if (frame === 1 || (sx + frame) % 2 === 0) {
           this.px(ctx, sx, sy, '#ffe066', 1, 1);
+        }
+      }
+
+      tex.refresh();
+    }
+
+    // Animated green burning acid tiles for Levels 3 & 4 (16x16 full-tile, seamless)
+    for (let frame = 0; frame < 3; frame++) {
+      const { ctx, tex } = this.createCanvas(`tile_acid_${frame}`, 16, 16);
+      this.px(ctx, 0, 0, '#166534', 16, 16);
+
+      const shift = frame * 5;
+      for (let x = 0; x < 16; x++) {
+        const wy1 = (Math.floor(Math.sin(((x + shift) / 16) * Math.PI * 2) * 2) + 4) & 15;
+        const wy2 = (Math.floor(Math.cos(((x - shift + 16) / 16) * Math.PI * 2) * 2) + 12) & 15;
+        this.px(ctx, x, wy1, '#22c55e', 1, 3);
+        this.px(ctx, x, (wy1 + 1) & 15, '#4ade80', 1, 1);
+        this.px(ctx, x, wy2, '#22c55e', 1, 3);
+        this.px(ctx, x, (wy2 + 1) & 15, '#4ade80', 1, 1);
+      }
+
+      const spots = [
+        [(2 + frame * 3) % 14, 3],
+        [(10 + frame * 2) % 14, 7],
+        [(5 + frame * 4) % 14, 11],
+        [(12 - frame * 2 + 14) % 14, 14],
+      ];
+      for (const [sx, sy] of spots) {
+        this.px(ctx, sx, sy, '#a6ff4d', 2, 2);
+        if (frame === 1 || (sx + frame) % 2 === 0) {
+          this.px(ctx, sx, sy, '#d9f99d', 1, 1);
         }
       }
 
@@ -2754,5 +2787,254 @@ export class PixelArtGenerator {
       tex.add(0, 0, 0, 0, 32, 32);
       tex.add(1, 0, 32, 0, 32, 32);
     }
+  }
+
+  private generatePetSprites(): void {
+    // 16x16 per frame, 3 frames (48x16):
+    // 0: idle / perched, 1: moveA / wings-up / hop-up, 2: moveB / wings-down / hop-land
+    for (const pet of ALL_PETS) {
+      this.buildPetSheet(pet);
+    }
+  }
+
+  private buildPetSheet(pet: PetDef): void {
+    const key = `pet_${pet.id}`;
+    const { ctx, tex } = this.createCanvas(key, 48, 16);
+    const p1 = this.shade(pet.primaryColor, 1);
+    const p1Dk = this.shade(pet.primaryColor, 0.72);
+    const p2 = this.shade(pet.secondaryColor, 1);
+    const acc = this.shade(pet.accentColor, 1);
+    const eye = pet.eyeColor;
+
+    for (let f = 0; f < 3; f++) {
+      const ox = f * 16;
+
+      if (pet.category === 'cat' || pet.id === 'phantom_kitty') {
+        const bob = f === 1 ? -1 : 0;
+        const stride = f === 1 ? 1 : f === 2 ? -1 : 0;
+        const tailY = f === 1 ? 6 : f === 2 ? 8 : 7;
+        // Tail
+        this.px(ctx, ox + 1, tailY, '#100d24', 3, 2);
+        this.px(ctx, ox + 1, tailY + 1, p1Dk, 2, 1);
+        // Ears
+        this.px(ctx, ox + 5, 2 + bob, '#100d24', 2, 3);
+        this.px(ctx, ox + 10, 2 + bob, '#100d24', 2, 3);
+        this.px(ctx, ox + 6, 3 + bob, p1, 1, 2);
+        this.px(ctx, ox + 10, 3 + bob, p1, 1, 2);
+        // Head
+        this.px(ctx, ox + 5, 4 + bob, '#100d24', 7, 5);
+        this.px(ctx, ox + 6, 5 + bob, p1, 5, 3);
+        // Eyes & nose
+        this.px(ctx, ox + 7, 6 + bob, eye, 1, 1);
+        this.px(ctx, ox + 10, 6 + bob, eye, 1, 1);
+        this.px(ctx, ox + 9, 7 + bob, '#f49ac1', 1, 1);
+        // Body
+        this.px(ctx, ox + 3, 8 + bob, '#100d24', 8, 5);
+        this.px(ctx, ox + 4, 9 + bob, p1, 6, 3);
+        this.px(ctx, ox + 6, 10 + bob, p2, 3, 2);
+        if (pet.id === 'tabby_cat') {
+          this.px(ctx, ox + 5, 9 + bob, acc, 1, 2);
+          this.px(ctx, ox + 7, 9 + bob, acc, 1, 2);
+        } else if (pet.id === 'calico_cat') {
+          this.px(ctx, ox + 4, 9 + bob, acc, 2, 2);
+          this.px(ctx, ox + 8, 5 + bob, p2, 2, 2);
+        } else if (pet.id === 'siamese_cat') {
+          this.px(ctx, ox + 5, 3 + bob, p2, 2, 2);
+          this.px(ctx, ox + 10, 3 + bob, p2, 2, 2);
+          this.px(ctx, ox + 8, 6 + bob, p2, 2, 2);
+        }
+        // Paws
+        this.px(ctx, ox + 4 + stride, 13, '#100d24', 2, 2);
+        this.px(ctx, ox + 9 - stride, 13, '#100d24', 2, 2);
+        this.px(ctx, ox + 4 + stride, 13, p2, 1, 1);
+        this.px(ctx, ox + 9 - stride, 13, p2, 1, 1);
+      } else if (pet.category === 'dog') {
+        const bob = f === 1 ? -1 : 0;
+        const stride = f === 1 ? 1 : f === 2 ? -1 : 0;
+        const tailUp = f === 2 ? -1 : 0;
+        // Wagging tail
+        this.px(ctx, ox + 1, 7 + tailUp, '#100d24', 3, 2);
+        this.px(ctx, ox + 2, 7 + tailUp, p2, 1, 1);
+        // Head & ears
+        this.px(ctx, ox + 6, 3 + bob, '#100d24', 8, 6);
+        this.px(ctx, ox + 7, 4 + bob, p1, 6, 4);
+        if (pet.id === 'corgi' || pet.id === 'husky' || pet.id === 'shiba' || pet.id === 'samoyed') {
+          // Pointy ears
+          this.px(ctx, ox + 6, 2 + bob, '#100d24', 2, 2);
+          this.px(ctx, ox + 11, 2 + bob, '#100d24', 2, 2);
+          this.px(ctx, ox + 7, 2 + bob, p1, 1, 2);
+          this.px(ctx, ox + 11, 2 + bob, p1, 1, 2);
+        } else {
+          // Floppy ears
+          this.px(ctx, ox + 5, 4 + bob, acc, 2, 4);
+        }
+        if (pet.id === 'samoyed') {
+          // Fluffy Samoyed curled tail & chest ruff
+          this.px(ctx, ox + 1, 5 + tailUp, '#100d24', 3, 4);
+          this.px(ctx, ox + 2, 6 + tailUp, p1, 2, 2);
+          this.px(ctx, ox + 8, 8 + bob, p1, 4, 4);
+        }
+        // Snout & chest
+        this.px(ctx, ox + 11, 6 + bob, p2, 3, 2);
+        this.px(ctx, ox + 13, 6 + bob, '#100d24', 1, 1);
+        this.px(ctx, ox + 10, 5 + bob, eye, 1, 1);
+        // Body
+        this.px(ctx, ox + 3, 8 + bob, '#100d24', 9, 5);
+        this.px(ctx, ox + 4, 9 + bob, p1, 7, 3);
+        this.px(ctx, ox + 8, 9 + bob, p2, 3, 3);
+        // Legs
+        this.px(ctx, ox + 4 + stride, 13, '#100d24', 2, 2);
+        this.px(ctx, ox + 9 - stride, 13, '#100d24', 2, 2);
+      } else if (pet.category === 'bird') {
+        const bob = f === 0 ? 1 : 0;
+        // Perched (f=0), wings up (f=1), wings down (f=2)
+        // Crest for bluejay/cardinal
+        if (pet.id === 'bluejay' || pet.id === 'cardinal') {
+          this.px(ctx, ox + 6, 2 + bob, '#100d24', 3, 2);
+          this.px(ctx, ox + 7, 2 + bob, p1, 2, 2);
+        }
+        // Head + body
+        this.px(ctx, ox + 5, 4 + bob, '#100d24', 7, 7);
+        this.px(ctx, ox + 6, 5 + bob, p1, 5, 5);
+        this.px(ctx, ox + 7, 7 + bob, p2, 3, 3);
+        // Beak & eye
+        this.px(ctx, ox + 12, 6 + bob, '#fbbf24', 2, 2);
+        this.px(ctx, ox + 10, 5 + bob, eye, 1, 1);
+        // Tail
+        this.px(ctx, ox + 2, 8 + bob, '#100d24', 3, 2);
+        this.px(ctx, ox + 3, 8 + bob, acc, 2, 1);
+
+        if (f === 0) {
+          // Folded wing & perched feet
+          this.px(ctx, ox + 5, 7 + bob, acc, 3, 2);
+          this.px(ctx, ox + 7, 11 + bob, '#fbbf24', 1, 2);
+          this.px(ctx, ox + 9, 11 + bob, '#fbbf24', 1, 2);
+        } else if (f === 1) {
+          // Wings raised high!
+          this.px(ctx, ox + 3, 1, '#100d24', 5, 4);
+          this.px(ctx, ox + 4, 2, p1, 3, 3);
+          this.px(ctx, ox + 4, 2, p2, 2, 1);
+        } else {
+          // Wings swept down!
+          this.px(ctx, ox + 3, 8, '#100d24', 5, 4);
+          this.px(ctx, ox + 4, 8, acc, 3, 3);
+          this.px(ctx, ox + 4, 10, p2, 2, 1);
+        }
+      } else if (pet.id === 'pocket_dragon') {
+        const bob = f === 0 ? 1 : 0;
+        // Horns
+        this.px(ctx, ox + 7, 3 + bob, p2, 1, 2);
+        this.px(ctx, ox + 10, 3 + bob, p2, 1, 2);
+        // Head & body
+        this.px(ctx, ox + 6, 5 + bob, '#100d24', 7, 6);
+        this.px(ctx, ox + 7, 6 + bob, p1, 5, 4);
+        this.px(ctx, ox + 8, 8 + bob, p2, 3, 2);
+        this.px(ctx, ox + 11, 6 + bob, eye, 1, 1);
+        // Tail
+        this.px(ctx, ox + 2, 9 + bob, '#100d24', 4, 2);
+        this.px(ctx, ox + 3, 9 + bob, acc, 3, 1);
+        if (f === 0) {
+          this.px(ctx, ox + 5, 6 + bob, acc, 3, 3);
+          this.px(ctx, ox + 7, 11 + bob, p1Dk, 1, 2);
+          this.px(ctx, ox + 10, 11 + bob, p1Dk, 1, 2);
+        } else if (f === 1) {
+          this.px(ctx, ox + 3, 1, '#100d24', 5, 4);
+          this.px(ctx, ox + 4, 2, acc, 3, 3);
+        } else {
+          this.px(ctx, ox + 3, 8, '#100d24', 5, 4);
+          this.px(ctx, ox + 4, 8, p1Dk, 3, 3);
+        }
+      } else if (pet.id === 'starlight_wisp') {
+        const bob = f === 1 ? -1 : f === 2 ? 1 : 0;
+        this.px(ctx, ox + 5, 4 + bob, '#100d24', 6, 7);
+        this.px(ctx, ox + 6, 5 + bob, p1, 4, 5);
+        this.px(ctx, ox + 7, 6 + bob, acc, 2, 3);
+        this.px(ctx, ox + 7, 7 + bob, eye, 1, 1);
+        this.px(ctx, ox + 9, 7 + bob, eye, 1, 1);
+        // Orbiting sparkles
+        const spX = f === 0 ? 3 : f === 1 ? 12 : 7;
+        const spY = f === 0 ? 5 : f === 1 ? 4 : 2;
+        this.px(ctx, ox + spX, spY, p2, 2, 2);
+      } else if (pet.id === 'mini_shoggoth') {
+        const bob = f === 1 ? -1 : 0;
+        this.px(ctx, ox + 3, 4 + bob, '#100d24', 10, 8);
+        this.px(ctx, ox + 4, 5 + bob, p1, 8, 6);
+        this.px(ctx, ox + 5, 5 + bob, p2, 3, 2);
+        // Three glowing eyes
+        this.px(ctx, ox + 5, 7 + bob, eye, 1, 1);
+        this.px(ctx, ox + 8, 6 + bob, eye, 1, 1);
+        this.px(ctx, ox + 10, 7 + bob, eye, 1, 1);
+        // Wiggling tentacles
+        const tOff = f === 2 ? 1 : 0;
+        this.px(ctx, ox + 4, 12 + bob - tOff, acc, 2, 2);
+        this.px(ctx, ox + 7, 12 + bob + tOff, acc, 2, 2);
+        this.px(ctx, ox + 10, 12 + bob - tOff, acc, 2, 2);
+      } else if (pet.id === 'clockwork_beetle') {
+        const bob = f === 1 ? -1 : 0;
+        const legOff = f === 1 ? 1 : f === 2 ? -1 : 0;
+        this.px(ctx, ox + 4, 5 + bob, '#100d24', 8, 7);
+        this.px(ctx, ox + 5, 6 + bob, p1, 6, 5);
+        this.px(ctx, ox + 7, 7 + bob, acc, 2, 2);
+        this.px(ctx, ox + 6, 4 + bob, p2, 4, 1);
+        this.px(ctx, ox + 3, 9 + legOff, '#100d24', 1, 3);
+        this.px(ctx, ox + 12, 9 - legOff, '#100d24', 1, 3);
+        this.px(ctx, ox + 5, 12 + legOff, '#100d24', 2, 2);
+        this.px(ctx, ox + 9, 12 - legOff, '#100d24', 2, 2);
+      } else if (pet.id === 'moss_frog') {
+        const stretch = f === 1 ? -2 : f === 2 ? 1 : 0;
+        this.px(ctx, ox + 4, 6 + stretch, '#100d24', 8, 6);
+        this.px(ctx, ox + 5, 7 + stretch, p1, 6, 4);
+        this.px(ctx, ox + 6, 9 + stretch, p2, 4, 2);
+        // Bulging eyes
+        this.px(ctx, ox + 5, 5 + stretch, '#100d24', 2, 2);
+        this.px(ctx, ox + 9, 5 + stretch, '#100d24', 2, 2);
+        this.px(ctx, ox + 5, 5 + stretch, eye, 1, 1);
+        this.px(ctx, ox + 10, 5 + stretch, eye, 1, 1);
+        // Hind legs
+        this.px(ctx, ox + 3, 11, acc, 2, 2);
+        this.px(ctx, ox + 11, 11, acc, 2, 2);
+      } else if (pet.id === 'space_axolotl') {
+        const bob = f === 1 ? -1 : f === 2 ? 1 : 0;
+        // Gill frills
+        this.px(ctx, ox + 3, 5 + bob, acc, 2, 4);
+        this.px(ctx, ox + 11, 5 + bob, acc, 2, 4);
+        // Head & body
+        this.px(ctx, ox + 5, 5 + bob, '#100d24', 6, 7);
+        this.px(ctx, ox + 6, 6 + bob, p1, 4, 5);
+        this.px(ctx, ox + 7, 8 + bob, p2, 2, 3);
+        this.px(ctx, ox + 6, 7 + bob, eye, 1, 1);
+        this.px(ctx, ox + 9, 7 + bob, eye, 1, 1);
+        // Tail
+        this.px(ctx, ox + 2, 10 + bob, p2, 3, 2);
+      } else if (pet.id === 'glimmer_slime') {
+        const dy = f === 1 ? -2 : f === 2 ? 1 : 0;
+        this.px(ctx, ox + 3, 6 + dy, '#100d24', 10, 8 - Math.max(0, dy));
+        this.px(ctx, ox + 4, 7 + dy, p1, 8, 6 - Math.max(0, dy));
+        this.px(ctx, ox + 5, 7 + dy, p2, 3, 2);
+        this.px(ctx, ox + 5, 10 + dy, eye, 2, 2);
+        this.px(ctx, ox + 9, 10 + dy, eye, 2, 2);
+      } else if (pet.id === 'toadstool_pal') {
+        const bob = f === 1 ? -1 : 0;
+        const stride = f === 1 ? 1 : f === 2 ? -1 : 0;
+        // Cap
+        this.px(ctx, ox + 3, 3 + bob, '#100d24', 10, 6);
+        this.px(ctx, ox + 4, 4 + bob, p1, 8, 4);
+        this.px(ctx, ox + 5, 5 + bob, acc, 2, 2);
+        this.px(ctx, ox + 9, 4 + bob, acc, 2, 2);
+        // Stem & eyes
+        this.px(ctx, ox + 5, 9 + bob, '#100d24', 6, 4);
+        this.px(ctx, ox + 6, 9 + bob, p2, 4, 3);
+        this.px(ctx, ox + 7, 10 + bob, eye, 1, 1);
+        this.px(ctx, ox + 9, 10 + bob, eye, 1, 1);
+        // Feet
+        this.px(ctx, ox + 5 + stride, 13, '#100d24', 2, 2);
+        this.px(ctx, ox + 9 - stride, 13, '#100d24', 2, 2);
+      }
+    }
+
+    tex.refresh();
+    tex.add(0, 0, 0, 0, 16, 16);
+    tex.add(1, 0, 16, 0, 16, 16);
+    tex.add(2, 0, 32, 0, 16, 16);
   }
 }

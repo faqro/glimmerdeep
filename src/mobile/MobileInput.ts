@@ -1,6 +1,34 @@
 export type NavDir = 'up' | 'down' | 'left' | 'right';
 export type VirtualButton = 'e' | 'space' | 'tab' | 'q' | 'esc' | 'prevSlot' | 'nextSlot';
 
+export interface MobileInventorySlot {
+  name: string;
+  description: string;
+  uses: number;
+  maxUses: number;
+  iconDataUrl: string;
+  rarity: string;
+}
+
+export interface MobileStatusBadge {
+  id: string;
+  color: number;
+  remainingMs: number;
+}
+
+export interface MobileHudState {
+  inGame: boolean;
+  activeSlot: number;
+  inventory: (MobileInventorySlot | null)[];
+  hp: number;
+  maxHp: number;
+  shield: number;
+  stamina: number;
+  maxStamina: number;
+  shards: number;
+  statusEffects: MobileStatusBadge[];
+}
+
 export function isMobileMode(): boolean {
   if (import.meta.env.VITE_MOBILE === 'true') return true;
   if (typeof window !== 'undefined') {
@@ -25,6 +53,20 @@ class MobileInputState {
 
   private navListeners = new Set<(dir: NavDir) => void>();
   private buttonListeners = new Set<(btn: VirtualButton) => void>();
+  private selectSlotListeners = new Set<(slotIdx: number) => void>();
+  private hudListeners = new Set<(state: MobileHudState) => void>();
+  private hudState: MobileHudState = {
+    inGame: false,
+    activeSlot: 0,
+    inventory: [null, null, null],
+    hp: 16,
+    maxHp: 16,
+    shield: 0,
+    stamina: 4,
+    maxStamina: 4,
+    shards: 0,
+    statusEffects: [],
+  };
 
   public setMove(x: number, y: number): void {
     this.moveX = x;
@@ -119,6 +161,38 @@ class MobileInputState {
     this.buttonListeners.add(cb);
     return () => {
       this.buttonListeners.delete(cb);
+    };
+  }
+
+  public selectSlot(slotIdx: number): void {
+    for (const cb of this.selectSlotListeners) {
+      cb(slotIdx);
+    }
+  }
+
+  public onSelectSlot(cb: (slotIdx: number) => void): () => void {
+    this.selectSlotListeners.add(cb);
+    return () => {
+      this.selectSlotListeners.delete(cb);
+    };
+  }
+
+  public getHudState(): Readonly<MobileHudState> {
+    return this.hudState;
+  }
+
+  public setHudState(patch: Partial<MobileHudState>): void {
+    Object.assign(this.hudState, patch);
+    for (const cb of this.hudListeners) {
+      cb(this.hudState);
+    }
+  }
+
+  public onHudChange(cb: (state: MobileHudState) => void): () => void {
+    this.hudListeners.add(cb);
+    cb(this.hudState);
+    return () => {
+      this.hudListeners.delete(cb);
     };
   }
 }

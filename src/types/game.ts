@@ -317,6 +317,7 @@ export interface PlayerStateSnapshot {
   id: string;
   name: string;
   paletteId: string;
+  petId?: string | null;
   gx: number;
   gy: number;
   x: number;

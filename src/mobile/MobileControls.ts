@@ -13,27 +13,8 @@ const DIRS_8: Array<{ dx: number; dy: number; nav: NavDir; label: string }> = [
 
 export function initMobileControls(root: HTMLElement): void {
   root.innerHTML = `
-    <div class="mc-columns">
+    <div class="mc-columns" id="mc-columns">
       <div class="mc-col mc-col-left">
-        <div class="mc-btn-row mc-left-util">
-          <button class="mc-btn mc-btn-circle mc-btn-util" data-btn="esc" aria-label="Pause or Back" title="Pause / Back">
-            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
-              <rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/>
-              <rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/>
-            </svg>
-          </button>
-          <button class="mc-btn mc-btn-circle mc-btn-util" data-btn="prevSlot" aria-label="Previous Item" title="Previous Item">
-            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
-              <polygon points="15,5 7,12 15,19" fill="currentColor"/>
-            </svg>
-          </button>
-          <button class="mc-btn mc-btn-circle mc-btn-util" data-btn="nextSlot" aria-label="Next Item" title="Next Item">
-            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
-              <polygon points="9,5 17,12 9,19" fill="currentColor"/>
-            </svg>
-          </button>
-        </div>
-
         <div class="mc-stick-wrap">
           <div class="mc-stick-base" id="mc-stick-base">
             <div class="mc-stick-cross"></div>
@@ -41,38 +22,29 @@ export function initMobileControls(root: HTMLElement): void {
           </div>
           <div class="mc-pad-label">MOVE / NAV</div>
         </div>
-      </div>
 
-      <div class="mc-col mc-col-right">
-        <div class="mc-btn-row mc-right-actions">
-          <button class="mc-btn mc-btn-circle mc-btn-act" data-btn="e" aria-label="Interact or Select" title="Interact / Select">
-            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
-              <path d="M12 3l2.2 5.3L19.5 10l-5.3 2.2L12 17.5l-2.2-5.3L4.5 10l5.3-1.7z" fill="currentColor"/>
-              <circle cx="18" cy="18" r="2" fill="#66ffd9"/>
-            </svg>
-          </button>
-          <button class="mc-btn mc-btn-circle mc-btn-act" data-btn="space" aria-label="Dodge Dash" title="Dodge">
-            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
-              <path d="M4 8h8M3 12h11M5 16h7" stroke="#66ffd9" stroke-width="2.2" stroke-linecap="round"/>
-              <path d="M14 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </button>
-          <button class="mc-btn mc-btn-circle mc-btn-act" data-btn="tab" aria-label="Toggle Map" title="Map">
+        <div class="mc-btn-row mc-left-util">
+          <button class="mc-btn mc-btn-circle mc-btn-act mc-hidden" data-btn="tab" aria-label="Toggle Map" title="Map">
             <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
               <polygon points="3,6 9,4 15,6 21,4 21,18 15,20 9,18 3,20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
               <line x1="9" y1="4" x2="9" y2="18" stroke="currentColor" stroke-width="1.8"/>
               <line x1="15" y1="6" x2="15" y2="20" stroke="currentColor" stroke-width="1.8"/>
             </svg>
           </button>
-          <button class="mc-btn mc-btn-circle mc-btn-act" data-btn="q" aria-label="Drop Item" title="Drop Item">
-            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
-              <path d="M12 4c1.2-1.2 2.8-1.4 3.5-1-.2 1.2-1.2 2.1-2.5 2.2" fill="none" stroke="#66ffd9" stroke-width="1.8" stroke-linecap="round"/>
-              <path d="M12 6.5c-2.8 0-4.8 1.9-4.8 4.6 0 2.7 1.9 5.2 4.8 5.2s4.8-2.5 4.8-5.2c0-2.7-2-4.6-4.8-4.6z" fill="#f49ac1" stroke="currentColor" stroke-width="1.4"/>
-              <path d="M12 17v4m0 0l-2.5-2.2M12 21l2.5-2.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <button class="mc-btn mc-btn-circle mc-btn-util" data-btn="esc" aria-label="Pause or Back" title="Pause / Back">
+            <svg viewBox="0 0 24 24" class="mc-icon mc-hidden" id="mc-icon-pause" aria-hidden="true">
+              <rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/>
+              <rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/>
+            </svg>
+            <svg viewBox="0 0 24 24" class="mc-icon" id="mc-icon-back" aria-hidden="true">
+              <path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+              <line x1="9" y1="12" x2="20" y2="12" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
             </svg>
           </button>
         </div>
+      </div>
 
+      <div class="mc-col mc-col-right">
         <div class="mc-dpad-wrap">
           <div class="mc-dpad" id="mc-dpad">
             <svg viewBox="0 0 160 160" class="mc-dpad-svg" aria-label="8-way attack D-pad">
@@ -86,8 +58,73 @@ export function initMobileControls(root: HTMLElement): void {
           </div>
           <div class="mc-pad-label">8-WAY AIM / ATK</div>
         </div>
+
+        <div class="mc-btn-row mc-right-actions">
+          <button class="mc-btn mc-btn-circle mc-btn-act mc-hidden" data-btn="space" aria-label="Dodge Dash" title="Dodge">
+            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
+              <path d="M4 8h8M3 12h11M5 16h7" stroke="#66ffd9" stroke-width="2.2" stroke-linecap="round"/>
+              <path d="M14 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button class="mc-btn mc-btn-circle mc-btn-act" data-btn="e" aria-label="Interact or Select" title="Interact / Select">
+            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
+              <path d="M12 3l2.2 5.3L19.5 10l-5.3 2.2L12 17.5l-2.2-5.3L4.5 10l5.3-1.7z" fill="currentColor"/>
+              <circle cx="18" cy="18" r="2" fill="#66ffd9"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
+
+    <div class="mc-bottom-hud">
+      <div class="mc-stats-bar mc-hidden" id="mc-stats-bar">
+        <div class="mc-stats-group">
+          <div class="mc-hearts" id="mc-hearts"></div>
+          <div class="mc-hearts" id="mc-shields"></div>
+        </div>
+        <div class="mc-stats-group">
+          <div class="mc-hearts" id="mc-stamina"></div>
+          <div class="mc-stats-group">
+            <svg viewBox="0 0 12 12" width="16" height="16" class="mc-shard-svg" aria-hidden="true">
+              <polygon points="6,1 10,5 8,11 4,11 2,5" fill="#6ef3ff" stroke="#100d24" stroke-width="1"/>
+            </svg>
+            <span class="mc-shard-count" id="mc-shard-count">0</span>
+          </div>
+          <div class="mc-statuses" id="mc-statuses"></div>
+        </div>
+      </div>
+
+      <div class="mc-inv-bar mc-hidden" id="mc-inv-bar">
+        <div class="mc-inv-info">
+          <div class="mc-inv-name" id="mc-inv-name">Empty Hand</div>
+          <div class="mc-inv-desc" id="mc-inv-desc"></div>
+        </div>
+        <div class="mc-inv-row">
+          <div></div>
+          <div class="mc-inv-slots">
+            ${[0, 1, 2]
+              .map(
+                (i) => `
+              <button class="mc-inv-slot" data-slot="${i}" aria-label="Inventory Slot ${i + 1}">
+                <img class="mc-inv-icon mc-hidden" alt="" />
+                <div class="mc-inv-use-bg mc-hidden"><div class="mc-inv-use-fill"></div></div>
+              </button>
+            `
+              )
+              .join('')}
+          </div>
+          <button class="mc-btn mc-btn-circle mc-btn-act mc-inv-drop mc-hidden" data-btn="q" aria-label="Drop Item" title="Drop Item">
+            <svg viewBox="0 0 24 24" class="mc-icon" aria-hidden="true">
+              <path d="M12 4c1.2-1.2 2.8-1.4 3.5-1-.2 1.2-1.2 2.1-2.5 2.2" fill="none" stroke="#66ffd9" stroke-width="1.8" stroke-linecap="round"/>
+              <path d="M12 6.5c-2.8 0-4.8 1.9-4.8 4.6 0 2.7 1.9 5.2 4.8 5.2s4.8-2.5 4.8-5.2c0-2.7-2-4.6-4.8-4.6z" fill="#f49ac1" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M12 17v4m0 0l-2.5-2.2M12 21l2.5-2.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="mc-keyboard mc-hidden" id="mc-keyboard"></div>
   `;
 
   // Wire action buttons
@@ -106,6 +143,141 @@ export function initMobileControls(root: HTMLElement): void {
     btnEl.addEventListener('pointerup', release);
     btnEl.addEventListener('pointercancel', release);
     btnEl.addEventListener('pointerleave', release);
+  });
+
+  // Wire inventory slot taps
+  const slotEls = Array.from(root.querySelectorAll<HTMLButtonElement>('[data-slot]'));
+  slotEls.forEach((slotEl) => {
+    const idx = Number(slotEl.dataset.slot);
+    slotEl.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      mobileInput.selectSlot(idx);
+    });
+  });
+
+  const mapBtn = root.querySelector<HTMLButtonElement>('[data-btn="tab"]');
+  const dropBtn = root.querySelector<HTMLButtonElement>('[data-btn="q"]');
+  const dodgeBtn = root.querySelector<HTMLButtonElement>('[data-btn="space"]');
+  const pauseIcon = root.querySelector<SVGElement>('#mc-icon-pause');
+  const backIcon = root.querySelector<SVGElement>('#mc-icon-back');
+  const statsBar = root.querySelector<HTMLElement>('#mc-stats-bar');
+  const heartsEl = root.querySelector<HTMLElement>('#mc-hearts');
+  const shieldsEl = root.querySelector<HTMLElement>('#mc-shields');
+  const staminaEl = root.querySelector<HTMLElement>('#mc-stamina');
+  const shardCountEl = root.querySelector<HTMLElement>('#mc-shard-count');
+  const statusesEl = root.querySelector<HTMLElement>('#mc-statuses');
+  const invBar = root.querySelector<HTMLElement>('#mc-inv-bar');
+  const invNameEl = root.querySelector<HTMLElement>('#mc-inv-name');
+  const invDescEl = root.querySelector<HTMLElement>('#mc-inv-desc');
+
+  const rarityColorMap: Record<string, string> = {
+    common: '#ffffff',
+    uncommon: '#66ffd9',
+    rare: '#6ef3ff',
+    super_rare: '#f49ac1',
+    secret: '#ff47b6',
+  };
+
+  mobileInput.onHudChange((state) => {
+    const inGame = state.inGame;
+    const activeItem = state.inventory[state.activeSlot] ?? null;
+
+    mapBtn?.classList.toggle('mc-hidden', !inGame);
+    dodgeBtn?.classList.toggle('mc-hidden', !inGame);
+    dropBtn?.classList.toggle('mc-hidden', !inGame || !activeItem);
+    pauseIcon?.classList.toggle('mc-hidden', !inGame);
+    backIcon?.classList.toggle('mc-hidden', inGame);
+    statsBar?.classList.toggle('mc-hidden', !inGame);
+    invBar?.classList.toggle('mc-hidden', !inGame);
+
+    if (!inGame) return;
+
+    if (heartsEl) {
+      const numHearts = Math.min(10, Math.ceil(state.maxHp / 2));
+      const cols = numHearts <= 8 ? 4 : 5;
+      heartsEl.style.gridTemplateColumns = `repeat(${cols}, 16px)`;
+      let html = '';
+      for (let i = 0; i < numHearts; i++) {
+        const rem = state.hp - i * 2;
+        if (rem >= 2) {
+          html += '<svg viewBox="0 0 12 12" width="16" height="16" class="mc-heart-svg"><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2 7.5 1.7 9.2 1.4 10.3 2.3 11.5 3.3 11.5 5.2 10.5 6.2Z" fill="#ff5d8f" stroke="#100d24" stroke-width="1"/></svg>';
+        } else if (rem === 1) {
+          html += '<svg viewBox="0 0 12 12" width="16" height="16" class="mc-heart-svg"><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2 7.5 1.7 9.2 1.4 10.3 2.3 11.5 3.3 11.5 5.2 10.5 6.2Z" fill="#2b2447" stroke="#100d24" stroke-width="1"/><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2Z" fill="#ff5d8f"/></svg>';
+        } else {
+          html += '<svg viewBox="0 0 12 12" width="16" height="16" class="mc-heart-svg"><path d="M6 10.5L1.5 6.2C0.5 5.2 0.5 3.3 1.7 2.3 2.8 1.4 4.5 1.7 6 3.2 7.5 1.7 9.2 1.4 10.3 2.3 11.5 3.3 11.5 5.2 10.5 6.2Z" fill="#2b2447" stroke="#100d24" stroke-width="1"/></svg>';
+        }
+      }
+      heartsEl.innerHTML = html;
+    }
+
+    if (shieldsEl) {
+      const shieldCount = Math.min(6, Math.max(0, state.shield));
+      let html = '';
+      for (let i = 0; i < shieldCount; i++) {
+        html += '<svg viewBox="0 0 12 12" width="16" height="16" class="mc-heart-svg"><path d="M2 2h8v4c0 2.8-4 5-4 5S2 8.8 2 6V2z" fill="#6ef3ff" stroke="#100d24" stroke-width="1"/></svg>';
+      }
+      shieldsEl.innerHTML = html;
+    }
+
+    if (staminaEl) {
+      const fullStam = Math.floor(state.stamina);
+      const maxStam = Math.max(1, Math.min(6, Math.round(state.maxStamina)));
+      let html = '';
+      for (let i = 0; i < maxStam; i++) {
+        const fill = i < fullStam ? '#ffe066' : '#2b2447';
+        html += `<svg viewBox="0 0 12 12" width="16" height="16" class="mc-stam-svg"><polygon points="7,1 3,7 6,7 5,11 9,5 6,5" fill="${fill}" stroke="#100d24" stroke-width="0.9"/></svg>`;
+      }
+      staminaEl.innerHTML = html;
+    }
+
+    if (shardCountEl) {
+      shardCountEl.textContent = String(state.shards);
+    }
+
+    if (statusesEl) {
+      statusesEl.innerHTML = state.statusEffects
+        .slice(0, 4)
+        .map((eff) => {
+          const hex = `#${eff.color.toString(16).padStart(6, '0')}`;
+          return `<span class="mc-status-pip" style="background:${hex}" title="${eff.id}"></span>`;
+        })
+        .join('');
+    }
+
+    slotEls.forEach((slotEl, i) => {
+      slotEl.classList.toggle('active', state.activeSlot === i);
+      const item = state.inventory[i];
+      const img = slotEl.querySelector<HTMLImageElement>('.mc-inv-icon');
+      const barBg = slotEl.querySelector<HTMLElement>('.mc-inv-use-bg');
+      const barFill = slotEl.querySelector<HTMLElement>('.mc-inv-use-fill');
+      if (item && item.iconDataUrl) {
+        if (img) {
+          if (img.src !== item.iconDataUrl) img.src = item.iconDataUrl;
+          img.classList.remove('mc-hidden');
+        }
+        if (barBg && barFill) {
+          const pct = Math.max(0, Math.min(1, item.uses / Math.max(1, item.maxUses)));
+          barBg.classList.remove('mc-hidden');
+          barFill.style.width = `${Math.round(pct * 100)}%`;
+          barFill.style.background = pct > 0.35 ? '#66ffd9' : '#ff5d8f';
+        }
+      } else {
+        img?.classList.add('mc-hidden');
+        barBg?.classList.add('mc-hidden');
+      }
+    });
+
+    if (invNameEl && invDescEl) {
+      if (activeItem) {
+        invNameEl.textContent = `${activeItem.name} (${activeItem.uses}/${activeItem.maxUses})`;
+        invNameEl.style.color = rarityColorMap[activeItem.rarity] ?? '#ffffff';
+        invDescEl.textContent = activeItem.description;
+      } else {
+        invNameEl.textContent = 'Empty Hand';
+        invNameEl.style.color = '#ffffff';
+        invDescEl.textContent = '';
+      }
+    }
   });
 
   setupJoystick(
