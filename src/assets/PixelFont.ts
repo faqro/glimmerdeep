@@ -171,3 +171,35 @@ export function addPixelText(
   }
   return bt;
 }
+
+export function addOutlinedPixelText(
+  scene: Phaser.Scene,
+  x: number,
+  y: number,
+  text: string,
+  size = 8,
+  color = 0xffffff,
+  borderColor = 0x000000,
+  originX = 0,
+  originY = 0,
+  maxWidth?: number,
+  borderWidth = Math.max(1, Math.round(size / 8))
+): { main: Phaser.GameObjects.BitmapText; texts: Phaser.GameObjects.BitmapText[] } {
+  const texts: Phaser.GameObjects.BitmapText[] = [];
+  const offsets: Array<[number, number]> = [
+    [-borderWidth, -borderWidth],
+    [0, -borderWidth],
+    [borderWidth, -borderWidth],
+    [-borderWidth, 0],
+    [borderWidth, 0],
+    [-borderWidth, borderWidth],
+    [0, borderWidth],
+    [borderWidth, borderWidth],
+  ];
+  for (const [dx, dy] of offsets) {
+    texts.push(addPixelText(scene, x + dx, y + dy, text, size, borderColor, originX, originY, maxWidth));
+  }
+  const main = addPixelText(scene, x, y, text, size, color, originX, originY, maxWidth);
+  texts.push(main);
+  return { main, texts };
+}

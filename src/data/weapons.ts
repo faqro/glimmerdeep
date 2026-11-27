@@ -490,7 +490,7 @@ export const WEAPONS: Record<string, WeaponDef> = {
     id: 'astral_greatsword',
     name: 'Astral Greatsword',
     rarity: 'super_rare',
-    description: '6 dmg, cuts bolts',
+    description: '6 dmg, deflects bolts',
     style: 'heavy_sword',
     damage: 6,
     maxUses: 8,

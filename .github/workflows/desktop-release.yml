@@ -82,7 +82,7 @@ jobs:
         env:
           STEAM_APP_ID: ${{ secrets.STEAM_APP_ID || '480' }}
           STEAM_DLC_APP_ID: ${{ secrets.STEAM_DLC_APP_ID || '0' }}
-        run: npx electron-builder --win dir --config.extraMetadata.steamworks=true --config.extraMetadata.steamAppId=%STEAM_APP_ID% --config.extraMetadata.steamDlcAppId=%STEAM_DLC_APP_ID%
+        run: npx electron-builder --win dir --config.extraMetadata.steamworks=true --config.extraMetadata.steamAppId=$env:STEAM_APP_ID --config.extraMetadata.steamDlcAppId=$env:STEAM_DLC_APP_ID
 
       - name: Upload Windows Steam depot artifact
         uses: actions/upload-artifact@v4

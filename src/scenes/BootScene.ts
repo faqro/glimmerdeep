@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import splashUrl from '../assets/splash.webp';
 import { PixelArtGenerator } from '../assets/PixelArtGenerator';
 import { registerPixelFont } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
@@ -10,6 +11,10 @@ import { steamSystem } from '../systems/SteamSystem';
 export class BootScene extends Phaser.Scene {
   constructor() {
     super({ key: 'BootScene' });
+  }
+
+  preload(): void {
+    this.load.image('menu_splash', splashUrl);
   }
 
   create(): void {

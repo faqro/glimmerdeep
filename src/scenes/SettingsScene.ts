@@ -644,6 +644,14 @@ export class SettingsScene extends Phaser.Scene {
         },
       },
       {
+        label: 'CHAT MESSAGES',
+        getValue: () => (settingsSystem.current.chatMessages ? 'ON' : 'OFF'),
+        onChange: () => {
+          SoundSystem.playSwing();
+          settingsSystem.update({ chatMessages: !settingsSystem.current.chatMessages });
+        },
+      },
+      {
         label: 'FILTER MESSAGES',
         getValue: () => (settingsSystem.current.filterMessages ? 'ON' : 'OFF'),
         onChange: () => {
@@ -657,6 +665,22 @@ export class SettingsScene extends Phaser.Scene {
         onChange: () => {
           SoundSystem.playSwing();
           settingsSystem.update({ speedrunCounter: !settingsSystem.current.speedrunCounter });
+        },
+      },
+      {
+        label: 'HIDE USERNAMES',
+        getValue: () => (settingsSystem.current.hideUsernames ? 'ON' : 'OFF'),
+        onChange: () => {
+          SoundSystem.playSwing();
+          settingsSystem.update({ hideUsernames: !settingsSystem.current.hideUsernames });
+        },
+      },
+      {
+        label: 'HIDE ENVIRONMENT TEXT',
+        getValue: () => (settingsSystem.current.hideEnvironmentText ? 'ON' : 'OFF'),
+        onChange: () => {
+          SoundSystem.playSwing();
+          settingsSystem.update({ hideEnvironmentText: !settingsSystem.current.hideEnvironmentText });
         },
       },
       {

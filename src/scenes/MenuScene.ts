@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { version } from '../../package.json';
-import { addPixelText } from '../assets/PixelFont';
+import { addOutlinedPixelText, addPixelText } from '../assets/PixelFont';
 import { SoundSystem } from '../audio/SoundSystem';
 import { ALL_SELECTABLE_AVATARS, pickRandomPaletteId } from '../data/palettes';
 import { getPetById, getSavedPetId } from '../data/pets';
@@ -51,6 +51,7 @@ export class MenuScene extends Phaser.Scene {
   private unsubSteamInvite?: () => void;
 
   private cursorBlink = true;
+  private hoveredBg: Phaser.GameObjects.Image | null = null;
   private fireflies: Array<{ sprite: Phaser.GameObjects.Image; vx: number; vy: number; phase: number }> = [];
 
   constructor() {
@@ -65,6 +66,7 @@ export class MenuScene extends Phaser.Scene {
     localCoopSession.players = [];
     this.fireflies = [];
     this.menuButtons = [];
+    this.hoveredBg = null;
     this.activeField = 'none';
     this.joinCode = '';
     this.mobileFocusIndex = 0;
@@ -89,31 +91,8 @@ export class MenuScene extends Phaser.Scene {
       }
     }
 
-    this.add.rectangle(180, 135, 360, 270, 0x0b0917);
-
-    // Subtle 16-bit cavern silhouette & glowing floor accents
-    const bgGfx = this.add.graphics();
-    bgGfx.fillStyle(0x110e26, 1);
-    bgGfx.fillRect(0, 68, 360, 202);
-    bgGfx.fillStyle(0x161230, 1);
-    bgGfx.fillRect(0, 214, 360, 56);
-    bgGfx.fillStyle(0x1e1840, 1);
-    bgGfx.fillRect(0, 214, 360, 2);
-    // Corner crystal accents
-    bgGfx.fillStyle(0x66ffd9, 0.45);
-    bgGfx.fillRect(14, 204, 4, 10);
-    bgGfx.fillRect(19, 208, 3, 6);
-    bgGfx.fillStyle(0xf49ac1, 0.45);
-    bgGfx.fillRect(342, 202, 4, 12);
-    bgGfx.fillRect(337, 207, 3, 7);
-
-    const glow = this.add
-      .image(180, 40, 'glow_soft')
-      .setScale(4.2)
-      .setTint(0x9d7ce8)
-      .setAlpha(0.32)
-      .setBlendMode(Phaser.BlendModes.ADD);
-    this.tweens.add({ targets: glow, alpha: 0.55, duration: 2200, yoyo: true, repeat: -1 });
+    this.add.image(180, 135, 'menu_splash');
+    this.add.rectangle(180, 135, 360, 270, 0x000000, 0.65);
 
     for (let i = 0; i < 20; i++) {
       const fx = Phaser.Math.Between(16, 344);
@@ -130,12 +109,8 @@ export class MenuScene extends Phaser.Scene {
       });
     }
 
-    // Title with crisp pixel shadow & divider
-    addPixelText(this, 182, 20, 'GLIMMERDEEP', 24, 0x100d24, 0.5, 0);
-    addPixelText(this, 180, 18, 'GLIMMERDEEP', 24, 0xf49ac1, 0.5, 0);
-    addPixelText(this, 180, 47, 'A 16-bit Cozy Dungeon Roguelike', 8, 0xb8a1ff, 0.5, 0);
-    bgGfx.fillStyle(0x5d4e9e, 0.55);
-    bgGfx.fillRect(72, 60, 216, 1);
+    // Title with crisp pixel border
+    addOutlinedPixelText(this, 180, 18, 'GLIMMERDEEP', 24, 0xffffff, 0x000000, 0.5, 0);
 
     // Polished Left Character Card
     this.add.rectangle(96, 146, 128, 138, 0x181430, 0.94).setStrokeStyle(2, 0x5d4e9e);
@@ -184,19 +159,23 @@ export class MenuScene extends Phaser.Scene {
     if (!isMobileMode()) {
       this.skinsBtnBg.setInteractive({ useHandCursor: true }).on('pointerdown', openSkinBrowser);
       this.skinsBtnBg.on('pointerover', () => {
+        this.hoveredBg = this.skinsBtnBg ?? null;
         this.skinsBtnBg?.setTexture('ui_btn_hover');
         this.skinsBtnTxt?.setTint(0xffe066);
       });
       this.skinsBtnBg.on('pointerout', () => {
+        if (this.hoveredBg === this.skinsBtnBg) this.hoveredBg = null;
         this.skinsBtnBg?.setTexture('ui_btn');
         this.skinsBtnTxt?.setTint(0x66ffd9);
       });
       this.petsBtnBg.setInteractive({ useHandCursor: true }).on('pointerdown', openPetBrowser);
       this.petsBtnBg.on('pointerover', () => {
+        this.hoveredBg = this.petsBtnBg ?? null;
         this.petsBtnBg?.setTexture('ui_btn_hover');
         this.petsBtnTxt?.setTint(0xffe066);
       });
       this.petsBtnBg.on('pointerout', () => {
+        if (this.hoveredBg === this.petsBtnBg) this.hoveredBg = null;
         this.petsBtnBg?.setTexture('ui_btn');
         this.petsBtnTxt?.setTint(0x66ffd9);
       });
@@ -366,6 +345,7 @@ export class MenuScene extends Phaser.Scene {
       delay: 420,
       loop: true,
       callback: () => {
+        if (this.activeField === 'none') return;
         this.cursorBlink = !this.cursorBlink;
         this.refreshTextboxes();
       },
@@ -565,8 +545,6 @@ export class MenuScene extends Phaser.Scene {
       this.codeBoxBg.setStrokeStyle(1, 0x6c5bb3);
       this.codeText.setText(this.joinCode);
     }
-
-    this.refreshMobileFocus();
   }
 
   private createPixelButton(x: number, y: number, label: string, onClick: () => void): void {
@@ -577,10 +555,12 @@ export class MenuScene extends Phaser.Scene {
     if (!isMobileMode()) {
       bg.setInteractive({ useHandCursor: true });
       bg.on('pointerover', () => {
+        this.hoveredBg = bg;
         bg.setTexture('ui_btn_hover');
         txt.setTint(0xffe066);
       });
       bg.on('pointerout', () => {
+        if (this.hoveredBg === bg) this.hoveredBg = null;
         bg.setTexture('ui_btn');
         txt.setTint(0xffffff);
       });
@@ -778,17 +758,23 @@ export class MenuScene extends Phaser.Scene {
     const petsIdx = this.menuButtons.length + 2;
 
     this.menuButtons.forEach((b, idx) => {
-      const focused = showFocus && !this.joinModal.visible && this.mobileFocusIndex === idx;
+      const focused =
+        (showFocus && !this.joinModal.visible && this.mobileFocusIndex === idx) ||
+        (!showFocus && !this.joinModal.visible && this.hoveredBg === b.bg);
       b.bg.setTexture(focused ? 'ui_btn_hover' : 'ui_btn');
       b.txt.setTint(focused ? 0xffe066 : 0xffffff);
     });
 
     if (this.dlcUnlocked) {
-      const skinsFocused = showFocus && !this.joinModal.visible && this.mobileFocusIndex === skinsIdx;
+      const skinsFocused =
+        (showFocus && !this.joinModal.visible && this.mobileFocusIndex === skinsIdx) ||
+        (!showFocus && !this.joinModal.visible && this.hoveredBg === this.skinsBtnBg);
       this.skinsBtnBg?.setTexture(skinsFocused ? 'ui_btn_hover' : 'ui_btn');
       this.skinsBtnTxt?.setTint(skinsFocused ? 0xffe066 : 0x66ffd9);
 
-      const petsFocused = showFocus && !this.joinModal.visible && this.mobileFocusIndex === petsIdx;
+      const petsFocused =
+        (showFocus && !this.joinModal.visible && this.mobileFocusIndex === petsIdx) ||
+        (!showFocus && !this.joinModal.visible && this.hoveredBg === this.petsBtnBg);
       this.petsBtnBg?.setTexture(petsFocused ? 'ui_btn_hover' : 'ui_btn');
       this.petsBtnTxt?.setTint(petsFocused ? 0xffe066 : 0x66ffd9);
     }

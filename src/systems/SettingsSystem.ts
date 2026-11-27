@@ -14,8 +14,11 @@ export interface GameSettings {
   particles: ParticleQuality;
   crtScanlines: CrtScanlinesMode;
   showControlHints: boolean;
+  chatMessages: boolean;
   filterMessages: boolean;
   speedrunCounter: boolean;
+  hideUsernames: boolean;
+  hideEnvironmentText: boolean;
 }
 
 const DEFAULT_SETTINGS: GameSettings = {
@@ -26,8 +29,11 @@ const DEFAULT_SETTINGS: GameSettings = {
   particles: 'full',
   crtScanlines: 'off',
   showControlHints: true,
+  chatMessages: true,
   filterMessages: true,
   speedrunCounter: false,
+  hideUsernames: false,
+  hideEnvironmentText: false,
 };
 
 const PROFANITY_B64 =
@@ -90,11 +96,20 @@ class SettingsManager {
       if (typeof parsed.showControlHints === 'boolean') {
         this.data.showControlHints = parsed.showControlHints;
       }
+      if (typeof parsed.chatMessages === 'boolean') {
+        this.data.chatMessages = parsed.chatMessages;
+      }
       if (typeof parsed.filterMessages === 'boolean') {
         this.data.filterMessages = parsed.filterMessages;
       }
       if (typeof parsed.speedrunCounter === 'boolean') {
         this.data.speedrunCounter = parsed.speedrunCounter;
+      }
+      if (typeof parsed.hideUsernames === 'boolean') {
+        this.data.hideUsernames = parsed.hideUsernames;
+      }
+      if (typeof parsed.hideEnvironmentText === 'boolean') {
+        this.data.hideEnvironmentText = parsed.hideEnvironmentText;
       }
     } catch {
       // ignore storage errors

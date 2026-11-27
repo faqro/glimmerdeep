@@ -428,7 +428,7 @@ export class UIScene extends Phaser.Scene {
   }
 
   public openChatKeyboard(): void {
-    if (net.mode === 'solo' || localCoopSession.active || this.isChatOpen()) return;
+    if (!settingsSystem.current.chatMessages || net.mode === 'solo' || localCoopSession.active || this.isChatOpen()) return;
     this.chatTyping = true;
     this.chatDraft = '';
     this.chatBlink = true;
@@ -444,7 +444,7 @@ export class UIScene extends Phaser.Scene {
   }
 
   public openChatGamepad(): void {
-    if (net.mode === 'solo' || localCoopSession.active || this.isChatOpen()) return;
+    if (!settingsSystem.current.chatMessages || net.mode === 'solo' || localCoopSession.active || this.isChatOpen()) return;
     SoundSystem.playSwing();
     this.virtualKeyboard?.open({
       title: 'TEAM CHAT',
@@ -459,6 +459,7 @@ export class UIScene extends Phaser.Scene {
   }
 
   private submitChatMessage(raw: string): void {
+    if (!settingsSystem.current.chatMessages) return;
     const sent = net.broadcastChat(raw);
     if (sent) {
       SoundSystem.playPickup();
@@ -467,7 +468,7 @@ export class UIScene extends Phaser.Scene {
   }
 
   public addChatMessage(sender: string, text: string): void {
-    if (!this.scene.isActive('UIScene')) return;
+    if (!settingsSystem.current.chatMessages || !this.scene.isActive('UIScene')) return;
     const container = this.add.container(0, 0).setDepth(80);
     const filtered = settingsSystem.current.filterMessages ? filterProfanity(text) : text;
     const display = `${sender.slice(0, 10)}: ${filtered}`;
@@ -964,6 +965,10 @@ export class UIScene extends Phaser.Scene {
   }
 
   showToast(message: string, color = '#66ffd9'): void {
+    if (settingsSystem.current.hideEnvironmentText) {
+      this.toastTxt.setVisible(false);
+      return;
+    }
     const tint = parseInt(color.replace('#', ''), 16) || 0x66ffd9;
     const isLocalCoop = !!(this.lastPayload?.localPlayers && this.lastPayload.localPlayers.length > 0);
     this.toastTxt.setY(this.getToastY(isLocalCoop, Boolean(this.bossContainer?.visible)));
@@ -1083,6 +1088,9 @@ export class UIScene extends Phaser.Scene {
         ch.container.setVisible(false);
       }
       this.updateSinglePlayerHUD(payload);
+      if (!isMobileMode()) {
+        this.refreshControlHints();
+      }
     }
 
     if (payload.spectating) {

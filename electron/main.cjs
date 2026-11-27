@@ -3,7 +3,14 @@ const path = require('path');
 
 const pkg = require('../package.json');
 const isSteamworksEnabled =
-  pkg.steamworks === true || process.env.GLIMMERDEEP_STEAMWORKS === 'true';
+  pkg.steamworks === true ||
+  pkg.steamworks === 'true' ||
+  process.env.GLIMMERDEEP_STEAMWORKS === 'true';
+
+function parsePositiveInt(val) {
+  const n = Number(val);
+  return Number.isInteger(n) && n > 0 ? n : 0;
+}
 
 let steamClient = null;
 let currentLobby = null;
@@ -44,15 +51,28 @@ async function handleSteamLobbyJoin(lobbyId) {
   }
 }
 
+function enableSteamOverlayBeforeReady() {
+  if (!isSteamworksEnabled) return;
+  try {
+    const steamworks = require('steamworks.js');
+    if (typeof steamworks.electronEnableSteamOverlay === 'function') {
+      steamworks.electronEnableSteamOverlay();
+    }
+  } catch (err) {
+    console.warn('[Steamworks] Overlay setup skipped or failed:', err?.message || err);
+  }
+}
+
 function initSteamworks() {
   if (!isSteamworksEnabled) return;
   try {
     const steamworks = require('steamworks.js');
-    const appId = Number(pkg.steamAppId || process.env.STEAM_APP_ID || 480);
+    const appId =
+      parsePositiveInt(pkg.steamAppId) ||
+      parsePositiveInt(process.env.STEAM_APP_ID) ||
+      parsePositiveInt(process.env.SteamAppId) ||
+      480;
     steamClient = steamworks.init(appId);
-    if (typeof steamworks.electronEnableSteamOverlay === 'function') {
-      steamworks.electronEnableSteamOverlay();
-    }
 
     if (steamClient.callback && typeof steamClient.callback.register === 'function') {
       const JoinRequested = steamworks.SteamCallback?.GameLobbyJoinRequested ?? 8;
@@ -119,7 +139,9 @@ ipcMain.handle('steam:isAvailable', () => Boolean(steamClient));
 
 ipcMain.handle('steam:hasAvatarDlc', () => {
   if (!steamClient) return false;
-  const dlcAppId = Number(pkg.steamDlcAppId || process.env.STEAM_DLC_APP_ID || 0);
+  const dlcAppId =
+    parsePositiveInt(pkg.steamDlcAppId) ||
+    parsePositiveInt(process.env.STEAM_DLC_APP_ID);
   if (!dlcAppId) return false;
   try {
     return Boolean(steamClient.apps.isDlcInstalled(dlcAppId));
@@ -462,6 +484,8 @@ ipcMain.handle('steam:cloudWriteFile', (_event, name, content) => {
     return false;
   }
 });
+
+enableSteamOverlayBeforeReady();
 
 app.whenReady().then(() => {
   initSteamworks();

@@ -1,6 +1,6 @@
 {
   "name": "glimmerdeep",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "description": "16-bit top-down action roguelike",
   "main": "electron/main.cjs",
   "type": "commonjs",

@@ -4406,9 +4406,24 @@ export class GameScene extends Phaser.Scene {
           if (!p.fromPlayer && p.sprite.active) {
             const pd = Phaser.Math.Distance.Between(sx, sy, p.sprite.x, p.sprite.y);
             if (pd <= range) {
-              this.spawnParticles(p.sprite.x, p.sprite.y, 0xffd275, 4);
-              p.sprite.destroy();
-              this.projectiles.splice(i, 1);
+              if (isAstralGreatsword) {
+                const speed = Math.hypot(p.vx, p.vy);
+                if (speed > 1) {
+                  p.vx *= -1.2;
+                  p.vy *= -1.2;
+                } else {
+                  p.vx = Math.cos(angle) * 160;
+                  p.vy = Math.sin(angle) * 160;
+                }
+                p.lifeMs = Math.max(p.lifeMs, 1400);
+                p.hitUids.clear();
+                p.sprite.setTint(0x6ef3ff);
+                this.spawnParticles(p.sprite.x, p.sprite.y, 0x6ef3ff, 4);
+              } else {
+                this.spawnParticles(p.sprite.x, p.sprite.y, 0xffd275, 4);
+                p.sprite.destroy();
+                this.projectiles.splice(i, 1);
+              }
             }
           }
         }
@@ -7776,6 +7791,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   private hasClearSkeletonLine(x1: number, y1: number, x2: number, y2: number, avoidHazards = false): boolean {
+    if (avoidHazards) {
+      for (const h of this.hazards) {
+        if (Math.abs(x2 - h.x) < 11 && Math.abs(y2 - h.y) < 11) return false;
+      }
+    }
     const dist = Phaser.Math.Distance.Between(x1, y1, x2, y2);
     if (dist <= 6) return true;
     const steps = Math.ceil(dist / 6);
@@ -7950,12 +7970,13 @@ export class GameScene extends Phaser.Scene {
         const flankAngle = (sk.formationIndex * Math.PI) / 2;
         const desiredX = Phaser.Math.Clamp(nearest.sprite.x + Math.cos(flankAngle) * 11, 22, Math.max(22, this.roomWidthPx - 22));
         const desiredY = Phaser.Math.Clamp(nearest.sprite.y + Math.sin(flankAngle) * 11, 22, Math.max(22, this.roomHeightPx - 22));
-        const waypoint = this.getSkeletonPathWaypoint(sk.sprite.x, sk.sprite.y, desiredX, desiredY);
+        const waypoint = this.getSkeletonPathWaypoint(sk.sprite.x, sk.sprite.y, desiredX, desiredY, true);
+        const wpDist = Phaser.Math.Distance.Between(sk.sprite.x, sk.sprite.y, waypoint.x, waypoint.y);
         const moveAngle = Phaser.Math.Angle.Between(sk.sprite.x, sk.sprite.y, waypoint.x, waypoint.y);
         const attackAngle = Phaser.Math.Angle.Between(sk.sprite.x, sk.sprite.y, nearest.sprite.x, nearest.sprite.y);
         sk.sprite.setFlipX(Math.cos(attackAngle) < 0);
 
-        if (bestDist > 12) {
+        if (bestDist > 12 && wpDist > 2) {
           moveVx = Math.cos(moveAngle) * 72;
           moveVy = Math.sin(moveAngle) * 72;
         }
@@ -7971,12 +7992,15 @@ export class GameScene extends Phaser.Scene {
         const targetY = Phaser.Math.Clamp(ownerSprite.y + Math.sin(orbitAngle) * 18, 22, Math.max(22, this.roomHeightPx - 22));
         const dist = Phaser.Math.Distance.Between(sk.sprite.x, sk.sprite.y, targetX, targetY);
         if (dist > 6) {
-          const waypoint = this.getSkeletonPathWaypoint(sk.sprite.x, sk.sprite.y, targetX, targetY);
-          const angle = Phaser.Math.Angle.Between(sk.sprite.x, sk.sprite.y, waypoint.x, waypoint.y);
-          sk.sprite.setFlipX(Math.cos(angle) < 0);
-          const spd = Math.min(86, 38 + dist * 1.4);
-          moveVx = Math.cos(angle) * spd;
-          moveVy = Math.sin(angle) * spd;
+          const waypoint = this.getSkeletonPathWaypoint(sk.sprite.x, sk.sprite.y, targetX, targetY, true);
+          const wpDist = Phaser.Math.Distance.Between(sk.sprite.x, sk.sprite.y, waypoint.x, waypoint.y);
+          if (wpDist > 2) {
+            const angle = Phaser.Math.Angle.Between(sk.sprite.x, sk.sprite.y, waypoint.x, waypoint.y);
+            sk.sprite.setFlipX(Math.cos(angle) < 0);
+            const spd = Math.min(86, 38 + dist * 1.4);
+            moveVx = Math.cos(angle) * spd;
+            moveVy = Math.sin(angle) * spd;
+          }
         }
       }
 
@@ -7991,6 +8015,21 @@ export class GameScene extends Phaser.Scene {
           const strength = ((14 - d) / 14) * 58;
           moveVx += Math.cos(pushAngle) * strength;
           moveVy += Math.sin(pushAngle) * strength;
+        }
+      }
+
+      if (this.hazards.length > 0 && (moveVx !== 0 || moveVy !== 0)) {
+        const isInHazard = (hx: number, hy: number) =>
+          this.hazards.some((h) => Math.abs(hx - h.x) < 10 && Math.abs(hy - h.y) < 10);
+        if (!isInHazard(sk.sprite.x, sk.sprite.y)) {
+          const probeX = sk.sprite.x + Math.sign(moveVx) * 6;
+          const probeY = sk.sprite.y + Math.sign(moveVy) * 6;
+          if (moveVx !== 0 && isInHazard(probeX, sk.sprite.y)) moveVx = 0;
+          if (moveVy !== 0 && isInHazard(sk.sprite.x, probeY)) moveVy = 0;
+          if (moveVx !== 0 && moveVy !== 0 && isInHazard(probeX, probeY)) {
+            moveVx = 0;
+            moveVy = 0;
+          }
         }
       }
 
@@ -12071,7 +12110,9 @@ export class GameScene extends Phaser.Scene {
       if (sameRoom) {
         if (!vis) {
           const sp = this.add.sprite(st.x, st.y, `player_${st.paletteId}`, 0).setDepth(6 + (st.y + 6) / 1000);
-          const lb = addPixelText(this, st.x, st.y - 16, st.name, 8, 0xffe066, 0.5, 0.5).setDepth(11);
+          const lb = addPixelText(this, st.x, st.y - 16, st.name, 8, 0xffe066, 0.5, 0.5)
+            .setDepth(11)
+            .setVisible(!settingsSystem.current.hideUsernames);
           vis = {
             sprite: sp,
             label: lb,
@@ -12120,6 +12161,7 @@ export class GameScene extends Phaser.Scene {
         }
         vis.label.setDepth(st.downed ? 8 : 11);
         vis.label.setPosition(vis.sprite.x, vis.sprite.y - 16);
+        vis.label.setVisible(!settingsSystem.current.hideUsernames);
 
         // Spread burning on direct contact with another player (preserving remaining duration)
         if (!this.playerState.downed && !st.downed) {

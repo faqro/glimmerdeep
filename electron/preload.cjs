@@ -1,7 +1,10 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 const pkg = require('../package.json');
-const isSteamworks = pkg.steamworks === true || process.env.GLIMMERDEEP_STEAMWORKS === 'true';
+const isSteamworks =
+  pkg.steamworks === true ||
+  pkg.steamworks === 'true' ||
+  process.env.GLIMMERDEEP_STEAMWORKS === 'true';
 
 contextBridge.exposeInMainWorld('glimmerdeepDesktop', {
   isDesktop: true,
